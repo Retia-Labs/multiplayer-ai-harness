@@ -21,12 +21,23 @@
       </div>
 
       <div class="sidebar-search">
+        <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14"/></svg>
         <input id="thread-search" type="text" placeholder="Search threads" spellcheck="false" />
       </div>
 
       <div id="thread-list" class="thread-list"></div>
 
+      <div id="archived-section" class="archived-section hidden">
+        <button id="archived-toggle" class="archived-toggle">
+          <span class="arch-chev">▸</span> Archived <span id="archived-count" class="arch-count"></span>
+        </button>
+        <div id="archived-list" class="archived-list hidden"></div>
+      </div>
+
       <div class="sidebar-footer">
+        <button id="btn-automations" class="btn-icon" title="Automations">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M11 21h-1l1-7H7.5c-.58 0-.57-.32-.38-.66.19-.34.05-.08.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21"/></svg>
+        </button>
         <button id="btn-open-project" class="sidebar-footer-btn">
           <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8z"/></svg>
           <span id="open-project-label">Open project</span>
@@ -43,8 +54,10 @@
         <div class="topbar-left">
           <span id="project-name" class="project-name">No project</span>
           <span id="project-branch" class="project-branch hidden"></span>
+          <span id="worktree-badge" class="worktree-badge hidden" title="This thread runs in an isolated git worktree">worktree</span>
         </div>
         <div class="topbar-right">
+          <span id="turn-usage" class="turn-usage hidden"></span>
           <button id="btn-changes" class="chip-btn">
             <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 3a3 3 0 0 0-1 5.83v6.34A3 3 0 1 0 7 15.17V8.83A3 3 0 0 0 6 3zm12 12.17V9a4 4 0 0 0-4-4h-1.59l1.3-1.29L12.29 2.3 9.59 5l2.7 2.71 1.42-1.42L12.41 5H14a2 2 0 0 1 2 2v8.17a3 3 0 1 0 2 0z"/></svg>
             Changes
@@ -53,63 +66,141 @@
         </div>
       </header>
 
-      <!-- Chat view -->
-      <section id="chat-view">
-        <div id="messages" class="messages">
-          <div id="empty-state" class="empty-state">
-            <div class="empty-logo">
-              <svg viewBox="0 0 24 24" width="40" height="40"><path fill="currentColor" d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6zm5.2 0 4.6-4.6-4.6-4.6L16 6l6 6-6 6z"/></svg>
-            </div>
-            <h1>What are we coding next?</h1>
-            <p class="empty-sub">Open a project, then ask Codex to explore, explain, or change the code.</p>
+      <!-- Home / new-thread hero -->
+      <section id="home-view">
+        <div class="home-hero">
+          <div class="home-logo">
+            <svg viewBox="0 0 24 24" width="44" height="44"><path fill="currentColor" d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6zm5.2 0 4.6-4.6-4.6-4.6L16 6l6 6-6 6z"/></svg>
+          </div>
+          <h1>What are we coding next?</h1>
+          <div class="home-project-row">
+            <button id="home-project-btn" class="home-project-btn">
+              <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8z"/></svg>
+              <span id="home-project-label">Choose a project</span>
+              <span class="hp-caret">▾</span>
+            </button>
+            <div id="home-project-menu" class="popup-menu hidden"></div>
+            <label class="worktree-toggle" title="Run this thread in an isolated git worktree so it doesn't touch your checkout">
+              <input id="worktree-check" type="checkbox" />
+              <span>Isolated worktree</span>
+            </label>
+          </div>
+          <div id="composer-host-home" class="composer-host-home"></div>
+          <div class="suggestions">
+            <button class="suggestion" data-prompt="Explore this codebase and explain how it's structured">Explore this codebase</button>
+            <button class="suggestion" data-prompt="Create a NOTES.md summarizing this repo">Create a NOTES.md</button>
+            <button class="suggestion" data-prompt="Review my current working-tree changes and point out issues">Review my changes</button>
+            <button class="suggestion" data-prompt="Write tests for the most important untested code">Write tests</button>
           </div>
         </div>
+      </section>
 
-        <div class="composer-wrap">
+      <!-- Thread view -->
+      <section id="chat-view" class="hidden">
+        <div id="messages" class="messages"></div>
+        <div class="composer-dock">
           <div id="working" class="working hidden">
-            <span class="spinner"></span><span id="working-label">Working…</span>
+            <span class="wdots"><i></i><i></i><i></i></span>
+            <span id="working-label">Working…</span>
             <button id="btn-stop" class="stop-btn">Stop</button>
           </div>
-          <div class="composer">
-            <textarea id="input" rows="1" placeholder="Ask Codex to do anything" spellcheck="false"></textarea>
-            <div class="composer-bar">
-              <div class="composer-controls">
-                <div class="select-wrap">
-                  <select id="model-select" title="Model">
-                    <option value="gpt-5.1-codex-max">gpt-5.1-codex-max</option>
-                    <option value="gpt-5.1-codex" selected>gpt-5.1-codex</option>
-                    <option value="gpt-5.1-codex-mini">gpt-5.1-codex-mini</option>
-                    <option value="gpt-5.1">gpt-5.1</option>
-                  </select>
-                </div>
-                <div class="select-wrap">
-                  <select id="mode-select" title="Access mode">
-                    <option value="read-only">Read Only</option>
-                    <option value="agent" selected>Agent</option>
-                    <option value="full-access">Agent (Full Access)</option>
-                  </select>
-                </div>
-              </div>
-              <button id="btn-send" class="send-btn" title="Send (Enter)">
-                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>
-              </button>
-            </div>
-          </div>
-          <div class="composer-hint">Codex can make mistakes. Review changes before shipping.</div>
+          <div id="composer-host-thread"></div>
+          <div class="composer-hint">Codex can make mistakes. Review changes before shipping. <span class="hint-kbd">@ files · / prompts · Enter to send</span></div>
         </div>
       </section>
 
-      <!-- Changes (diff) panel -->
+      <!-- Changes (diff review) panel -->
       <section id="diff-view" class="hidden">
         <div class="diff-header">
-          <span id="diff-summary">No changes</span>
-          <button id="btn-close-diff" class="btn-icon" title="Close">
-            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-          </button>
+          <div class="diff-header-left">
+            <span id="diff-summary">No changes</span>
+          </div>
+          <div class="diff-header-actions">
+            <input id="commit-msg" type="text" placeholder="Commit message" spellcheck="false" />
+            <button id="btn-commit" class="mini-btn primary">Commit</button>
+            <button id="btn-copy-patch" class="mini-btn">Copy patch</button>
+            <button id="btn-close-diff" class="btn-icon" title="Close">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+          </div>
         </div>
-        <div id="diff-files" class="diff-files"></div>
+        <div class="diff-body">
+          <div id="diff-file-list" class="diff-file-list"></div>
+          <div id="diff-pane" class="diff-pane"><div class="diff-empty">Working tree is clean ✨</div></div>
+        </div>
       </section>
     </main>
+  </div>
+
+  <!-- ============ Shared composer (moved between home & thread) ============ -->
+  <div id="composer" class="composer">
+    <div id="attach-row" class="attach-row hidden"></div>
+    <div class="composer-input-wrap">
+      <textarea id="input" rows="1" placeholder="Ask Codex to do anything" spellcheck="false"></textarea>
+      <div id="composer-popup" class="composer-popup hidden"></div>
+    </div>
+    <div class="composer-bar">
+      <div class="composer-controls">
+        <button id="btn-attach" class="btn-icon" title="Attach images">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M16.5 6v11.5a4 4 0 0 1-8 0V5a2.5 2.5 0 0 1 5 0v10.5a1 1 0 0 1-2 0V6H10v9.5a2.5 2.5 0 0 0 5 0V5a4 4 0 0 0-8 0v12.5a5.5 5.5 0 0 0 11 0V6z"/></svg>
+        </button>
+        <div class="select-wrap"><select id="model-select" title="Model"></select></div>
+        <div class="select-wrap">
+          <select id="effort-select" title="Reasoning effort">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+            <option value="xhigh">Extra high</option>
+          </select>
+        </div>
+        <div class="select-wrap">
+          <select id="mode-select" title="Access mode">
+            <option value="read-only">Read Only</option>
+            <option value="agent" selected>Agent</option>
+            <option value="full-access">Full Access</option>
+          </select>
+        </div>
+      </div>
+      <button id="btn-send" class="send-btn" title="Send (Enter)">
+        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ============ Automations modal ============ -->
+  <div id="automations-modal" class="modal-backdrop hidden">
+    <div class="modal wide">
+      <div class="modal-header">
+        <h2>Automations</h2>
+        <button id="btn-close-automations" class="btn-icon">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">Recurring prompts that run in fresh threads on a schedule — daily reviews, dependency checks, TODO sweeps.</p>
+        <div id="automation-list" class="automation-list"></div>
+        <div class="automation-form">
+          <div class="form-row">
+            <input id="auto-name" type="text" placeholder="Name (e.g. Morning repo review)" spellcheck="false" />
+            <select id="auto-interval">
+              <option value="60">Every hour</option>
+              <option value="360">Every 6 hours</option>
+              <option value="1440" selected>Every day</option>
+              <option value="10080">Every week</option>
+            </select>
+          </div>
+          <textarea id="auto-prompt" rows="2" placeholder="Prompt to run (e.g. Review recent commits and summarize risks)" spellcheck="false"></textarea>
+          <div class="form-row">
+            <select id="auto-mode">
+              <option value="read-only">Read Only</option>
+              <option value="agent" selected>Agent</option>
+              <option value="full-access">Full Access</option>
+            </select>
+            <button id="btn-add-automation" class="primary-btn">Add automation</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- ============ Settings modal ============ -->
@@ -132,18 +223,39 @@
           <input id="setting-base-url" type="text" placeholder="https://api.openai.com/v1" spellcheck="false" />
         </label>
         <label class="field">
-          <span>Theme</span>
-          <select id="setting-theme">
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
-          </select>
+          <span>Extra models <small>(comma-separated, added to the picker)</small></span>
+          <input id="setting-custom-models" type="text" placeholder="my-org/custom-model, o3" spellcheck="false" />
         </label>
+        <div class="field-row">
+          <label class="field">
+            <span>Theme</span>
+            <select id="setting-theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+          <label class="field check-field">
+            <span>Notifications</span>
+            <input id="setting-notifications" type="checkbox" />
+          </label>
+        </div>
+        <div class="field">
+          <span>Custom slash prompts</span>
+          <div id="prompt-list" class="prompt-list"></div>
+          <div class="form-row">
+            <input id="prompt-name" type="text" placeholder="/name" spellcheck="false" />
+            <input id="prompt-text" type="text" placeholder="Prompt text" spellcheck="false" />
+            <button id="btn-add-prompt" class="mini-btn">Add</button>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <button id="btn-save-settings" class="primary-btn">Save</button>
       </div>
     </div>
   </div>
+
+  <div id="toasts" class="toasts"></div>
 
   <script src="markdown.js"></script>
   <script src="app.js"></script>

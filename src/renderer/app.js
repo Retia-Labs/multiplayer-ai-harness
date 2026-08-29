@@ -6,101 +6,264 @@
     threadList: $('#thread-list'),
     threadSearch: $('#thread-search'),
     newThread: $('#btn-new-thread'),
+    archivedSection: $('#archived-section'),
+    archivedToggle: $('#archived-toggle'),
+    archivedList: $('#archived-list'),
+    archivedCount: $('#archived-count'),
     openProject: $('#btn-open-project'),
     openProjectLabel: $('#open-project-label'),
+    automationsBtn: $('#btn-automations'),
     settingsBtn: $('#btn-settings'),
     projectName: $('#project-name'),
     projectBranch: $('#project-branch'),
+    worktreeBadge: $('#worktree-badge'),
+    turnUsage: $('#turn-usage'),
     changesBtn: $('#btn-changes'),
     changesCount: $('#changes-count'),
+    homeView: $('#home-view'),
+    homeProjectBtn: $('#home-project-btn'),
+    homeProjectLabel: $('#home-project-label'),
+    homeProjectMenu: $('#home-project-menu'),
+    worktreeCheck: $('#worktree-check'),
+    composerHostHome: $('#composer-host-home'),
+    composerHostThread: $('#composer-host-thread'),
     chatView: $('#chat-view'),
     messages: $('#messages'),
-    emptyState: $('#empty-state'),
+    composer: $('#composer'),
+    attachRow: $('#attach-row'),
+    attachBtn: $('#btn-attach'),
     input: $('#input'),
+    composerPopup: $('#composer-popup'),
     send: $('#btn-send'),
     modelSelect: $('#model-select'),
+    effortSelect: $('#effort-select'),
     modeSelect: $('#mode-select'),
     working: $('#working'),
     workingLabel: $('#working-label'),
     stop: $('#btn-stop'),
     diffView: $('#diff-view'),
     diffSummary: $('#diff-summary'),
-    diffFiles: $('#diff-files'),
+    diffFileList: $('#diff-file-list'),
+    diffPane: $('#diff-pane'),
+    commitMsg: $('#commit-msg'),
+    commitBtn: $('#btn-commit'),
+    copyPatchBtn: $('#btn-copy-patch'),
     closeDiff: $('#btn-close-diff'),
+    automationsModal: $('#automations-modal'),
+    closeAutomations: $('#btn-close-automations'),
+    automationList: $('#automation-list'),
+    autoName: $('#auto-name'),
+    autoInterval: $('#auto-interval'),
+    autoPrompt: $('#auto-prompt'),
+    autoMode: $('#auto-mode'),
+    addAutomation: $('#btn-add-automation'),
     settingsModal: $('#settings-modal'),
     closeSettings: $('#btn-close-settings'),
     saveSettings: $('#btn-save-settings'),
     settingApiKey: $('#setting-api-key'),
     settingBaseUrl: $('#setting-base-url'),
-    settingTheme: $('#setting-theme')
+    settingCustomModels: $('#setting-custom-models'),
+    settingTheme: $('#setting-theme'),
+    settingNotifications: $('#setting-notifications'),
+    promptList: $('#prompt-list'),
+    promptName: $('#prompt-name'),
+    promptText: $('#prompt-text'),
+    addPrompt: $('#btn-add-prompt'),
+    toasts: $('#toasts')
   };
+
+  const BASE_MODELS = ['gpt-5.1-codex-max', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5.1'];
+  const BUILTIN_PROMPTS = [
+    { name: '/review', prompt: 'Review my current working-tree changes and point out bugs, risks and improvements.' },
+    { name: '/explain', prompt: 'Explain how this codebase is structured and how the main pieces fit together.' },
+    { name: '/tests', prompt: 'Write tests for the most important untested code in this repo.' },
+    { name: '/commit-msg', prompt: 'Look at the current diff and propose a good commit message.' }
+  ];
 
   const state = {
     settings: null,
-    project: null,        // {dir,name,branch,dirty}
-    threads: [],          // summaries
+    project: null,          // {dir,name,branch,dirty}
+    threads: [],
     activeThreadId: null,
-    running: false,
-    itemNodes: new Map(), // itemId -> DOM refs
-    diffOpen: false
+    activeThread: null,     // full thread record
+    running: new Set(),     // threadIds with an in-flight turn
+    needsApproval: new Set(),
+    ready: new Set(),       // finished while inactive → "Ready" badge
+    itemNodes: new Map(),
+    attachments: [],
+    fileCache: { dir: null, files: [] },
+    popup: null,            // {type:'mention'|'slash', items, sel, anchor}
+    diffOpen: false,
+    diffFiles: [],
+    diffSel: 0,
+    customPrompts: []
   };
 
   // ---------------- init ----------------
   async function init() {
     state.settings = await window.codex.settings.get();
+    state.customPrompts = state.settings.customPrompts || [];
     applyTheme();
-    el.modelSelect.value = state.settings.model || 'gpt-5.1-codex';
+    buildModelPicker();
+    el.modelSelect.value = state.settings.model || BASE_MODELS[0];
+    el.effortSelect.value = state.settings.effort || 'medium';
     el.modeSelect.value = state.settings.mode || 'agent';
 
     const recent = state.settings.recentProjects || [];
     if (recent.length) {
-      const p = await window.codex.project.describe(recent[0]);
-      setProject(p);
+      const p = await window.codex.project.describe(recent[0]).catch(() => null);
+      if (p) setProject(p);
     }
     await refreshThreads();
-    if (state.threads.length) selectThread(state.threads[0].id);
+    const runningIds = await window.codex.agent.running();
+    runningIds.forEach((id) => state.running.add(id));
+    showHome();
     bindEvents();
     window.codex.agent.onEvent(onAgentEvent);
+    window.codex.agent.onAutomation(({ threadId }) => {
+      refreshThreads();
+      toast('<b>Automation started</b> — running in a new thread');
+      state.running.add(threadId);
+      renderThreadList();
+    });
   }
 
   function applyTheme() {
     document.body.dataset.theme = state.settings.theme === 'light' ? 'light' : 'dark';
   }
 
-  // ---------------- project ----------------
-  function setProject(p) {
-    state.project = p;
-    if (p) {
-      el.projectName.textContent = p.name;
-      el.openProjectLabel.textContent = p.name;
-      if (p.branch) {
-        el.projectBranch.textContent = p.branch + (p.dirty ? ' •' : '');
-        el.projectBranch.classList.remove('hidden');
-      } else {
-        el.projectBranch.classList.add('hidden');
-      }
+  function buildModelPicker() {
+    const extra = (state.settings.customModels || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const models = [...BASE_MODELS, ...extra.filter((m) => !BASE_MODELS.includes(m))];
+    el.modelSelect.innerHTML = '';
+    for (const m of models) {
+      const o = document.createElement('option');
+      o.value = m;
+      o.textContent = m;
+      el.modelSelect.appendChild(o);
+    }
+  }
+
+  function toast(html, ms = 3800) {
+    const t = document.createElement('div');
+    t.className = 'toast';
+    t.innerHTML = html;
+    el.toasts.appendChild(t);
+    setTimeout(() => t.remove(), ms);
+  }
+
+  function notify(title, body) {
+    if (!state.settings.notifications) return;
+    try { new Notification(title, { body, silent: true }); } catch {}
+  }
+
+  // ---------------- views ----------------
+  function showHome() {
+    state.activeThreadId = null;
+    state.activeThread = null;
+    closeDiff();
+    el.chatView.classList.add('hidden');
+    el.homeView.classList.remove('hidden');
+    el.composerHostHome.appendChild(el.composer);
+    updateTopbar();
+    renderThreadList();
+    el.input.focus();
+  }
+
+  function showChat() {
+    el.homeView.classList.add('hidden');
+    el.chatView.classList.remove('hidden');
+    el.composerHostThread.appendChild(el.composer);
+    el.input.focus();
+  }
+
+  function updateTopbar() {
+    const t = state.activeThread;
+    if (t && t.projectDir) {
+      el.projectName.textContent = t.projectDir.split('/').pop();
+    } else if (state.project) {
+      el.projectName.textContent = state.project.name;
     } else {
       el.projectName.textContent = 'No project';
-      el.openProjectLabel.textContent = 'Open project';
+    }
+    el.worktreeBadge.classList.toggle('hidden', !(t && t.worktree));
+    if (t && t.worktree && t.branch) {
+      el.projectBranch.textContent = t.branch;
+      el.projectBranch.classList.remove('hidden');
+    } else if (state.project && state.project.branch) {
+      el.projectBranch.textContent = state.project.branch + (state.project.dirty ? ' •' : '');
+      el.projectBranch.classList.remove('hidden');
+    } else {
       el.projectBranch.classList.add('hidden');
     }
     refreshChangesBadge();
   }
 
+  // ---------------- project ----------------
+  function setProject(p) {
+    state.project = p;
+    if (p) {
+      el.openProjectLabel.textContent = p.name;
+      el.homeProjectLabel.textContent = p.name;
+    } else {
+      el.openProjectLabel.textContent = 'Open project';
+      el.homeProjectLabel.textContent = 'Choose a project';
+    }
+    updateTopbar();
+  }
+
   async function refreshProject() {
     if (!state.project) return;
-    setProject(await window.codex.project.describe(state.project.dir));
+    const p = await window.codex.project.describe(state.project.dir).catch(() => null);
+    if (p) setProject(p);
+  }
+
+  function workDirForActive() {
+    const t = state.activeThread;
+    if (t) return t.workDir || t.projectDir;
+    return state.project ? state.project.dir : null;
   }
 
   async function refreshChangesBadge() {
-    if (!state.project) { el.changesCount.classList.add('hidden'); return; }
-    const st = await window.codex.git.status(state.project.dir);
+    const dir = workDirForActive();
+    if (!dir) { el.changesCount.classList.add('hidden'); return; }
+    const st = await window.codex.git.status(dir);
     if (st && st.length) {
       el.changesCount.textContent = st.length;
       el.changesCount.classList.remove('hidden');
     } else {
       el.changesCount.classList.add('hidden');
     }
+  }
+
+  async function showProjectMenu() {
+    const recent = await window.codex.project.recent();
+    el.homeProjectMenu.innerHTML = '';
+    for (const dir of recent) {
+      const b = document.createElement('button');
+      b.className = 'popup-item';
+      b.innerHTML = `<span class="pi-title">${escapeHtml(dir.split('/').pop())}</span><span class="pi-sub">${escapeHtml(dir)}</span>`;
+      b.addEventListener('click', async () => {
+        el.homeProjectMenu.classList.add('hidden');
+        const p = await window.codex.project.describe(dir);
+        setProject(p);
+      });
+      el.homeProjectMenu.appendChild(b);
+    }
+    const open = document.createElement('button');
+    open.className = 'popup-item';
+    open.innerHTML = '<span class="pi-title">Open folder…</span>';
+    open.addEventListener('click', async () => {
+      el.homeProjectMenu.classList.add('hidden');
+      const p = await window.codex.project.pick();
+      if (p) setProject(p);
+    });
+    el.homeProjectMenu.appendChild(open);
+    el.homeProjectMenu.classList.remove('hidden');
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   // ---------------- threads ----------------
@@ -120,112 +283,184 @@
     return 'Older';
   }
 
+  function threadItemNode(t) {
+    const item = document.createElement('div');
+    item.className = 'thread-item';
+    if (t.id === state.activeThreadId) item.classList.add('active');
+    if (state.running.has(t.id)) item.classList.add('running');
+    if (state.needsApproval.has(t.id)) item.classList.add('needs-approval');
+    if (state.ready.has(t.id)) item.classList.add('ready');
+
+    const status = document.createElement('span');
+    status.className = 't-status';
+    status.innerHTML = '<span class="t-spin"></span><span class="t-dot"></span>';
+
+    const title = document.createElement('span');
+    title.className = 't-title';
+    title.textContent = t.title;
+    title.title = t.title;
+
+    const review = document.createElement('span');
+    review.className = 't-review';
+    review.textContent = 'Ready';
+
+    const actions = document.createElement('span');
+    actions.className = 't-actions';
+    const arch = document.createElement('button');
+    arch.className = 't-act';
+    arch.title = t.archived ? 'Unarchive' : 'Archive';
+    arch.innerHTML = t.archived
+      ? '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M12 5l6 6h-4v6h-4v-6H6z"/></svg>'
+      : '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M20.54 5.23 19.15 3.55A1.9 1.9 0 0 0 17.7 3H6.3c-.6 0-1.13.21-1.45.55L3.46 5.23A2 2 0 0 0 3 6.5V19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6.5c0-.48-.17-.93-.46-1.27M12 17.5 6.5 12H10v-2h4v2h3.5zM5.12 5l.81-1h12l.94 1z"/></svg>';
+    arch.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await window.codex.threads.archive(t.id, !t.archived);
+      if (state.activeThreadId === t.id && !t.archived) showHome();
+      refreshThreads();
+    });
+    const del = document.createElement('button');
+    del.className = 't-act';
+    del.title = 'Delete thread';
+    del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z"/></svg>';
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await window.codex.threads.delete(t.id);
+      if (state.activeThreadId === t.id) showHome();
+      refreshThreads();
+    });
+    actions.append(arch, del);
+
+    item.append(status, title, review, actions);
+    item.addEventListener('click', () => selectThread(t.id));
+    item.addEventListener('dblclick', async () => {
+      const name = prompt('Rename thread', t.title);
+      if (name) { await window.codex.threads.rename(t.id, name); refreshThreads(); }
+    });
+    return item;
+  }
+
   function renderThreadList() {
     const q = el.threadSearch.value.trim().toLowerCase();
+    const active = state.threads.filter((t) => !t.archived && (!q || t.title.toLowerCase().includes(q)));
+    const archived = state.threads.filter((t) => t.archived && (!q || t.title.toLowerCase().includes(q)));
+
     el.threadList.innerHTML = '';
-    const filtered = state.threads.filter((t) => !q || t.title.toLowerCase().includes(q));
-    if (!filtered.length) {
+    if (!active.length) {
       const d = document.createElement('div');
       d.className = 'thread-empty';
-      d.textContent = q ? 'No matching threads' : 'No threads yet — start one with +';
+      d.textContent = q ? 'No matching threads' : 'No threads yet — start one below';
       el.threadList.appendChild(d);
-      return;
-    }
-    let lastGroup = null;
-    for (const t of filtered) {
-      const g = groupLabel(t.updatedAt);
-      if (g !== lastGroup) {
-        lastGroup = g;
-        const lab = document.createElement('div');
-        lab.className = 'thread-group-label';
-        lab.textContent = g;
-        el.threadList.appendChild(lab);
+    } else {
+      let lastGroup = null;
+      for (const t of active) {
+        const g = groupLabel(t.updatedAt);
+        if (g !== lastGroup) {
+          lastGroup = g;
+          const lab = document.createElement('div');
+          lab.className = 'thread-group-label';
+          lab.textContent = g;
+          el.threadList.appendChild(lab);
+        }
+        el.threadList.appendChild(threadItemNode(t));
       }
-      const item = document.createElement('div');
-      item.className = 'thread-item' + (t.id === state.activeThreadId ? ' active' : '');
-      const title = document.createElement('span');
-      title.className = 't-title';
-      title.textContent = t.title;
-      const del = document.createElement('button');
-      del.className = 't-del';
-      del.title = 'Delete thread';
-      del.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z"/></svg>';
-      del.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        await window.codex.threads.delete(t.id);
-        if (state.activeThreadId === t.id) { state.activeThreadId = null; clearMessages(); }
-        refreshThreads();
-      });
-      item.appendChild(title);
-      item.appendChild(del);
-      item.addEventListener('click', () => selectThread(t.id));
-      el.threadList.appendChild(item);
     }
+
+    el.archivedSection.classList.toggle('hidden', archived.length === 0);
+    el.archivedCount.textContent = archived.length || '';
+    el.archivedList.innerHTML = '';
+    for (const t of archived) el.archivedList.appendChild(threadItemNode(t));
   }
 
   async function newThread() {
-    const t = await window.codex.threads.create(state.project ? state.project.dir : null);
-    await refreshThreads();
-    selectThread(t.id);
-    el.input.focus();
+    showHome();
   }
 
   async function selectThread(id) {
     state.activeThreadId = id;
-    renderThreadList();
+    state.ready.delete(id);
     closeDiff();
     const t = await window.codex.threads.get(id);
+    state.activeThread = t;
     clearMessages();
+    renderThreadList();
     if (!t) return;
-    if (t.model) el.modelSelect.value = t.model;
+    if (t.model) { buildModelPicker(); el.modelSelect.value = t.model; }
     if (t.mode) el.modeSelect.value = t.mode;
+    if (t.effort) el.effortSelect.value = t.effort;
     if (t.projectDir && (!state.project || state.project.dir !== t.projectDir)) {
-      setProject(await window.codex.project.describe(t.projectDir));
+      const p = await window.codex.project.describe(t.projectDir).catch(() => null);
+      if (p) setProject(p);
     }
+    updateTopbar();
+    showChat();
     for (const item of t.items || []) renderItem(item, { done: true });
-    setEmptyVisible(!(t.items || []).length);
+    setWorkingVisible(state.running.has(id));
     scrollToBottom(true);
   }
 
   // ---------------- messages ----------------
   function clearMessages() {
     state.itemNodes.clear();
-    el.messages.querySelectorAll('.msg, .turn-error, .approval-card-wrap').forEach((n) => n.remove());
-    setEmptyVisible(true);
-  }
-
-  function setEmptyVisible(v) {
-    el.emptyState.classList.toggle('hidden', !v);
+    el.messages.innerHTML = '';
   }
 
   function scrollToBottom(force) {
     const m = el.messages;
-    const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 120;
+    const nearBottom = m.scrollHeight - m.scrollTop - m.clientHeight < 140;
     if (force || nearBottom) m.scrollTop = m.scrollHeight;
   }
 
+  function msgWrap(cls) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg' + (cls ? ' ' + cls : '');
+    el.messages.appendChild(wrap);
+    return wrap;
+  }
+
   function renderItem(item, { done } = {}) {
-    setEmptyVisible(false);
     if (item.type === 'message' && item.role === 'user') {
-      const wrap = document.createElement('div');
-      wrap.className = 'msg msg-user';
+      const wrap = msgWrap('msg-user' + (item.steered ? ' steered' : ''));
+      if (item.images && item.images.length) {
+        const imgs = document.createElement('div');
+        imgs.className = 'bubble-imgs';
+        for (const u of item.images) {
+          const img = document.createElement('img');
+          img.src = u;
+          imgs.appendChild(img);
+        }
+        wrap.appendChild(imgs);
+      }
       const b = document.createElement('div');
       b.className = 'bubble';
       b.textContent = item.text;
       wrap.appendChild(b);
-      el.messages.appendChild(wrap);
     } else if (item.type === 'message') {
-      const wrap = document.createElement('div');
-      wrap.className = 'msg msg-assistant';
+      const wrap = msgWrap('msg-assistant');
       const md = document.createElement('div');
       md.className = 'md';
       md.innerHTML = window.renderMarkdown(item.text || '');
       wrap.appendChild(md);
-      el.messages.appendChild(wrap);
       if (item.id) state.itemNodes.set(item.id, { kind: 'message', wrap, md, text: item.text || '' });
+    } else if (item.type === 'reasoning') {
+      const wrap = msgWrap('reasoning' + (done ? ' collapsed' : ' thinking'));
+      const head = document.createElement('div');
+      head.className = 'rsn-head';
+      head.textContent = done ? 'Thought about it' : 'Thinking…';
+      const body = document.createElement('div');
+      body.className = 'rsn-body';
+      body.textContent = item.text || '';
+      head.addEventListener('click', () => wrap.classList.toggle('collapsed'));
+      wrap.append(head, body);
+      if (item.id) state.itemNodes.set(item.id, { kind: 'reasoning', wrap, head, body });
+    } else if (item.type === 'plan') {
+      const wrap = msgWrap();
+      const card = document.createElement('div');
+      card.className = 'plan-card';
+      wrap.appendChild(card);
+      fillPlanCard(card, item);
+      if (item.id) state.itemNodes.set(item.id, { kind: 'plan', card });
     } else if (item.type === 'command') {
-      const wrap = document.createElement('div');
-      wrap.className = 'msg';
+      const wrap = msgWrap();
       const card = document.createElement('div');
       card.className = 'cmd-card' + (done && item.status !== 'failed' ? ' collapsed' : '');
       const head = document.createElement('div');
@@ -246,21 +481,101 @@
       head.addEventListener('click', () => card.classList.toggle('collapsed'));
       card.append(head, out);
       wrap.appendChild(card);
-      el.messages.appendChild(wrap);
       if (item.id) state.itemNodes.set(item.id, { kind: 'command', card, dot, out });
+    } else if (item.type === 'edit') {
+      const wrap = msgWrap();
+      const card = document.createElement('div');
+      card.className = 'edit-card' + (done ? ' collapsed' : '');
+      const head = document.createElement('div');
+      head.className = 'edit-head';
+      head.innerHTML = '<span class="edit-icon"><svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zm4 18H6V4h7v5h5z"/></svg></span>';
+      const p = document.createElement('span');
+      p.className = 'edit-path mono';
+      p.textContent = item.path;
+      const badge = document.createElement('span');
+      badge.className = 'edit-badge';
+      badge.textContent = item.status === 'denied' ? 'denied' : item.status === 'failed' ? 'failed' : item.created ? 'new' : 'edited';
+      const stats = document.createElement('span');
+      stats.className = 'edit-stats mono';
+      stats.innerHTML = `<span class="add">+${item.additions || 0}</span><span class="del">−${item.deletions || 0}</span>`;
+      const chev = document.createElement('span');
+      chev.className = 'cmd-chevron';
+      chev.textContent = '▾';
+      head.append(p, badge, stats, chev);
+      const diffEl = document.createElement('div');
+      diffEl.className = 'edit-diff';
+      for (const l of item.lines || []) {
+        const row = document.createElement('div');
+        row.className = 'diff-line ' + l.kind;
+        const mark = document.createElement('span');
+        mark.className = 'dl-mark';
+        mark.textContent = l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : '';
+        const text = document.createElement('span');
+        text.className = 'dl-text';
+        text.textContent = l.text;
+        row.append(mark, text);
+        diffEl.appendChild(row);
+      }
+      head.addEventListener('click', () => card.classList.toggle('collapsed'));
+      card.append(head, diffEl);
+      wrap.appendChild(card);
+      if (item.id) state.itemNodes.set(item.id, { kind: 'edit', card });
     }
     scrollToBottom();
   }
 
+  function fillPlanCard(card, item) {
+    card.innerHTML = '';
+    const title = document.createElement('div');
+    title.className = 'plan-title';
+    title.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M3 5h2v2H3zm4 0h14v2H7zM3 11h2v2H3zm4 0h14v2H7zM3 17h2v2H3zm4 0h14v2H7z"/></svg> Plan' + (item.explanation ? ' — <span style="font-weight:400">' + escapeHtml(item.explanation) + '</span>' : '');
+    const steps = document.createElement('div');
+    steps.className = 'plan-steps';
+    for (const s of item.steps || []) {
+      const row = document.createElement('div');
+      row.className = 'plan-step ' + (s.status || 'pending');
+      const box = document.createElement('span');
+      box.className = 'ps-box';
+      if (s.status === 'completed') box.textContent = '✓';
+      const label = document.createElement('span');
+      label.textContent = s.step;
+      row.append(box, label);
+      steps.appendChild(row);
+    }
+    card.append(title, steps);
+  }
+
   // ---------------- agent events ----------------
   function onAgentEvent(ev) {
+    // Global status bookkeeping first.
+    if (ev.kind === 'turn-start') state.running.add(ev.threadId);
+    if (ev.kind === 'approval-request') state.needsApproval.add(ev.threadId);
+    if (ev.kind === 'turn-done' || ev.kind === 'turn-error') {
+      state.running.delete(ev.threadId);
+      state.needsApproval.delete(ev.threadId);
+      if (ev.threadId !== state.activeThreadId) {
+        state.ready.add(ev.threadId);
+        const t = state.threads.find((x) => x.id === ev.threadId);
+        notify('Codex', (t ? t.title : 'A thread') + ' is ready for review');
+        toast('<b>' + escapeHtml(t ? t.title : 'Thread') + '</b> finished — ready for review');
+      }
+      refreshThreads();
+    } else {
+      renderThreadList();
+    }
+
     if (ev.threadId !== state.activeThreadId) {
-      if (ev.kind === 'turn-done' || ev.kind === 'turn-error') refreshThreads();
+      if (ev.kind === 'approval-request') {
+        const t = state.threads.find((x) => x.id === ev.threadId);
+        notify('Codex needs approval', ev.command || '');
+        toast('<b>' + escapeHtml(t ? t.title : 'Thread') + '</b> is waiting for approval');
+      }
       return;
     }
+
     switch (ev.kind) {
       case 'turn-start':
-        setRunning(true);
+        setWorkingVisible(true);
         break;
       case 'item-start':
         renderItem(ev.item);
@@ -273,7 +588,16 @@
           ref.md.innerHTML = window.renderMarkdown(ref.text);
         } else if (ref.kind === 'command' && ev.outputDelta != null) {
           ref.out.textContent += ev.outputDelta;
+        } else if (ref.kind === 'reasoning' && ev.delta != null) {
+          ref.body.textContent += ev.delta;
         }
+        scrollToBottom();
+        break;
+      }
+      case 'item-update': {
+        const ref = state.itemNodes.get(ev.item.id);
+        if (ref && ref.kind === 'plan') fillPlanCard(ref.card, ev.item);
+        else if (!ref) renderItem(ev.item);
         scrollToBottom();
         break;
       }
@@ -287,6 +611,12 @@
           ref.dot.className = 'cmd-status ' + (ev.item.status || 'done');
           ref.out.textContent = ev.item.output || '';
           if (ev.item.status === 'done') ref.card.classList.add('collapsed');
+        } else if (ref.kind === 'reasoning') {
+          ref.wrap.classList.remove('thinking');
+          ref.wrap.classList.add('collapsed');
+          ref.head.textContent = 'Thought about it';
+        } else if (ref.kind === 'plan') {
+          fillPlanCard(ref.card, ev.item);
         }
         scrollToBottom();
         break;
@@ -295,12 +625,21 @@
         renderApproval(ev);
         break;
       case 'turn-done':
-        setRunning(false);
-        refreshThreads();
+        setWorkingVisible(false);
+        if (ev.usage) {
+          const total = (ev.usage.input || 0) + (ev.usage.output || 0);
+          el.turnUsage.textContent = total.toLocaleString() + ' tokens';
+          el.turnUsage.classList.remove('hidden');
+          const meta = document.createElement('div');
+          meta.className = 'turn-meta';
+          meta.textContent = `Turn used ${total.toLocaleString()} tokens (${(ev.usage.input || 0).toLocaleString()} in / ${(ev.usage.output || 0).toLocaleString()} out)`;
+          el.messages.appendChild(meta);
+        }
         refreshProject();
+        refreshChangesBadge();
         break;
       case 'turn-error':
-        setRunning(false);
+        setWorkingVisible(false);
         if (ev.error && ev.error !== 'Cancelled') {
           const d = document.createElement('div');
           d.className = 'turn-error';
@@ -308,23 +647,22 @@
           el.messages.appendChild(d);
           scrollToBottom(true);
         }
-        refreshThreads();
         refreshProject();
+        refreshChangesBadge();
         break;
     }
   }
 
   function renderApproval(ev) {
-    const wrap = document.createElement('div');
-    wrap.className = 'msg approval-card-wrap';
+    const wrap = msgWrap('approval-card-wrap');
     const card = document.createElement('div');
     card.className = 'approval-card';
     const title = document.createElement('div');
     title.className = 'approval-title';
-    title.textContent = 'Codex wants to run a command';
+    title.textContent = ev.action === 'write' ? 'Codex wants to write a file' : 'Codex wants to run a command';
     const cmd = document.createElement('div');
     cmd.className = 'approval-cmd mono';
-    cmd.textContent = '$ ' + ev.command;
+    cmd.textContent = (ev.action === 'write' ? '' : '$ ') + ev.command;
     const actions = document.createElement('div');
     actions.className = 'approval-actions';
     const approve = document.createElement('button');
@@ -335,6 +673,8 @@
     deny.textContent = 'Deny';
     const answer = (ok) => {
       window.codex.agent.approve({ threadId: ev.threadId, callId: ev.callId, approved: ok });
+      state.needsApproval.delete(ev.threadId);
+      renderThreadList();
       wrap.remove();
     };
     approve.addEventListener('click', () => answer(true));
@@ -342,36 +682,51 @@
     actions.append(approve, deny);
     card.append(title, cmd, actions);
     wrap.appendChild(card);
-    el.messages.appendChild(wrap);
     scrollToBottom(true);
   }
 
-  function setRunning(v) {
-    state.running = v;
+  function setWorkingVisible(v) {
     el.working.classList.toggle('hidden', !v);
-    el.send.disabled = v;
+    el.send.classList.toggle('queue', v);
+    el.send.title = v ? 'Queue message into the running turn' : 'Send (Enter)';
   }
 
   // ---------------- sending ----------------
   async function sendMessage() {
     const text = el.input.value.trim();
-    if (!text || state.running) return;
+    if (!text) return;
+
     if (!state.activeThreadId) {
-      const t = await window.codex.threads.create(state.project ? state.project.dir : null);
+      const t = await window.codex.threads.create({
+        projectDir: state.project ? state.project.dir : null,
+        worktree: el.worktreeCheck.checked
+      });
       state.activeThreadId = t.id;
+      state.activeThread = t;
+      el.worktreeCheck.checked = false;
       await refreshThreads();
-      renderThreadList();
       clearMessages();
+      updateTopbar();
+      showChat();
     }
+
+    const images = state.attachments.slice();
+    state.attachments = [];
+    renderAttachRow();
     el.input.value = '';
     autosize();
-    renderItem({ role: 'user', type: 'message', text });
+    hidePopup();
+
+    const isRunning = state.running.has(state.activeThreadId);
+    renderItem({ role: 'user', type: 'message', text, images: images.map((i) => i.dataUrl), steered: isRunning });
     scrollToBottom(true);
+
     const model = el.modelSelect.value;
     const mode = el.modeSelect.value;
-    window.codex.settings.set({ model, mode });
+    const effort = el.effortSelect.value;
+    window.codex.settings.set({ model, mode, effort });
     try {
-      await window.codex.agent.send({ threadId: state.activeThreadId, text, model, mode });
+      await window.codex.agent.send({ threadId: state.activeThreadId, text, model, mode, effort, images });
     } catch (err) {
       const d = document.createElement('div');
       d.className = 'turn-error';
@@ -381,131 +736,453 @@
     refreshThreads();
   }
 
-  // ---------------- diff panel ----------------
+  // ---------------- attachments ----------------
+  function renderAttachRow() {
+    el.attachRow.innerHTML = '';
+    el.attachRow.classList.toggle('hidden', state.attachments.length === 0);
+    state.attachments.forEach((a, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'attach-chip';
+      const img = document.createElement('img');
+      img.src = a.dataUrl;
+      const name = document.createElement('span');
+      name.textContent = a.name;
+      const x = document.createElement('button');
+      x.textContent = '×';
+      x.addEventListener('click', () => {
+        state.attachments.splice(i, 1);
+        renderAttachRow();
+      });
+      chip.append(img, name, x);
+      el.attachRow.appendChild(chip);
+    });
+  }
+
+  // ---------------- composer popups (@ files, / prompts) ----------------
+  async function ensureFileCache() {
+    const dir = workDirForActive();
+    if (!dir) return [];
+    if (state.fileCache.dir !== dir) {
+      state.fileCache = { dir, files: await window.codex.project.files(dir) };
+    }
+    return state.fileCache.files;
+  }
+
+  function currentToken() {
+    const pos = el.input.selectionStart;
+    const before = el.input.value.slice(0, pos);
+    const m = before.match(/(^|\s)(@[\w./-]*)$/);
+    if (m) return { type: 'mention', token: m[2], start: pos - m[2].length, end: pos };
+    if (/^\/[\w-]*$/.test(before) && el.input.value.trim() === before.trim()) {
+      return { type: 'slash', token: before.trim(), start: before.length - before.trim().length, end: pos };
+    }
+    return null;
+  }
+
+  async function updatePopup() {
+    const tok = currentToken();
+    if (!tok) { hidePopup(); return; }
+    let items = [];
+    if (tok.type === 'mention') {
+      const q = tok.token.slice(1).toLowerCase();
+      const files = await ensureFileCache();
+      items = files
+        .filter((f) => f.toLowerCase().includes(q))
+        .slice(0, 12)
+        .map((f) => ({ title: f.split('/').pop(), sub: f, insert: f }));
+      if (!items.length) { hidePopup(); return; }
+    } else {
+      const q = tok.token.toLowerCase();
+      const all = [...BUILTIN_PROMPTS, ...state.customPrompts.map((p) => ({ name: p.name.startsWith('/') ? p.name : '/' + p.name, prompt: p.prompt }))];
+      items = all
+        .filter((p) => p.name.toLowerCase().startsWith(q))
+        .slice(0, 10)
+        .map((p) => ({ title: p.name, sub: p.prompt, replaceAll: p.prompt }));
+      if (!items.length) { hidePopup(); return; }
+    }
+    state.popup = { type: tok.type, items, sel: 0, tok };
+    renderPopup();
+  }
+
+  function renderPopup() {
+    const p = state.popup;
+    if (!p) return;
+    el.composerPopup.innerHTML = '';
+    p.items.forEach((it, i) => {
+      const b = document.createElement('button');
+      b.className = 'popup-item' + (i === p.sel ? ' sel' : '');
+      b.innerHTML = `<span class="pi-title">${escapeHtml(it.title)}</span>` + (it.sub ? `<span class="pi-sub">${escapeHtml(it.sub)}</span>` : '');
+      b.addEventListener('mousedown', (e) => { e.preventDefault(); choosePopup(i); });
+      el.composerPopup.appendChild(b);
+    });
+    el.composerPopup.classList.remove('hidden');
+  }
+
+  function choosePopup(i) {
+    const p = state.popup;
+    if (!p) return;
+    const it = p.items[i];
+    if (it.replaceAll != null) {
+      el.input.value = it.replaceAll;
+    } else {
+      const v = el.input.value;
+      el.input.value = v.slice(0, p.tok.start) + it.insert + ' ' + v.slice(p.tok.end);
+    }
+    hidePopup();
+    el.input.focus();
+    autosize();
+  }
+
+  function hidePopup() {
+    state.popup = null;
+    el.composerPopup.classList.add('hidden');
+  }
+
+  // ---------------- diff review panel ----------------
   async function openDiff() {
-    if (!state.project) return;
+    const dir = workDirForActive();
+    if (!dir) return;
     state.diffOpen = true;
+    el.homeView.classList.add('hidden');
     el.chatView.classList.add('hidden');
     el.diffView.classList.remove('hidden');
     el.changesBtn.classList.add('active');
-    el.diffFiles.innerHTML = '<div class="diff-empty">Loading…</div>';
-    const files = await window.codex.git.diff(state.project.dir);
-    renderDiff(files || []);
+    el.diffPane.innerHTML = '<div class="diff-empty">Loading…</div>';
+    state.diffFiles = (await window.codex.git.diff(dir)) || [];
+    state.diffSel = 0;
+    renderDiffPanel();
   }
 
   function closeDiff() {
+    if (!state.diffOpen) return;
     state.diffOpen = false;
     el.diffView.classList.add('hidden');
-    el.chatView.classList.remove('hidden');
     el.changesBtn.classList.remove('active');
+    if (state.activeThreadId) el.chatView.classList.remove('hidden');
+    else el.homeView.classList.remove('hidden');
   }
 
-  function renderDiff(files) {
-    el.diffFiles.innerHTML = '';
+  function renderDiffPanel() {
+    const files = state.diffFiles;
     const adds = files.reduce((n, f) => n + f.additions, 0);
     const dels = files.reduce((n, f) => n + f.deletions, 0);
     el.diffSummary.textContent = files.length
-      ? `${files.length} file${files.length === 1 ? '' : 's'} changed, +${adds} −${dels}`
+      ? `${files.length} file${files.length === 1 ? '' : 's'} changed  +${adds} −${dels}`
       : 'No changes';
+
+    el.diffFileList.innerHTML = '';
+    files.forEach((f, i) => {
+      const b = document.createElement('button');
+      b.className = 'dfl-item' + (i === state.diffSel ? ' active' : '');
+      const letter = f.status === 'added' ? 'A' : f.status === 'deleted' ? 'D' : 'M';
+      b.innerHTML =
+        `<span class="dfl-letter ${letter}">${letter}</span>` +
+        `<span class="dfl-path mono" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</span>` +
+        `<span class="dfl-stats mono"><span class="add">+${f.additions}</span><span class="del">−${f.deletions}</span></span>`;
+      b.addEventListener('click', () => { state.diffSel = i; renderDiffPanel(); });
+      el.diffFileList.appendChild(b);
+    });
+
     if (!files.length) {
-      el.diffFiles.innerHTML = '<div class="diff-empty">Working tree is clean ✨</div>';
+      el.diffPane.innerHTML = '<div class="diff-empty">Working tree is clean ✨</div>';
       return;
     }
-    for (const f of files) {
-      const card = document.createElement('div');
-      card.className = 'diff-file';
-      const head = document.createElement('div');
-      head.className = 'diff-file-head';
-      const p = document.createElement('span');
-      p.className = 'diff-file-path mono';
-      p.textContent = f.path;
-      const status = document.createElement('span');
-      status.className = 'diff-file-status';
-      status.textContent = f.status;
-      const add = document.createElement('span');
-      add.className = 'diff-stat-add';
-      add.textContent = '+' + f.additions;
-      const del = document.createElement('span');
-      del.className = 'diff-stat-del';
-      del.textContent = '−' + f.deletions;
-      head.append(p, status, add, del);
-      head.addEventListener('click', () => card.classList.toggle('collapsed'));
-      const lines = document.createElement('div');
-      lines.className = 'diff-lines mono';
-      const maxLines = 400;
-      f.lines.slice(0, maxLines).forEach((l) => {
-        const row = document.createElement('div');
-        row.className = 'diff-line ' + l.kind;
-        const mark = document.createElement('span');
-        mark.className = 'dl-mark';
+    const f = files[Math.min(state.diffSel, files.length - 1)];
+    el.diffPane.innerHTML = '';
+    const head = document.createElement('div');
+    head.className = 'diff-pane-head';
+    const pathEl = document.createElement('span');
+    pathEl.className = 'diff-pane-path mono';
+    pathEl.textContent = f.path;
+    const revert = document.createElement('button');
+    revert.className = 'mini-btn danger';
+    revert.textContent = f.untracked ? 'Delete file' : 'Revert file';
+    revert.addEventListener('click', async () => {
+      if (!confirm((f.untracked ? 'Delete ' : 'Discard changes to ') + f.path + '?')) return;
+      const dir = workDirForActive();
+      const r = await window.codex.git.revertFile(dir, f.path, !!f.untracked);
+      if (r.ok) {
+        toast('<b>' + escapeHtml(f.path) + '</b> ' + (f.untracked ? 'deleted' : 'reverted'));
+        state.diffFiles = (await window.codex.git.diff(dir)) || [];
+        state.diffSel = 0;
+        renderDiffPanel();
+        refreshChangesBadge();
+      } else toast('⚠ ' + escapeHtml(r.error || 'Revert failed'));
+    });
+    head.append(pathEl, revert);
+
+    const table = document.createElement('table');
+    table.className = 'diff-table';
+    const maxLines = 800;
+    for (const l of f.lines.slice(0, maxLines)) {
+      const tr = document.createElement('tr');
+      tr.className = l.kind;
+      if (l.kind === 'hunk') {
+        const td = document.createElement('td');
+        td.colSpan = 4;
+        td.textContent = l.text;
+        tr.appendChild(td);
+      } else {
+        const oldN = document.createElement('td');
+        oldN.className = 'dt-num';
+        oldN.textContent = l.oldLine != null ? l.oldLine : '';
+        const newN = document.createElement('td');
+        newN.className = 'dt-num';
+        newN.textContent = l.newLine != null ? l.newLine : '';
+        const mark = document.createElement('td');
+        mark.className = 'dt-mark';
         mark.textContent = l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : '';
-        const text = document.createElement('span');
-        text.className = 'dl-text';
-        text.textContent = l.kind === 'hunk' ? l.text : l.text;
-        row.append(mark, text);
-        lines.appendChild(row);
-      });
-      if (f.lines.length > maxLines) {
-        const more = document.createElement('div');
-        more.className = 'diff-line hunk';
-        more.textContent = `… ${f.lines.length - maxLines} more lines`;
-        lines.appendChild(more);
+        const text = document.createElement('td');
+        text.className = 'dt-text';
+        text.textContent = l.text;
+        tr.append(oldN, newN, mark, text);
       }
-      card.append(head, lines);
-      el.diffFiles.appendChild(card);
+      table.appendChild(tr);
     }
+    if (f.lines.length > maxLines) {
+      const tr = document.createElement('tr');
+      tr.className = 'hunk';
+      const td = document.createElement('td');
+      td.colSpan = 4;
+      td.textContent = `… ${f.lines.length - maxLines} more lines`;
+      tr.appendChild(td);
+      table.appendChild(tr);
+    }
+    el.diffPane.append(head, table);
+  }
+
+  async function doCommit() {
+    const dir = workDirForActive();
+    if (!dir || !state.diffFiles.length) return;
+    const msg = el.commitMsg.value.trim() || 'Changes from Codex';
+    const r = await window.codex.git.commit(dir, msg);
+    if (r.ok) {
+      toast('<b>Committed</b> — ' + escapeHtml(msg));
+      el.commitMsg.value = '';
+      state.diffFiles = (await window.codex.git.diff(dir)) || [];
+      state.diffSel = 0;
+      renderDiffPanel();
+      refreshProject();
+      refreshChangesBadge();
+    } else toast('⚠ Commit failed: ' + escapeHtml(r.error || ''));
+  }
+
+  // ---------------- automations ----------------
+  async function openAutomations() {
+    await renderAutomations();
+    el.automationsModal.classList.remove('hidden');
+  }
+
+  async function renderAutomations() {
+    const autos = await window.codex.automations.list();
+    el.automationList.innerHTML = '';
+    if (!autos.length) {
+      const d = document.createElement('div');
+      d.className = 'modal-desc';
+      d.textContent = 'No automations yet.';
+      el.automationList.appendChild(d);
+    }
+    for (const a of autos) {
+      const row = document.createElement('div');
+      row.className = 'automation-row';
+      const main = document.createElement('div');
+      main.className = 'ar-main';
+      const name = document.createElement('div');
+      name.className = 'ar-name';
+      name.innerHTML = escapeHtml(a.name) + (a.enabled ? '' : ' <span class="paused">paused</span>');
+      const sub = document.createElement('div');
+      sub.className = 'ar-sub';
+      const ivl = a.everyMinutes >= 10080 ? 'weekly' : a.everyMinutes >= 1440 ? 'daily' : a.everyMinutes >= 60 ? `every ${Math.round(a.everyMinutes / 60)}h` : `every ${a.everyMinutes}m`;
+      sub.textContent = `${ivl} · ${a.mode || 'agent'} · ${a.prompt}`;
+      main.append(name, sub);
+
+      const runNow = document.createElement('button');
+      runNow.className = 'mini-btn';
+      runNow.textContent = 'Run now';
+      runNow.addEventListener('click', async () => {
+        await window.codex.automations.run(a.id);
+        el.automationsModal.classList.add('hidden');
+      });
+      const tgl = document.createElement('button');
+      tgl.className = 'mini-btn';
+      tgl.textContent = a.enabled ? 'Pause' : 'Resume';
+      tgl.addEventListener('click', async () => {
+        await window.codex.automations.save({ id: a.id, enabled: !a.enabled });
+        renderAutomations();
+      });
+      const x = document.createElement('button');
+      x.className = 'row-x';
+      x.textContent = '×';
+      x.addEventListener('click', async () => {
+        await window.codex.automations.delete(a.id);
+        renderAutomations();
+      });
+      row.append(main, runNow, tgl, x);
+      el.automationList.appendChild(row);
+    }
+  }
+
+  async function addAutomation() {
+    const name = el.autoName.value.trim();
+    const promptText = el.autoPrompt.value.trim();
+    if (!name || !promptText) { toast('⚠ Automation needs a name and a prompt'); return; }
+    await window.codex.automations.save({
+      name,
+      prompt: promptText,
+      everyMinutes: parseInt(el.autoInterval.value, 10),
+      mode: el.autoMode.value,
+      projectDir: state.project ? state.project.dir : null,
+      enabled: true,
+      lastRun: Date.now() // first run happens after one interval
+    });
+    el.autoName.value = '';
+    el.autoPrompt.value = '';
+    renderAutomations();
   }
 
   // ---------------- settings ----------------
   function openSettings() {
     el.settingApiKey.value = state.settings.openaiApiKey || '';
     el.settingBaseUrl.value = state.settings.openaiBaseUrl || 'https://api.openai.com/v1';
+    el.settingCustomModels.value = state.settings.customModels || '';
     el.settingTheme.value = state.settings.theme || 'dark';
+    el.settingNotifications.checked = state.settings.notifications !== false;
+    renderPromptList();
     el.settingsModal.classList.remove('hidden');
+  }
+
+  function renderPromptList() {
+    el.promptList.innerHTML = '';
+    state.customPrompts.forEach((p, i) => {
+      const row = document.createElement('div');
+      row.className = 'prompt-row';
+      const name = document.createElement('span');
+      name.className = 'pr-name';
+      name.textContent = p.name.startsWith('/') ? p.name : '/' + p.name;
+      const text = document.createElement('span');
+      text.className = 'pr-text';
+      text.textContent = p.prompt;
+      const x = document.createElement('button');
+      x.className = 'row-x';
+      x.textContent = '×';
+      x.addEventListener('click', () => {
+        state.customPrompts.splice(i, 1);
+        renderPromptList();
+      });
+      row.append(name, text, x);
+      el.promptList.appendChild(row);
+    });
   }
 
   async function saveSettings() {
     state.settings = await window.codex.settings.set({
       openaiApiKey: el.settingApiKey.value.trim(),
       openaiBaseUrl: el.settingBaseUrl.value.trim() || 'https://api.openai.com/v1',
-      theme: el.settingTheme.value
+      customModels: el.settingCustomModels.value.trim(),
+      theme: el.settingTheme.value,
+      notifications: el.settingNotifications.checked,
+      customPrompts: state.customPrompts
     });
     applyTheme();
+    buildModelPicker();
     el.settingsModal.classList.add('hidden');
+    toast('Settings saved');
   }
 
   // ---------------- misc UI ----------------
   function autosize() {
     el.input.style.height = 'auto';
-    el.input.style.height = Math.min(el.input.scrollHeight, 180) + 'px';
+    el.input.style.height = Math.min(el.input.scrollHeight, 200) + 'px';
   }
 
   function bindEvents() {
     el.newThread.addEventListener('click', newThread);
     el.threadSearch.addEventListener('input', renderThreadList);
+    el.archivedToggle.addEventListener('click', () => {
+      el.archivedSection.classList.toggle('open');
+      el.archivedList.classList.toggle('hidden');
+    });
     el.openProject.addEventListener('click', async () => {
       const p = await window.codex.project.pick();
       if (p) setProject(p);
     });
+    el.homeProjectBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (el.homeProjectMenu.classList.contains('hidden')) showProjectMenu();
+      else el.homeProjectMenu.classList.add('hidden');
+    });
+    document.addEventListener('click', (e) => {
+      if (!el.homeProjectMenu.contains(e.target) && e.target !== el.homeProjectBtn) {
+        el.homeProjectMenu.classList.add('hidden');
+      }
+    });
+    document.querySelectorAll('.suggestion').forEach((b) => {
+      b.addEventListener('click', () => {
+        el.input.value = b.dataset.prompt;
+        autosize();
+        sendMessage();
+      });
+    });
+
+    el.automationsBtn.addEventListener('click', openAutomations);
+    el.closeAutomations.addEventListener('click', () => el.automationsModal.classList.add('hidden'));
+    el.automationsModal.addEventListener('click', (e) => {
+      if (e.target === el.automationsModal) el.automationsModal.classList.add('hidden');
+    });
+    el.addAutomation.addEventListener('click', addAutomation);
+
     el.settingsBtn.addEventListener('click', openSettings);
     el.closeSettings.addEventListener('click', () => el.settingsModal.classList.add('hidden'));
     el.saveSettings.addEventListener('click', saveSettings);
     el.settingsModal.addEventListener('click', (e) => {
       if (e.target === el.settingsModal) el.settingsModal.classList.add('hidden');
     });
+    el.addPrompt.addEventListener('click', () => {
+      const name = el.promptName.value.trim().replace(/^\//, '');
+      const promptText = el.promptText.value.trim();
+      if (!name || !promptText) return;
+      state.customPrompts.push({ name: '/' + name, prompt: promptText });
+      el.promptName.value = '';
+      el.promptText.value = '';
+      renderPromptList();
+    });
+
+    el.attachBtn.addEventListener('click', async () => {
+      const picked = await window.codex.attach.pick();
+      state.attachments.push(...picked);
+      renderAttachRow();
+    });
+
     el.send.addEventListener('click', sendMessage);
     el.stop.addEventListener('click', () => {
       if (state.activeThreadId) window.codex.agent.cancel(state.activeThreadId);
     });
-    el.input.addEventListener('input', autosize);
+    el.input.addEventListener('input', () => { autosize(); updatePopup(); });
     el.input.addEventListener('keydown', (e) => {
+      if (state.popup) {
+        if (e.key === 'ArrowDown') { e.preventDefault(); state.popup.sel = (state.popup.sel + 1) % state.popup.items.length; renderPopup(); return; }
+        if (e.key === 'ArrowUp') { e.preventDefault(); state.popup.sel = (state.popup.sel - 1 + state.popup.items.length) % state.popup.items.length; renderPopup(); return; }
+        if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); choosePopup(state.popup.sel); return; }
+        if (e.key === 'Escape') { hidePopup(); return; }
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
       }
     });
+    el.input.addEventListener('blur', () => setTimeout(hidePopup, 150));
+
     el.changesBtn.addEventListener('click', () => (state.diffOpen ? closeDiff() : openDiff()));
     el.closeDiff.addEventListener('click', closeDiff);
+    el.commitBtn.addEventListener('click', doCommit);
+    el.commitMsg.addEventListener('keydown', (e) => { if (e.key === 'Enter') doCommit(); });
+    el.copyPatchBtn.addEventListener('click', async () => {
+      const dir = workDirForActive();
+      if (!dir) return;
+      const r = await window.codex.git.copyPatch(dir);
+      toast(r.bytes ? '<b>Patch copied</b> — ' + (r.bytes / 1024).toFixed(1) + ' KB' : 'Nothing to copy');
+    });
+
     document.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') {
         e.preventDefault();
@@ -513,6 +1190,7 @@
       }
       if (e.key === 'Escape') {
         el.settingsModal.classList.add('hidden');
+        el.automationsModal.classList.add('hidden');
         if (state.diffOpen) closeDiff();
       }
     });

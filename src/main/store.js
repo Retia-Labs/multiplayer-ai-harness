@@ -4,12 +4,21 @@ const crypto = require('crypto');
 
 const DEFAULT_SETTINGS = {
   theme: 'dark',
-  model: 'gpt-5.1-codex',
+  model: 'gpt-5.1-codex-max',
+  effort: 'medium', // low | medium | high | xhigh
   mode: 'agent', // 'read-only' | 'agent' | 'full-access'
   openaiApiKey: '',
   openaiBaseUrl: 'https://api.openai.com/v1',
-  recentProjects: []
+  customModels: '',
+  notifications: true,
+  recentProjects: [],
+  customPrompts: [], // [{id, name, prompt}]
+  automations: []    // [{id, name, prompt, projectDir, everyMinutes, mode, enabled, lastRun, nextRun}]
 };
+
+function uid(prefix) {
+  return prefix + '_' + crypto.randomBytes(8).toString('hex');
+}
 
 class Store {
   constructor(userDataDir) {
@@ -23,7 +32,7 @@ class Store {
 
   _readJson(p, fallback) {
     try {
-      return { ...fallback, ...JSON.parse(fs.readFileSync(p, 'utf8')) };
+      return { ...JSON.parse(JSON.stringify(fallback)), ...JSON.parse(fs.readFileSync(p, 'utf8')) };
     } catch {
       return JSON.parse(JSON.stringify(fallback));
     }
@@ -52,6 +61,26 @@ class Store {
     this.setSettings({ recentProjects: list.slice(0, 10) });
   }
 
+  // ----- automations -----
+  listAutomations() {
+    return this.settings.automations || [];
+  }
+
+  saveAutomation(auto) {
+    const list = this.listAutomations().slice();
+    if (!auto.id) auto.id = uid('auto');
+    const idx = list.findIndex((a) => a.id === auto.id);
+    if (idx >= 0) list[idx] = { ...list[idx], ...auto };
+    else list.push(auto);
+    this.setSettings({ automations: list });
+    return auto;
+  }
+
+  deleteAutomation(id) {
+    this.setSettings({ automations: this.listAutomations().filter((a) => a.id !== id) });
+    return { ok: true };
+  }
+
   // ----- threads -----
   _saveThreads() {
     this._writeJson(this.threadsPath, this.threads);
@@ -59,7 +88,9 @@ class Store {
 
   listThreads() {
     return Object.values(this.threads)
-      .map(({ id, title, projectDir, createdAt, updatedAt }) => ({ id, title, projectDir, createdAt, updatedAt }))
+      .map(({ id, title, projectDir, workDir, branch, worktree, archived, automation, createdAt, updatedAt }) => ({
+        id, title, projectDir, workDir, branch, worktree, archived: !!archived, automation: !!automation, createdAt, updatedAt
+      }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
@@ -67,17 +98,23 @@ class Store {
     return this.threads[id] || null;
   }
 
-  createThread(projectDir) {
-    const id = 't_' + crypto.randomBytes(8).toString('hex');
+  createThread({ projectDir, workDir, branch, worktree, automation, title } = {}) {
+    const id = uid('t');
     const now = Date.now();
     this.threads[id] = {
       id,
-      title: 'New thread',
-      projectDir,
+      title: title || 'New thread',
+      projectDir: projectDir || null,
+      workDir: workDir || projectDir || null,
+      branch: branch || null,
+      worktree: !!worktree,
+      automation: !!automation,
+      archived: false,
       createdAt: now,
       updatedAt: now,
       model: this.settings.model,
       mode: this.settings.mode,
+      effort: this.settings.effort,
       items: []
     };
     this._saveThreads();
@@ -106,6 +143,7 @@ class Store {
       Object.assign(t, patch);
       this._saveThreads();
     }
+    return t;
   }
 
   appendMessage(id, item) {
@@ -118,3 +156,4 @@ class Store {
 }
 
 module.exports = Store;
+module.exports.uid = uid;

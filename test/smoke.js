@@ -1,7 +1,9 @@
 /*
- * End-to-end smoke test: launches the real Electron app, drives the UI,
- * and verifies threads, the demo agent (streaming + real tool execution),
- * and the Changes diff panel. Run with: xvfb-run -a npm run smoke
+ * End-to-end smoke test: launches the real Electron app, drives the UI, and
+ * verifies the home hero, demo agent (reasoning + plan + file edits + shell),
+ * @ mentions, slash prompts, the Changes review panel with commit, worktree
+ * threads, archiving, automations and settings.
+ * Run with: xvfb-run -a npm run smoke
  */
 const { _electron: electron } = require('playwright-core');
 const fs = require('fs');
@@ -31,10 +33,13 @@ function assert(cond, msg) {
   // Pre-seed settings so the app opens this project without the native dialog.
   fs.mkdirSync(userData, { recursive: true });
   fs.writeFileSync(path.join(userData, 'settings.json'), JSON.stringify({
-    theme: 'dark', model: 'gpt-5.1-codex', mode: 'agent',
+    theme: 'dark', model: 'gpt-5.1-codex-max', effort: 'medium', mode: 'agent',
     openaiApiKey: '', openaiBaseUrl: 'https://api.openai.com/v1',
-    recentProjects: [project]
+    notifications: false, recentProjects: [project], customPrompts: [], automations: []
   }));
+
+  const shotDir = path.join(__dirname, '..', 'docs');
+  fs.mkdirSync(shotDir, { recursive: true });
 
   console.log('Launching Electron…');
   const app = await electron.launch({
@@ -42,82 +47,141 @@ function assert(cond, msg) {
     cwd: path.join(__dirname, '..'),
     env: { ...process.env, ELECTRON_DISABLE_SANDBOX: '1' }
   });
-  // Electron ignores --user-data-dir for app.getPath('userData') unless set early;
-  // override via the main process instead.
-  await app.evaluate(async ({ app: eapp }, dir) => {
-    // userData was already read at startup; this is for confirmation only.
-    return eapp.getPath('userData');
-  }, userData).catch(() => {});
-
   const win = await app.firstWindow();
   await win.waitForLoadState('domcontentloaded');
   await win.waitForSelector('#sidebar', { timeout: 15000 });
+  await win.setViewportSize?.({ width: 1360, height: 860 }).catch(() => {});
   console.log('Window loaded: ' + (await win.title()));
 
+  const hidden = (sel) => win.waitForFunction((s) => document.querySelector(s).classList.contains('hidden'), sel);
+  const visible = (sel) => win.waitForFunction((s) => !document.querySelector(s).classList.contains('hidden'), sel);
+
+  // ---- Home ----
   assert((await win.title()) === 'Codex', 'window title is "Codex"');
-  assert(await win.isVisible('#btn-new-thread'), 'new-thread button visible');
-  assert(await win.isVisible('.composer textarea'), 'composer visible');
+  await visible('#home-view');
+  assert(await win.isVisible('.home-hero h1'), 'home hero visible');
+  assert((await win.textContent('.home-hero h1')).includes('What are we coding'), 'hero headline matches Codex');
+  await win.waitForFunction(() => document.querySelector('#home-project-label').textContent === 'project', { timeout: 10000 });
+  assert(true, 'project auto-selected from recents');
+  assert(await win.isVisible('#composer-host-home .composer'), 'composer docked in home hero');
+  assert((await win.$$('.suggestion')).length >= 4, 'suggestion chips rendered');
+  const models = await win.$$eval('#model-select option', (os_) => os_.map((o) => o.value));
+  assert(models.includes('gpt-5.1-codex-max') && models.includes('gpt-5.1'), 'model picker has codex model family');
+  assert(await win.isVisible('#effort-select'), 'reasoning effort selector present');
+  await win.screenshot({ path: path.join(shotDir, 'home.png') });
 
-  // Project loaded from recents
-  await win.waitForFunction(() => document.querySelector('#project-name').textContent !== 'No project', { timeout: 10000 });
-  const projName = await win.textContent('#project-name');
-  assert(projName.trim() === 'project', 'project auto-opened from recents (got: ' + projName + ')');
-  await win.waitForFunction(() => !document.querySelector('#project-branch').classList.contains('hidden'));
-  const branch = (await win.textContent('#project-branch')).trim();
-  assert(branch.startsWith('main'), 'git branch shown in topbar (got: ' + branch + ')');
-
-  // New thread + send a message that makes the demo agent run real commands
-  await win.click('#btn-new-thread');
-  await win.fill('.composer textarea', 'What files are in this repo?');
-  await win.press('.composer textarea', 'Enter');
+  // ---- Demo agent: plan + reasoning + file edit + shell ----
+  await win.fill('#input', 'Create a NOTES.md summarizing this repo');
+  await win.press('#input', 'Enter');
+  await visible('#chat-view');
   await win.waitForSelector('.msg-user .bubble', { timeout: 5000 });
-  assert(true, 'user message rendered');
-
-  await win.waitForSelector('#working:not(.hidden)', { timeout: 5000 });
-  assert(true, 'working indicator appears while agent runs');
-
-  // Demo agent should stream text and run `ls -la` + `git status` as tool cards
-  await win.waitForSelector('.cmd-card', { timeout: 20000 });
-  await win.waitForFunction(() => document.querySelectorAll('.cmd-card').length >= 2, { timeout: 20000 });
-  assert(true, 'agent executed shell tool calls (command cards rendered)');
+  assert(true, 'chat view opens with user message');
+  await win.waitForSelector('.reasoning', { timeout: 15000 });
+  assert(true, 'reasoning ("thinking") item streamed');
+  await win.waitForSelector('.plan-card', { timeout: 15000 });
+  assert(true, 'plan checklist card rendered');
+  await win.waitForSelector('.edit-card', { timeout: 20000 });
+  const editPath = await win.textContent('.edit-card .edit-path');
+  assert(editPath.trim() === 'NOTES.md', 'file edit card shows NOTES.md');
+  assert(fs.existsSync(path.join(project, 'NOTES.md')), 'NOTES.md actually written to disk');
+  await win.waitForSelector('.cmd-card', { timeout: 15000 });
+  assert(true, 'shell command cards rendered');
+  await win.waitForFunction(() => document.querySelector('#working').classList.contains('hidden'), { timeout: 40000 });
   await win.waitForFunction(() => {
-    const cards = [...document.querySelectorAll('.cmd-card .cmd-output')];
-    return cards.some((c) => c.textContent.includes('hello.js'));
-  }, { timeout: 20000 });
-  assert(true, 'command output contains real file listing (hello.js)');
-
-  await win.waitForFunction(() => document.querySelector('#working').classList.contains('hidden'), { timeout: 30000 });
+    const steps = [...document.querySelectorAll('.plan-step')];
+    return steps.length >= 3 && steps.every((s) => s.classList.contains('completed'));
+  }, { timeout: 10000 });
+  assert(true, 'plan steps all marked completed');
   const assistantText = await win.textContent('.msg-assistant:last-of-type');
   assert(assistantText.length > 20, 'assistant streamed a final summary');
-
-  // Thread list got titled from the first message
   const threadTitle = await win.textContent('.thread-item.active .t-title');
-  assert(threadTitle.includes('What files'), 'thread auto-titled from first message');
+  assert(threadTitle.includes('Create a NOTES.md'), 'thread auto-titled from first message');
+  await win.screenshot({ path: path.join(shotDir, 'thread.png') });
+  await win.screenshot({ path: path.join(shotDir, 'screenshot.png') });
 
-  // Changes panel shows the working-tree diff
+  // ---- @ file mentions ----
+  await win.click('#input');
+  await win.fill('#input', 'Look at @hel');
+  await win.waitForSelector('.composer-popup:not(.hidden) .popup-item', { timeout: 8000 });
+  const mention = await win.textContent('.composer-popup .popup-item.sel .pi-sub');
+  assert(mention.trim() === 'hello.js', '@ mention popup suggests hello.js');
+  await win.press('#input', 'Tab');
+  const inputVal = await win.inputValue('#input');
+  assert(inputVal.includes('hello.js'), 'mention inserted into composer');
+  await win.fill('#input', '');
+
+  // ---- slash prompts ----
+  await win.fill('#input', '/rev');
+  await win.waitForSelector('.composer-popup:not(.hidden) .popup-item', { timeout: 5000 });
+  const slash = await win.textContent('.composer-popup .popup-item.sel .pi-title');
+  assert(slash.trim() === '/review', 'slash popup suggests /review');
+  await win.press('#input', 'Enter');
+  const expanded = await win.inputValue('#input');
+  assert(expanded.startsWith('Review my current'), 'slash prompt expands to full prompt');
+  await win.fill('#input', '');
+
+  // ---- Changes panel: file list, diff table, commit ----
   await win.click('#btn-changes');
-  await win.waitForSelector('.diff-file', { timeout: 10000 });
-  const diffPath = await win.textContent('.diff-file-path');
-  assert(diffPath.trim() === 'hello.js', 'diff panel lists changed file');
-  const addLine = await win.textContent('.diff-line.add .dl-text');
-  assert(addLine.includes('changed'), 'diff shows added line content');
+  await visible('#diff-view');
+  await win.waitForSelector('.dfl-item', { timeout: 10000 });
+  const dflPaths = await win.$$eval('.dfl-item .dfl-path', (ns) => ns.map((n) => n.textContent.trim()));
+  assert(dflPaths.includes('hello.js') && dflPaths.includes('NOTES.md'), 'file list shows hello.js and NOTES.md');
+  await win.waitForSelector('.diff-table tr.add', { timeout: 5000 });
+  assert(true, 'diff table renders added lines with line numbers');
+  await win.screenshot({ path: path.join(shotDir, 'changes.png') });
+  await win.fill('#commit-msg', 'test: commit from Codex clone');
+  await win.click('#btn-commit');
+  await win.waitForSelector('.diff-empty', { timeout: 10000 });
+  assert(true, 'commit clears the working tree (diff panel empty)');
+  const gitLog = execSync('git log --oneline -1', { cwd: project }).toString();
+  assert(gitLog.includes('test: commit from Codex clone'), 'commit actually landed in git history');
   await win.click('#btn-close-diff');
 
-  // Persistence: thread survives in store
-  await win.waitForFunction(() => document.querySelectorAll('.thread-item').length >= 1);
-  assert(true, 'thread persisted in sidebar');
+  // ---- Worktree thread ----
+  await win.click('#btn-new-thread');
+  await visible('#home-view');
+  await win.check('#worktree-check');
+  await win.fill('#input', 'Explore this repo');
+  await win.press('#input', 'Enter');
+  await visible('#chat-view');
+  await visible('#worktree-badge');
+  assert(true, 'worktree badge shown for isolated thread');
+  const wtBranch = (await win.textContent('#project-branch')).trim();
+  assert(wtBranch.startsWith('codex/'), 'thread runs on its own codex/* branch (got: ' + wtBranch + ')');
+  const wtList = execSync('git worktree list', { cwd: project }).toString();
+  assert(wtList.split('\n').filter(Boolean).length >= 2, 'git worktree actually created');
+  await win.waitForFunction(() => document.querySelector('#working').classList.contains('hidden'), { timeout: 40000 });
 
-  // Settings modal opens
+  // ---- Archive ----
+  const firstThread = (await win.$$('.thread-item'))[1] || (await win.$$('.thread-item'))[0];
+  await firstThread.hover();
+  await firstThread.$eval('.t-act[title="Archive"]', (b) => b.click());
+  await visible('#archived-section');
+  assert(true, 'archived section appears after archiving a thread');
+
+  // ---- Automations ----
+  await win.click('#btn-automations');
+  await visible('#automations-modal');
+  await win.fill('#auto-name', 'Nightly review');
+  await win.fill('#auto-prompt', 'Review recent commits and summarize risks');
+  await win.click('#btn-add-automation');
+  await win.waitForSelector('.automation-row', { timeout: 5000 });
+  const autoSub = await win.textContent('.automation-row .ar-sub');
+  assert(autoSub.includes('daily'), 'automation saved with daily schedule');
+  await win.click('#btn-close-automations');
+
+  // ---- Settings ----
   await win.click('#btn-settings');
-  await win.waitForSelector('#settings-modal:not(.hidden)');
+  await visible('#settings-modal');
   assert(await win.isVisible('#setting-api-key'), 'settings modal opens with API key field');
-  await win.click('#btn-close-settings');
-
-  // Screenshot for the README
-  const shotDir = path.join(__dirname, '..', 'docs');
-  fs.mkdirSync(shotDir, { recursive: true });
-  await win.screenshot({ path: path.join(shotDir, 'screenshot.png') });
-  console.log('Saved docs/screenshot.png');
+  assert(await win.isVisible('#setting-custom-models'), 'custom models field present');
+  await win.fill('#prompt-name', 'deploy');
+  await win.fill('#prompt-text', 'Deploy the app to staging');
+  await win.click('#btn-add-prompt');
+  await win.waitForSelector('.prompt-row', { timeout: 5000 });
+  assert(true, 'custom slash prompt added in settings');
+  await win.click('#btn-save-settings');
+  await hidden('#settings-modal');
 
   await app.close();
   console.log('\nAll smoke tests passed ✅');
