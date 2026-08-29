@@ -1,0 +1,151 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+  <title>Codex</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body data-theme="dark">
+  <div id="app">
+    <!-- ============ Sidebar ============ -->
+    <aside id="sidebar">
+      <div class="sidebar-top">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6zm5.2 0 4.6-4.6-4.6-4.6L16 6l6 6-6 6z"/></svg>
+          <span>Codex</span>
+        </div>
+        <button id="btn-new-thread" class="btn-icon" title="New thread (⌘N)">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg>
+        </button>
+      </div>
+
+      <div class="sidebar-search">
+        <input id="thread-search" type="text" placeholder="Search threads" spellcheck="false" />
+      </div>
+
+      <div id="thread-list" class="thread-list"></div>
+
+      <div class="sidebar-footer">
+        <button id="btn-open-project" class="sidebar-footer-btn">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8z"/></svg>
+          <span id="open-project-label">Open project</span>
+        </button>
+        <button id="btn-settings" class="btn-icon" title="Settings">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.05 7.05 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.24-1.13.56-1.63.94l-2.39-.96a.5.5 0 0 0-.61.22L2.63 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.07 7.07 0 0 0 0 1.88l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32c.13.23.4.32.61.22l2.39-.96c.5.38 1.04.7 1.63.94l.36 2.54c.04.24.25.42.5.42h3.84c.25 0 .46-.18.5-.42l.36-2.54c.59-.24 1.13-.56 1.63-.94l2.39.96c.21.1.48.01.61-.22l1.92-3.32a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ============ Main ============ -->
+    <main id="main">
+      <header id="topbar">
+        <div class="topbar-left">
+          <span id="project-name" class="project-name">No project</span>
+          <span id="project-branch" class="project-branch hidden"></span>
+        </div>
+        <div class="topbar-right">
+          <button id="btn-changes" class="chip-btn">
+            <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 3a3 3 0 0 0-1 5.83v6.34A3 3 0 1 0 7 15.17V8.83A3 3 0 0 0 6 3zm12 12.17V9a4 4 0 0 0-4-4h-1.59l1.3-1.29L12.29 2.3 9.59 5l2.7 2.71 1.42-1.42L12.41 5H14a2 2 0 0 1 2 2v8.17a3 3 0 1 0 2 0z"/></svg>
+            Changes
+            <span id="changes-count" class="badge hidden"></span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Chat view -->
+      <section id="chat-view">
+        <div id="messages" class="messages">
+          <div id="empty-state" class="empty-state">
+            <div class="empty-logo">
+              <svg viewBox="0 0 24 24" width="40" height="40"><path fill="currentColor" d="M9.4 16.6 4.8 12l4.6-4.6L8 6l-6 6 6 6zm5.2 0 4.6-4.6-4.6-4.6L16 6l6 6-6 6z"/></svg>
+            </div>
+            <h1>What are we coding next?</h1>
+            <p class="empty-sub">Open a project, then ask Codex to explore, explain, or change the code.</p>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <div id="working" class="working hidden">
+            <span class="spinner"></span><span id="working-label">Working…</span>
+            <button id="btn-stop" class="stop-btn">Stop</button>
+          </div>
+          <div class="composer">
+            <textarea id="input" rows="1" placeholder="Ask Codex to do anything" spellcheck="false"></textarea>
+            <div class="composer-bar">
+              <div class="composer-controls">
+                <div class="select-wrap">
+                  <select id="model-select" title="Model">
+                    <option value="gpt-5.1-codex-max">gpt-5.1-codex-max</option>
+                    <option value="gpt-5.1-codex" selected>gpt-5.1-codex</option>
+                    <option value="gpt-5.1-codex-mini">gpt-5.1-codex-mini</option>
+                    <option value="gpt-5.1">gpt-5.1</option>
+                  </select>
+                </div>
+                <div class="select-wrap">
+                  <select id="mode-select" title="Access mode">
+                    <option value="read-only">Read Only</option>
+                    <option value="agent" selected>Agent</option>
+                    <option value="full-access">Agent (Full Access)</option>
+                  </select>
+                </div>
+              </div>
+              <button id="btn-send" class="send-btn" title="Send (Enter)">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="composer-hint">Codex can make mistakes. Review changes before shipping.</div>
+        </div>
+      </section>
+
+      <!-- Changes (diff) panel -->
+      <section id="diff-view" class="hidden">
+        <div class="diff-header">
+          <span id="diff-summary">No changes</span>
+          <button id="btn-close-diff" class="btn-icon" title="Close">
+            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+          </button>
+        </div>
+        <div id="diff-files" class="diff-files"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============ Settings modal ============ -->
+  <div id="settings-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button id="btn-close-settings" class="btn-icon">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <label class="field">
+          <span>OpenAI API key</span>
+          <input id="setting-api-key" type="password" placeholder="sk-…" spellcheck="false" />
+          <small>Stored locally. Leave empty to use the offline demo agent.</small>
+        </label>
+        <label class="field">
+          <span>API base URL</span>
+          <input id="setting-base-url" type="text" placeholder="https://api.openai.com/v1" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>Theme</span>
+          <select id="setting-theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-save-settings" class="primary-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="markdown.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

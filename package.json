@@ -1,0 +1,15 @@
+{
+  "name": "codex-desktop-clone",
+  "version": "0.1.0",
+  "description": "A working clone of the OpenAI Codex desktop app, built with Electron.",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "node test/smoke.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "playwright-core": "^1.49.0"
+  }
+}
