@@ -1,0 +1,336 @@
+'use strict';
+// TurnSession: one agent turn on one thread. Emits protocol events through `emit`,
+// runs tools through the executor under the policy engine, and exposes steering,
+// interrupt, and approval resolution to the runtime (which routes them from the hub).
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { Events, ItemTypes, ItemStatus, TurnStatus, ApprovalDecision } = require('../protocol');
+const { decideCommand, decideFileWrite } = require('./policy');
+const { lineDiff } = require('./diff');
+
+const MAX_TOOL_OUTPUT = 20000;
+const MAX_MODEL_ROUNDS = 32;
+const uid = (p) => p + '_' + crypto.randomBytes(6).toString('hex');
+
+const TOOLS = [
+  { name: 'shell', description: 'Run a bash command in the workspace directory and return its output.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+  { name: 'write_file', description: 'Create or completely replace a file in the workspace.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
+  { name: 'update_plan', description: 'Show or update a step checklist for the user. Statuses: pending, inProgress, completed.', parameters: { type: 'object', properties: { explanation: { type: 'string' }, plan: { type: 'array', items: { type: 'object', properties: { step: { type: 'string' }, status: { type: 'string', enum: ['pending', 'inProgress', 'completed'] } }, required: ['step', 'status'] } } }, required: ['plan'] } }
+];
+
+class TurnSession {
+  constructor({ thread, turnId, by, input, provider, model, settings, executor, emit, history, log = () => {} }) {
+    this.thread = thread;
+    this.turnId = turnId || uid('turn');
+    this.by = by;
+    this.input = input;
+    this.provider = provider;     // adapter or { id: 'demo' } or { id: 'codex-cli', run }
+    this.model = model;
+    this.settings = settings;     // { approvalPolicy, sandboxPolicy, effort }
+    this.executor = executor;
+    this._emit = emit;
+    this.history = history || [];
+    this.log = log;
+    this.running = false;
+    this.cancelled = false;
+    this.pendingApprovals = new Map(); // requestId -> resolve(decision)
+    this.sessionAllowed = new Set();
+    this.steerQueue = [];
+    this.usage = { input: 0, output: 0 };
+    this.abort = new AbortController();
+    this.child = null;
+  }
+
+  get cwd() { return this.thread.workDir || this.thread.cwd; }
+
+  emit(method, payload) { this._emit({ method, turnId: this.turnId, ...payload }); }
+
+  // ---------- public control surface ----------
+  steer(input, by) {
+    this.steerQueue.push({ input, by });
+    this.emitUserMessage(input, by, 'steer');
+  }
+
+  interrupt() {
+    this.cancelled = true;
+    this.abort.abort();
+    for (const resolve of this.pendingApprovals.values()) resolve(ApprovalDecision.CANCEL);
+    this.pendingApprovals.clear();
+    if (this.child) { try { this.child.kill('SIGKILL'); } catch {} }
+  }
+
+  resolveApproval(requestId, decision, by) {
+    const resolve = this.pendingApprovals.get(requestId);
+    if (!resolve) return false;
+    this.pendingApprovals.delete(requestId);
+    this.emit(Events.SERVER_REQUEST_RESOLVED, { requestId, decision, by });
+    resolve(decision);
+    return true;
+  }
+
+  // ---------- turn lifecycle ----------
+  async run() {
+    this.running = true;
+    this.emit(Events.TURN_STARTED, { by: this.by, model: this.model, provider: this.provider.id });
+    this.emitUserMessage(this.input, this.by);
+    let status = TurnStatus.COMPLETED;
+    let error;
+    try {
+      if (this.provider.id === 'demo') await this.runDemo();
+      else if (this.provider.id === 'codex-cli') await this.provider.run(this);
+      else await this.runModel();
+      if (this.cancelled) status = TurnStatus.INTERRUPTED;
+    } catch (err) {
+      if (this.cancelled) status = TurnStatus.INTERRUPTED;
+      else { status = TurnStatus.FAILED; error = { message: String(err && err.message || err) }; }
+    }
+    this.running = false;
+    this.emit(Events.TURN_COMPLETED, { status, usage: this.usage.input + this.usage.output ? this.usage : undefined, error });
+    return { status, error };
+  }
+
+  // ---------- item helpers ----------
+  emitUserMessage(input, by, delivery) {
+    const text = input.filter((i) => i.type === 'text').map((i) => i.text).join('\n');
+    const images = input.filter((i) => i.type === 'image').map((i) => i.url);
+    const item = { id: uid('msg'), type: ItemTypes.USER_MESSAGE, text, images, by, delivery };
+    this.emit(Events.ITEM_STARTED, { item });
+    this.emit(Events.ITEM_COMPLETED, { item });
+    return item;
+  }
+
+  startText(type) {
+    const item = { id: uid(type === ItemTypes.REASONING ? 'rsn' : 'msg'), type, text: '' };
+    this.emit(Events.ITEM_STARTED, { item });
+    return item;
+  }
+  deltaText(item, delta) {
+    item.text += delta;
+    this.emit(item.type === ItemTypes.REASONING ? Events.REASONING_DELTA : Events.AGENT_MESSAGE_DELTA, { itemId: item.id, delta });
+  }
+  completeText(item) { this.emit(Events.ITEM_COMPLETED, { item }); }
+
+  async streamText(type, text, chunk = 24, delay = 8) {
+    const item = this.startText(type);
+    for (let i = 0; i < text.length && !this.cancelled; i += chunk) {
+      this.deltaText(item, text.slice(i, i + chunk));
+      if (delay) await new Promise((r) => setTimeout(r, delay));
+    }
+    this.completeText(item);
+    return item;
+  }
+
+  updatePlan(plan, explanation) {
+    this.emit(Events.TURN_PLAN_UPDATED, { explanation, plan });
+    return 'Plan updated.';
+  }
+
+  async requestApproval(method, payload) {
+    const requestId = uid('req');
+    this.emit(method, { requestId, availableDecisions: Object.values(ApprovalDecision), ...payload });
+    return await new Promise((resolve) => this.pendingApprovals.set(requestId, resolve));
+  }
+
+  // ---------- tools ----------
+  async execCommand(command) {
+    const item = { id: uid('cmd'), type: ItemTypes.COMMAND_EXECUTION, command, cwd: this.cwd, executor: this.executor.id, status: ItemStatus.IN_PROGRESS, aggregatedOutput: '' };
+    const decision = decideCommand(command, { ...this.settings, sessionAllowed: this.sessionAllowed });
+    this.emit(Events.ITEM_STARTED, { item });
+    if (decision.verdict === 'deny') {
+      item.status = ItemStatus.DECLINED; item.aggregatedOutput = 'Declined by policy: ' + decision.reason;
+      this.emit(Events.ITEM_COMPLETED, { item });
+      return item;
+    }
+    if (decision.verdict === 'ask') {
+      const d = await this.requestApproval(Events.COMMAND_REQUEST_APPROVAL, { itemId: item.id, command, cwd: this.cwd, reason: decision.reason });
+      if (d === ApprovalDecision.ACCEPT_FOR_SESSION) this.sessionAllowed.add(command);
+      if (d === ApprovalDecision.DECLINE || d === ApprovalDecision.CANCEL) {
+        item.status = ItemStatus.DECLINED; item.aggregatedOutput = d === ApprovalDecision.CANCEL ? 'Cancelled.' : 'Declined by user.';
+        this.emit(Events.ITEM_COMPLETED, { item });
+        if (d === ApprovalDecision.CANCEL) this.interrupt();
+        return item;
+      }
+    }
+    const t0 = Date.now();
+    const result = await this.executor.run(command, {
+      cwd: this.cwd,
+      onChild: (c) => { this.child = c; },
+      onOutput: (delta) => { item.aggregatedOutput += delta; this.emit(Events.COMMAND_OUTPUT_DELTA, { itemId: item.id, delta }); }
+    });
+    this.child = null;
+    item.exitCode = result.code;
+    item.aggregatedOutput = result.out;
+    item.durationMs = Date.now() - t0;
+    item.status = result.code === 0 ? ItemStatus.COMPLETED : ItemStatus.FAILED;
+    this.emit(Events.ITEM_COMPLETED, { item });
+    return item;
+  }
+
+  async writeFile(relPath, content) {
+    const abs = path.resolve(this.cwd, relPath);
+    let oldText = null;
+    try { oldText = fs.readFileSync(abs, 'utf8'); } catch {}
+    const kind = oldText === null ? 'add' : 'update';
+    const d = kind === 'add'
+      ? { lines: content.split('\n').slice(0, 400).map((t) => ({ kind: 'add', text: t })), additions: content.split('\n').length, deletions: 0 }
+      : lineDiff(oldText, content);
+    const item = { id: uid('chg'), type: ItemTypes.FILE_CHANGE, status: ItemStatus.IN_PROGRESS, changes: [{ path: relPath, kind, additions: d.additions, deletions: d.deletions, lines: d.lines }] };
+    const decision = decideFileWrite(abs, { workspace: this.cwd, ...this.settings });
+    this.emit(Events.ITEM_STARTED, { item });
+    if (decision.verdict === 'deny') {
+      item.status = ItemStatus.DECLINED; this.emit(Events.ITEM_COMPLETED, { item });
+      return { item, result: 'Declined by policy: ' + decision.reason };
+    }
+    if (decision.verdict === 'ask') {
+      const dec = await this.requestApproval(Events.FILECHANGE_REQUEST_APPROVAL, { itemId: item.id, changes: item.changes.map((c) => ({ path: c.path, kind: c.kind, additions: c.additions, deletions: c.deletions })), reason: decision.reason });
+      if (dec === ApprovalDecision.DECLINE || dec === ApprovalDecision.CANCEL) {
+        item.status = ItemStatus.DECLINED; this.emit(Events.ITEM_COMPLETED, { item });
+        if (dec === ApprovalDecision.CANCEL) this.interrupt();
+        return { item, result: 'Declined by user.' };
+      }
+    }
+    try {
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, content);
+      item.status = ItemStatus.COMPLETED;
+    } catch (e) {
+      item.status = ItemStatus.FAILED;
+      this.emit(Events.ITEM_COMPLETED, { item });
+      return { item, result: 'Write failed: ' + String(e) };
+    }
+    this.emit(Events.ITEM_COMPLETED, { item });
+    return { item, result: `Wrote ${relPath} (${kind}, +${d.additions} −${d.deletions}).` };
+  }
+
+  // ---------- model-backed loop ----------
+  systemPrompt() {
+    const sb = this.settings.sandboxPolicy, ap = this.settings.approvalPolicy;
+    return [
+      'You are a coding agent running inside a multiplayer harness. Several people may be watching this thread live and can steer you or answer approval requests.',
+      `Workspace directory: ${this.cwd}`,
+      this.thread.worktree ? `You are in an isolated git worktree on branch ${this.thread.branch}.` : '',
+      `Sandbox policy: ${sb}. Approval policy: ${ap}.`,
+      'Tools: `shell` runs bash in the workspace; `write_file` creates/replaces a file; `update_plan` shows a live checklist — use it for multi-step work and keep statuses current.',
+      'Prefer small verifiable steps; verify with shell when practical. When done, summarize concisely in Markdown.'
+    ].filter(Boolean).join('\n');
+  }
+
+  buildMessages() {
+    const msgs = [];
+    for (const it of this.history) {
+      if (it.type === ItemTypes.USER_MESSAGE) msgs.push({ role: 'user', content: it.text, images: it.images });
+      else if (it.type === ItemTypes.AGENT_MESSAGE) msgs.push({ role: 'assistant', content: it.text });
+      else if (it.type === ItemTypes.COMMAND_EXECUTION) msgs.push({ role: 'assistant', content: `[ran: ${it.command}]\n${(it.aggregatedOutput || '').slice(0, 1500)}` });
+      else if (it.type === ItemTypes.FILE_CHANGE) msgs.push({ role: 'assistant', content: `[changed: ${it.changes.map((c) => c.path).join(', ')}]` });
+    }
+    const text = this.input.filter((i) => i.type === 'text').map((i) => i.text).join('\n');
+    const images = this.input.filter((i) => i.type === 'image').map((i) => i.url);
+    msgs.push({ role: 'user', content: text, images });
+    return msgs;
+  }
+
+  async runModel() {
+    const messages = this.buildMessages();
+    const tools = this.settings.sandboxPolicy === 'read-only' ? [TOOLS[0]] : TOOLS;
+    for (let round = 0; round < MAX_MODEL_ROUNDS && !this.cancelled; round++) {
+      while (this.steerQueue.length) {
+        const s = this.steerQueue.shift();
+        messages.push({ role: 'user', content: s.input.filter((i) => i.type === 'text').map((i) => i.text).join('\n') });
+      }
+      let msgItem = null, rsnItem = null;
+      const calls = [];
+      for await (const d of this.provider.stream({ model: this.model, system: this.systemPrompt(), messages, tools, effort: this.settings.effort, signal: this.abort.signal })) {
+        if (this.cancelled) break;
+        if (d.type === 'text') { if (!msgItem) msgItem = this.startText(ItemTypes.AGENT_MESSAGE); this.deltaText(msgItem, d.text); }
+        else if (d.type === 'reasoning') { if (!rsnItem) rsnItem = this.startText(ItemTypes.REASONING); this.deltaText(rsnItem, d.text); }
+        else if (d.type === 'tool_call') calls.push(d);
+        else if (d.type === 'usage') { this.usage.input += d.input || 0; this.usage.output += d.output || 0; }
+      }
+      if (rsnItem) this.completeText(rsnItem);
+      if (msgItem) this.completeText(msgItem);
+      if (!calls.length) {
+        if (this.steerQueue.length) continue;
+        return;
+      }
+      messages.push({ role: 'assistant', content: msgItem ? msgItem.text : '', toolCalls: calls });
+      for (const c of calls) {
+        if (this.cancelled) return;
+        let args = {}; try { args = JSON.parse(c.arguments || '{}'); } catch {}
+        let result;
+        if (c.name === 'shell') {
+          const item = args.command ? await this.execCommand(String(args.command)) : { status: 'failed', aggregatedOutput: 'missing command', exitCode: -1 };
+          result = JSON.stringify({ exit_code: item.exitCode, status: item.status, output: (item.aggregatedOutput || '').slice(0, MAX_TOOL_OUTPUT) });
+        } else if (c.name === 'write_file') {
+          result = (args.path != null && args.content != null) ? (await this.writeFile(String(args.path), String(args.content))).result : 'missing path/content';
+        } else if (c.name === 'update_plan') {
+          result = Array.isArray(args.plan) ? this.updatePlan(args.plan, args.explanation) : 'missing plan';
+        } else result = 'unknown tool ' + c.name;
+        messages.push({ role: 'tool', toolCallId: c.id, content: result });
+      }
+    }
+  }
+
+  // ---------- demo backend (no key needed; drives the real tool/approval pipeline) ----------
+  async runDemo() {
+    await this.runDemoScenario();
+    if (this.steerQueue.length && !this.cancelled) {
+      const extra = this.steerQueue.splice(0).map((s) => s.input.filter((i) => i.type === 'text').map((i) => i.text).join(' ')).join('; ');
+      await this.streamText(ItemTypes.AGENT_MESSAGE, `Noted the steer from a teammate: _${extra}_ — a live model would fold that into this turn (crabs included).`);
+    }
+  }
+
+  async runDemoScenario() {
+    const text = this.input.filter((i) => i.type === 'text').map((i) => i.text).join('\n');
+    const lower = text.toLowerCase();
+    const note = '\n\n_Demo agent — add a provider key on this runtime to connect a real model._';
+
+    if (/\b(delete|remove|clean|wipe|install|deploy|push|reset)\b/.test(lower)) {
+      await this.streamText(ItemTypes.REASONING, 'This is a destructive or outward-facing action — under the on-request policy I should run it through approval so whoever is watching can sign off.');
+      const target = (text.match(/\b(?:delete|remove|clean|wipe)\s+(?:the\s+)?([\w./-]+)/i) || [])[1];
+      const cmd = /\binstall\b/.test(lower) ? 'npm install' : /\bpush\b/.test(lower) ? 'git push origin HEAD' : `rm -rf ${target && target !== 'the' ? target : 'build'}`;
+      this.updatePlan([{ step: 'Confirm scope', status: 'completed' }, { step: `Run \`${cmd}\``, status: 'inProgress' }, { step: 'Verify workspace', status: 'pending' }], 'Requires approval before the risky step.');
+      const item = await this.execCommand(cmd);
+      if (this.cancelled) return;
+      this.updatePlan([{ step: 'Confirm scope', status: 'completed' }, { step: `Run \`${cmd}\``, status: 'completed' }, { step: 'Verify workspace', status: 'inProgress' }]);
+      await this.execCommand('ls -la');
+      this.updatePlan([{ step: 'Confirm scope', status: 'completed' }, { step: `Run \`${cmd}\``, status: 'completed' }, { step: 'Verify workspace', status: 'completed' }]);
+      await this.streamText(ItemTypes.AGENT_MESSAGE, item.status === 'completed'
+        ? `Done — \`${cmd}\` ran after approval (exit ${item.exitCode}). Workspace listing above.` + note
+        : `I didn't run \`${cmd}\` — the request was **${item.status}**. Nothing was changed.` + note);
+      return;
+    }
+    if (/\b(create|write|add|make|build|generate)\b/.test(lower) && !/\bdiff|changes\b/.test(lower)) {
+      await this.streamText(ItemTypes.REASONING, 'Lay out a short plan, create the file in the workspace, then verify it exists before summarizing.');
+      this.updatePlan([{ step: 'Inspect the workspace', status: 'inProgress' }, { step: 'Create the requested file', status: 'pending' }, { step: 'Verify the result', status: 'pending' }]);
+      await this.execCommand('ls -la');
+      this.updatePlan([{ step: 'Inspect the workspace', status: 'completed' }, { step: 'Create the requested file', status: 'inProgress' }, { step: 'Verify the result', status: 'pending' }]);
+      const fname = (text.match(/([\w./-]+\.(?:md|txt|js|ts|py|json|html|css|sh))/i) || [])[1] || 'NOTES.md';
+      const { item } = await this.writeFile(fname, `# Created by the harness demo agent\n\nYou asked:\n> ${text}\n\nWritten through the same write_file → policy → fileChange pipeline a real model uses.\n`);
+      this.updatePlan([{ step: 'Inspect the workspace', status: 'completed' }, { step: 'Create the requested file', status: 'completed' }, { step: 'Verify the result', status: 'inProgress' }]);
+      await this.execCommand(`ls -la ${fname.split('/')[0]}`);
+      this.updatePlan([{ step: 'Inspect the workspace', status: 'completed' }, { step: 'Create the requested file', status: 'completed' }, { step: 'Verify the result', status: 'completed' }]);
+      await this.streamText(ItemTypes.AGENT_MESSAGE, `Created **${fname}** (${item.status}). Open **Changes** to review, revert, or commit it.` + note);
+      return;
+    }
+    if (/\b(what|show|list|look|explore|files|structure|around|repo)\b/.test(lower)) {
+      await this.streamText(ItemTypes.REASONING, 'A quick listing plus git status should give the overview.');
+      const ls = await this.execCommand('ls -la');
+      await this.execCommand('git status --short --branch');
+      const n = Math.max((ls.aggregatedOutput || '').split('\n').filter(Boolean).length - 1, 0);
+      await this.streamText(ItemTypes.AGENT_MESSAGE, `The workspace \`${path.basename(this.cwd)}\` has about **${n} entries** at the top level; git status is shown above.` + note);
+      return;
+    }
+    if (/\b(diff|changes|changed)\b/.test(lower)) {
+      await this.execCommand('git diff --stat');
+      await this.streamText(ItemTypes.AGENT_MESSAGE, 'Those are the working-tree changes. The **Changes** panel has per-file diffs, revert, and commit.' + note);
+      return;
+    }
+    // Think out loud at a human pace so teammates have a window to steer mid-turn.
+    await this.streamText(ItemTypes.REASONING, 'Reading the request and checking whether anyone watching adds guidance before I answer. This demo agent has no model behind it, so I will explain what I can do offline.', 18, 60);
+    await this.streamText(ItemTypes.AGENT_MESSAGE,
+      `I'm the built-in **demo agent**, so I can't really work on:\n\n> ${text}\n\nTry: “**delete** the build directory” (approval flow), “**create** NOTES.md” (plan + file edit), “**explore** the repo”, or “show the **diff**”.` + note);
+  }
+}
+
+module.exports = { TurnSession, TOOLS };

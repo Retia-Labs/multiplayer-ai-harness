@@ -1,10 +1,18 @@
 {
-  "name": "codex-desktop-clone",
+  "name": "multiplayer-ai-harness",
   "version": "0.1.0",
-  "description": "A working clone of the OpenAI Codex desktop app, built with Electron.",
-  "main": "src/main/main.js",
+  "description": "Multiplayer, bring-your-own-provider AI coding harness: hub + runtimes + shared web/desktop UI (prototype). Includes the original Codex desktop clone.",
+  "main": "apps/desktop/main.js",
   "scripts": {
     "start": "electron .",
+    "hub": "node packages/hub/server.js",
+    "runtime": "node packages/runtime/index.js",
+    "desktop": "electron apps/desktop/main.js",
+    "codex-clone": "electron src/main/main.js",
+    "test": "npm run test:protocol && npm run test:unit && npm run test:e2e",
+    "test:protocol": "node test/protocol-smoke.js",
+    "test:unit": "node test/unit.js",
+    "test:e2e": "node test/e2e-multiplayer.js",
     "smoke": "node test/smoke.js"
   },
   "license": "MIT",
