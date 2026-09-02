@@ -73,8 +73,8 @@ async function commitAll(dir, message) {
   const add = await run(dir, ['add', '-A']);
   if (!add.ok) return { ok: false, error: add.err };
   const c = await run(dir, [
-    '-c', 'user.name=Codex', '-c', 'user.email=codex@localhost',
-    'commit', '-m', message || 'Changes from Codex'
+    '-c', 'user.name=Quorum', '-c', 'user.email=quorum@localhost',
+    'commit', '-m', message || 'Changes from Quorum'
   ]);
   return c.ok ? { ok: true, out: c.out.trim() } : { ok: false, error: c.err || c.out };
 }
@@ -95,7 +95,7 @@ async function revertFile(dir, file, untracked) {
 // ----- worktrees -----
 async function createWorktree(projectDir, baseDir, threadId) {
   const wtDir = path.join(baseDir, 'worktrees', threadId);
-  const branch = 'codex/' + threadId.replace(/^t_/, '').slice(0, 12);
+  const branch = 'quorum/' + threadId.replace(/^t_/, '').slice(0, 12);
   fs.mkdirSync(path.dirname(wtDir), { recursive: true });
   const r = await run(projectDir, ['worktree', 'add', '-b', branch, wtDir], 30000);
   if (!r.ok) return { ok: false, error: r.err || r.out };

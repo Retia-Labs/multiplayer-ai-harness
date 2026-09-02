@@ -334,7 +334,7 @@ class AgentSession {
       'full-access': 'Full Access: commands and edits run without approval.'
     }[this.mode];
     return [
-      'You are Codex, a coding agent running inside a desktop app. You help the user work on the project in their workspace.',
+      'You are Quorum, a coding agent running inside a desktop app. You help the user work on the project in their workspace.',
       `Workspace directory: ${dir}`,
       this.thread.worktree ? `You are in an isolated git worktree on branch ${this.thread.branch}. Changes here do not touch the main checkout.` : '',
       `Access mode — ${modeDesc}`,
@@ -582,7 +582,7 @@ class AgentSession {
       ]);
       const fname = (userText.match(/([\w./-]+\.(?:md|txt|js|ts|py|json|html|css|sh))/i) || [])[1] || 'NOTES.md';
       const { item } = await this.writeFile(fname, [
-        '# Created by Codex (demo mode)',
+        '# Created by Quorum (demo mode)',
         '',
         'You asked:',
         '> ' + userText,
