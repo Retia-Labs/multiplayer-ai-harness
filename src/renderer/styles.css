@@ -75,18 +75,11 @@ code, pre, .mono { font-family: "SF Mono", ui-monospace, Menlo, Consolas, monosp
   padding: 14px 12px 8px 16px;
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 14.5px; letter-spacing: -.01em; }
-/* The Retia mark is black artwork on transparency, so on the dark theme it
+/* The mark is black artwork on transparency, so on the dark theme it
    would sink into the sidebar. Inverting turns the crystal white and the R
    black, which is the same mark reading correctly rather than a second file. */
 .brand-mark { opacity: .92; border-radius: 3px; object-fit: contain; filter: invert(1); }
 body[data-theme='light'] .brand-mark { filter: none; }
-/* The maker's name sits under the product name, not beside it in the same
-   weight - it is attribution, not a second brand competing for the eye. */
-.brand-by {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 8.5px; font-weight: 500; letter-spacing: .18em; text-transform: uppercase;
-  opacity: .45; margin-left: -3px; align-self: center;
-}
 .btn-icon {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border-radius: 8px; color: var(--text-dim);
@@ -210,6 +203,7 @@ body[data-theme='light'] .brand-mark { filter: none; }
   margin: auto; width: 100%; max-width: 680px; padding: 40px 24px 60px;
   display: flex; flex-direction: column; align-items: center; gap: 18px;
 }
+.home-logo img { opacity: .95; }
 .home-logo { color: var(--text-faint); }
 .home-hero h1 { font-size: 26px; font-weight: 650; letter-spacing: -.02em; }
 .home-project-row { display: flex; align-items: center; gap: 12px; position: relative; }

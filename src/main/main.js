@@ -70,6 +70,11 @@ function createWindow() {
     minWidth: 960,
     minHeight: 620,
     title: 'Quorum',
+    // Without this the window and taskbar show Electron's own atom, which is
+    // the single most obvious tell that something is an unfinished Electron
+    // app. The packaged build gets its icon from the builder config; this is
+    // what running from source looks like.
+    icon: path.join(__dirname, '..', 'renderer', 'assets', 'retia-logo.png'),
     backgroundColor: '#0d0d0d',
     autoHideMenuBar: true,
     webPreferences: {
