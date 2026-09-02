@@ -181,49 +181,49 @@
       <span class="eyebrow">Retia Labs</span>
     </div>
 
-    <h1>Download it. Read out a code. Build together.</h1>
+    <h1>One laptop has the repo. Everyone builds anyway.</h1>
 
-    <p class="stand">Quorum is a multiplayer AI coding IDE. You describe what you want, an agent does it, and <strong>anyone you give a code to can join the same run</strong> — watch it, talk in it, redirect it, approve the risky bits. Nobody has to look at the code unless they want to type.</p>
+    <p class="stand">Quorum is a multiplayer AI coding IDE. You describe what you want, an agent does it, and <strong>anyone you read a code out to joins the same run</strong> — from their own laptop, without cloning anything. They watch it, talk in it, redirect it, and approve the risky bits. Nobody has to look at code unless they actually want to type.</p>
   </header>
 
   <!-- ═══════════ HOW IT GOES ═══════════ -->
   <section>
-    <h2>Ninety seconds, start to finish</h2>
-    <p class="sec-note">What a person actually does · no accounts, no setup, no repo access needed to join</p>
+    <h2>Three people at a hackathon, forty minutes left</h2>
+    <p class="sec-note">The demo below is a real session shape · no accounts, no setup, nobody else needs the repo</p>
 
     <div class="steps">
       <div class="stepc">
         <span class="n">01</span>
-        <h3>Download and open it</h3>
-        <p>One installer, Mac, Windows or Linux. Paste a Claude key in Settings, or don't — the offline agent still runs commands and writes files.</p>
+        <h3>One of you installs it</h3>
+        <p>One file, Mac, Windows or Linux. Paste a Claude key, or don't — the offline agent still runs commands and writes files.</p>
         <span class="cmd">Quorum Setup.exe · 77 MB</span>
       </div>
       <div class="stepc">
         <span class="n">02</span>
-        <h3>Say what you want</h3>
-        <p>Plain sentences. The agent plans, runs commands, edits files, and stops to ask you before anything risky.</p>
-        <span class="cmd">"the refund webhook 500s on retries"</span>
+        <h3>Ask for the thing you're missing</h3>
+        <p>Plain sentences, not prompts. It plans, runs commands, edits files, and stops to ask before anything it shouldn't decide alone.</p>
+        <span class="cmd">"the leaderboard page is still empty"</span>
       </div>
       <div class="stepc">
         <span class="n">03</span>
-        <h3>Read out the code</h3>
-        <p>Press Share. Anyone who types that code joins the run, is replayed everything they missed, and can talk, steer and approve.</p>
+        <h3>Shout the code across the table</h3>
+        <p>Press Share. Whoever types it is in — caught up on everything already done, then following along live.</p>
         <span class="cmd">CXNQ-Q2WH</span>
       </div>
     </div>
 
-    <p>That's the whole product. The demo below is that session, playing at the speed it really happens.</p>
+    <p>The usual hackathon failure is three people and one keyboard: two of you end up reading Discord while one person types. This is the fix — everyone is in the same run, and the two who aren't typing can still steer it and unblock it.</p>
   </section>
 
   <!-- ═══════════ THE DEMO ═══════════ -->
   <section>
-    <h2>Three people, one agent</h2>
-    <p class="sec-note">Playable · left is the room · right is the record underneath it</p>
+    <h2>Play it</h2>
+    <p class="sec-note">Mia, Jay and Ana · one repo between them · left is the room, right is the record underneath</p>
 
     <div class="app">
       <div class="titlebar">
         <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-        <span class="name">Quorum — payments-api</span>
+        <span class="name">Quorum — plantpal</span>
       </div>
 
       <div class="shell">
@@ -238,21 +238,21 @@
             <span class="n">Quorum</span>
           </div>
           <div class="side-label">Today</div>
-          <div class="thread on"><span class="pip run" id="pip"></span><span class="tt">Refund webhook 500s</span></div>
-          <div class="thread"><span class="pip wait"></span><span class="tt">Bump stripe SDK</span></div>
-          <div class="thread"><span class="pip idle"></span><span class="tt">Flaky auth test</span></div>
+          <div class="thread on"><span class="pip run" id="pip"></span><span class="tt">Leaderboard page</span></div>
+          <div class="thread"><span class="pip wait"></span><span class="tt">Fix the signup form</span></div>
+          <div class="thread"><span class="pip idle"></span><span class="tt">Seed demo data</span></div>
           <div class="side-label">Yesterday</div>
-          <div class="thread"><span class="pip idle"></span><span class="tt">Add idempotency keys</span></div>
+          <div class="thread"><span class="pip idle"></span><span class="tt">Set up Supabase</span></div>
         </aside>
 
         <div class="main">
           <div class="bar">
-            <span class="path">payments-api · quorum/refund-500s</span>
+            <span class="path">plantpal · quorum/leaderboard</span>
             <span class="spacer"></span>
             <span class="chip hide" id="code-chip">Code</span>
             <span class="chip" id="room-chip">not shared</span>
             <span class="chip live" id="state-chip">running</span>
-            <div class="faces" id="faces"><span class="face p" title="Priya">PR</span></div>
+            <div class="faces" id="faces"><span class="face p" title="Mia">MI</span></div>
           </div>
 
           <div class="demo-grid">
@@ -275,7 +275,7 @@
       <div class="scrub"><div class="fill" id="fill"></div></div>
     </div>
 
-    <p style="margin-top:18px">Two things to watch. <strong>The Code button stays hidden</strong> until the agent touches a file — this is a room you talk in, not an editor you stare at. And <strong>Sam's approval is the same kind of row as the agent's own actions</strong> in the right-hand column: one ordered, chained log, which is how someone joining at event 12 can be shown 1 to 11 and be genuinely caught up.</p>
+    <p style="margin-top:18px">Three things to watch. <strong>Jay never cloned the repo</strong> — he joined with a code and could still unblock the run. <strong>The Code button stays hidden</strong> until the agent touches a file, because this is a room you talk in, not an editor you stare at. And in the right-hand column, <strong>Jay&rsquo;s approval is the same kind of row as the agent&rsquo;s own actions</strong>: one ordered log, which is how Ana can join at event 10 and be shown 1 through 9 without anybody stopping to catch her up.</p>
   </section>
 
   <!-- ═══════════ WHY IT HOLDS ═══════════ -->
@@ -401,41 +401,41 @@
      real product has. */
 
   const SCRIPT = [
-    { label: 'Priya asks', ev: 'session.started', by: 'priya',
-      stream: { who: 'priya', nm: 'Priya', tx: 'The refund webhook is 500-ing when Stripe retries a delivery. Find out why and fix it.' } },
+    { label: 'Mia asks', ev: 'session.started', by: 'priya',
+      stream: { who: 'priya', nm: 'Mia', tx: 'Leaderboard page is still empty and we demo in 40 minutes. Pull the top 10 scores from Supabase and render them.' } },
 
     { ev: 'turn.reasoning', by: 'agent',
-      stream: { who: 'agent', nm: 'Quorum', cls: 'think', tx: 'Reading the handler and the last 200 webhook deliveries…' } },
+      stream: { who: 'agent', nm: 'Quorum', cls: 'think', tx: 'Looking at the schema and how the other pages fetch…' } },
 
     { label: 'it plans', ev: 'plan.set', by: 'agent',
-      stream: { who: 'agent', nm: 'Quorum', plan: [['now','Reproduce with a replayed event'],['','Make the handler idempotent'],['','Add a regression test']] } },
+      stream: { who: 'agent', nm: 'Quorum', plan: [['now','Query top 10 from scores'],['','Build the leaderboard page'],['','Wire it into the nav']] } },
 
     { ev: 'command.ran', by: 'agent',
-      stream: { who: 'agent', nm: 'Quorum', card: { hd: 'ran a command', body: '$ npm run replay -- evt_1KpX9\n→ 500 Internal Server Error' } } },
+      stream: { who: 'agent', nm: 'Quorum', card: { hd: 'ran a command', body: '$ npx supabase gen types --local\n→ wrote types/db.ts' } } },
 
-    { label: 'Priya shares it', ev: 'note.posted', by: 'sys', room: 'CXNQ-Q2WH',
+    { label: 'Mia shares the code', ev: 'note.posted', by: 'sys', room: 'CXNQ-Q2WH',
       stream: { who: 'sys', nm: 'System', tx: 'Run shared. Anyone with code CXNQ-Q2WH can join.' } },
 
-    { label: 'Sam joins', ev: 'presence.seen', by: 'sam', join: 'sam',
-      stream: { who: 'sys', nm: 'System', tx: 'Sam joined and was replayed the run from the beginning.' } },
+    { label: 'Jay joins', ev: 'presence.seen', by: 'sam', join: 'sam',
+      stream: { who: 'sys', nm: 'System', tx: 'Jay joined from his laptop and was replayed the run from the beginning.' } },
 
-    { label: 'code appears', ev: 'artifact.changed', by: 'agent', code: true,
-      stream: { who: 'agent', nm: 'Quorum', card: { hd: 'edited handlers/refund.js', edit: true, body: '+ const seen = await store.has(event.id);\n+ if (seen) return res.status(200).end();', add: true } } },
+    { label: 'first file touched', ev: 'artifact.changed', by: 'agent', code: true,
+      stream: { who: 'agent', nm: 'Quorum', card: { hd: 'created app/leaderboard/page.tsx', edit: true, body: '+ const { data } = await supabase\n+   .from("scores").select("name, points")\n+   .order("points", { ascending: false }).limit(10);', add: true } } },
 
     { label: 'it stops to ask', ev: 'gate.requested', by: 'agent', state: 'blocked',
-      stream: { who: 'agent', nm: 'Quorum', gate: 'stripe refunds create --amount 4200 --idempotency-key evt_1KpX9' } },
+      stream: { who: 'agent', nm: 'Quorum', gate: 'npm install recharts' } },
 
-    { label: 'Sam approves', ev: 'gate.resolved', by: 'sam', state: 'running',
-      stream: { who: 'sam', nm: 'Sam · from his phone', tx: 'Approved — that key is the event id, so a retry is safe.' } },
+    { label: 'Jay unblocks it', ev: 'gate.resolved', by: 'sam', state: 'running',
+      stream: { who: 'sam', nm: 'Jay', tx: 'Approved — recharts is fine, we already use it on the stats page.' } },
 
     { label: 'Ana redirects it', ev: 'directive.sent', by: 'ana', join: 'ana',
-      stream: { who: 'ana', nm: 'Ana · steering', tx: 'Also assert we never call Stripe twice for one event id.' } },
+      stream: { who: 'ana', nm: 'Ana · steering', tx: 'Judges will look at this on their phones. Make it stack on mobile.' } },
 
     { ev: 'directive.honored', by: 'agent',
-      stream: { who: 'agent', nm: 'Quorum', cls: 'think', tx: 'Honoured Ana’s directive — added the assertion to the regression test.' } },
+      stream: { who: 'agent', nm: 'Quorum', cls: 'think', tx: 'Honoured Ana’s directive — switched the table to cards below 640px.' } },
 
-    { label: 'done', ev: 'run.finished', by: 'agent', state: 'done',
-      stream: { who: 'agent', nm: 'Quorum', plan: [['done','Reproduce with a replayed event'],['done','Make the handler idempotent'],['done','Add a regression test']] } }
+    { label: 'shipped', ev: 'run.finished', by: 'agent', state: 'done',
+      stream: { who: 'agent', nm: 'Quorum', card: { hd: 'deployed', body: '$ vercel --prod\n→ https://plantpal-hack.vercel.app/leaderboard' } } }
   ];
 
   const $ = (s) => document.querySelector(s);
@@ -444,7 +444,7 @@
   const verify = $('#verify'), label = $('#label'), fill = $('#fill'), pip = $('#pip');
 
   let at = 0, timer = null;
-  const FACE = { sam: ['s','SA','Sam'], ana: ['a','AN','Ana'] };
+  const FACE = { sam: ['s','JA','Jay'], ana: ['a','AN','Ana'] };
   const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
   function render(i) {
@@ -513,7 +513,7 @@
   function reset() {
     stop(); at = 0;
     stream.innerHTML = ''; log.innerHTML = '';
-    faces.innerHTML = '<span class="face p" title="Priya">PR</span>';
+    faces.innerHTML = '<span class="face p" title="Mia">MI</span>';
     roomChip.textContent = 'not shared';
     codeChip.classList.add('hide');
     stateChip.textContent = 'running'; stateChip.className = 'chip live';
