@@ -18,15 +18,22 @@ function assert(cond, msg) {
 
 (async () => {
   // Isolated userData + a scratch git project the agent can inspect.
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-clone-'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'quorum-clone-'));
   const userData = path.join(tmp, 'userData');
   const project = path.join(tmp, 'project');
   fs.mkdirSync(project, { recursive: true });
   fs.writeFileSync(path.join(project, 'hello.js'), 'console.log("hello");\n');
   fs.writeFileSync(path.join(project, 'README.md'), '# Scratch project\n');
-  execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', {
-    cwd: project, shell: '/bin/bash'
-  });
+  // Run each git step on its own rather than chaining with &&, because the
+  // default shell on Windows (cmd.exe) parses that differently and hardcoding
+  // /bin/bash makes the whole suite unrunnable there.
+  for (const cmd of [
+    'git init -q -b main',
+    'git add -A',
+    'git -c user.email=t@t -c user.name=t commit -qm init'
+  ]) {
+    execSync(cmd, { cwd: project });
+  }
   // A working-tree change so the diff panel has something to show.
   fs.appendFileSync(path.join(project, 'hello.js'), 'console.log("changed");\n');
 
@@ -57,16 +64,16 @@ function assert(cond, msg) {
   const visible = (sel) => win.waitForFunction((s) => !document.querySelector(s).classList.contains('hidden'), sel);
 
   // ---- Home ----
-  assert((await win.title()) === 'Codex', 'window title is "Codex"');
+  assert((await win.title()) === 'Quorum', 'window title is "Quorum"');
   await visible('#home-view');
   assert(await win.isVisible('.home-hero h1'), 'home hero visible');
-  assert((await win.textContent('.home-hero h1')).includes('What are we coding'), 'hero headline matches Codex');
+  assert((await win.textContent('.home-hero h1')).includes('What are we coding'), 'hero headline matches Quorum');
   await win.waitForFunction(() => document.querySelector('#home-project-label').textContent === 'project', { timeout: 10000 });
   assert(true, 'project auto-selected from recents');
   assert(await win.isVisible('#composer-host-home .composer'), 'composer docked in home hero');
   assert((await win.$$('.suggestion')).length >= 4, 'suggestion chips rendered');
   const models = await win.$$eval('#model-select option', (os_) => os_.map((o) => o.value));
-  assert(models.includes('gpt-5.1-codex-max') && models.includes('gpt-5.1'), 'model picker has codex model family');
+  assert(models.includes('gpt-5.1-codex-max') && models.includes('gpt-5.1'), 'model picker has quorum model family');
   assert(await win.isVisible('#effort-select'), 'reasoning effort selector present');
   await win.screenshot({ path: path.join(shotDir, 'home.png') });
 
@@ -120,6 +127,69 @@ function assert(cond, msg) {
   assert(expanded.startsWith('Review my current'), 'slash prompt expands to full prompt');
   await win.fill('#input', '');
 
+  // ---- Code editor: tree, open, highlight, edit, save ----
+  //
+  // The editor writes into the same workspace the agent is working in, so the
+  // assertions that matter are the ones about disk and about the log, not about
+  // pixels: a save that does not land on disk, or lands without being recorded,
+  // is the failure this whole surface has to avoid.
+  await win.click('#btn-code');
+  await visible('#code-view');
+  await win.waitForSelector('.ed-row', { timeout: 10000 });
+  const treePaths = await win.$$eval('.ed-row', (rows) => rows.map((r) => r.title));
+  assert(treePaths.includes('hello.js'), 'file tree lists hello.js');
+  assert(treePaths.includes('src') || treePaths.includes('NOTES.md'), 'file tree lists agent-written files');
+  assert(!treePaths.some((p) => p.startsWith('.git')), 'file tree hides .git');
+
+  await win.click('.ed-row[title="hello.js"]');
+  await win.waitForSelector('#ed-ta', { timeout: 10000 });
+  const loaded = await win.inputValue('#ed-ta');
+  assert(loaded.includes('console.log'), 'editor loaded the real file contents');
+  assert((await win.$$('.ed-hl .t-kw, .ed-hl .t-str, .ed-hl .t-fn')).length > 0, 'syntax highlighting produced tokens');
+  assert((await win.textContent('#ed-gutter')).trim().startsWith('1'), 'line-number gutter rendered');
+  assert(await win.isVisible('.ed-tab'), 'an editor tab opened for the file');
+
+  // Type, and confirm the app knows it is unsaved before it is saved.
+  await win.click('#ed-ta');
+  await win.evaluate(() => {
+    const ta = document.querySelector('#ed-ta');
+    ta.value = ta.value + '\nconsole.log("typed by a person");\n';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  assert(await win.isVisible('.ed-tab .ed-dot'), 'unsaved marker shown on the tab');
+
+  await win.click('#btn-code-save');
+  await win.waitForFunction(
+    () => document.querySelector('#ed-status').textContent.startsWith('Saved'),
+    { timeout: 10000 }
+  );
+  assert(!(await win.isVisible('.ed-tab .ed-dot').catch(() => false)), 'unsaved marker cleared after save');
+
+  const onDisk = fs.readFileSync(path.join(project, 'hello.js'), 'utf8');
+  assert(onDisk.includes('typed by a person'), 'the edit actually landed on disk');
+
+  // The person's save is a fact about the run, recorded like the agent's edits.
+  const sessDir = path.join(userData, 'sessions');
+  const logged = fs
+    .readdirSync(sessDir)
+    // Only the logs. Runners also drop a <session>.runner.json claim in here.
+    .filter((f) => f.endsWith('.jsonl'))
+    .flatMap((f) => fs.readFileSync(path.join(sessDir, f), 'utf8').trim().split('\n'))
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+  const humanEdit = logged.find(
+    (e) => e.kind === 'artifact.changed' && e.payload.path === 'hello.js' && e.actor.startsWith('human:')
+  );
+  assert(humanEdit, "the person's save was recorded in the session log");
+  assert(humanEdit.payload.added >= 1, 'the recorded edit counted added lines');
+  const agentEdit = logged.find((e) => e.kind === 'artifact.changed' && e.actor.startsWith('agent:'));
+  assert(agentEdit, "the agent's edits are in the same log as the person's");
+  assert(logged.every((e) => typeof e.hash === 'string' && e.hash.length === 64), 'every event is chained');
+
+  await win.screenshot({ path: path.join(shotDir, 'code.png') });
+  await win.click('#btn-close-code');
+  await hidden('#code-view');
+
   // ---- Changes panel: file list, diff table, commit ----
   await win.click('#btn-changes');
   await visible('#diff-view');
@@ -129,12 +199,12 @@ function assert(cond, msg) {
   await win.waitForSelector('.diff-table tr.add', { timeout: 5000 });
   assert(true, 'diff table renders added lines with line numbers');
   await win.screenshot({ path: path.join(shotDir, 'changes.png') });
-  await win.fill('#commit-msg', 'test: commit from Codex clone');
+  await win.fill('#commit-msg', 'test: commit from Quorum clone');
   await win.click('#btn-commit');
   await win.waitForSelector('.diff-empty', { timeout: 10000 });
   assert(true, 'commit clears the working tree (diff panel empty)');
   const gitLog = execSync('git log --oneline -1', { cwd: project }).toString();
-  assert(gitLog.includes('test: commit from Codex clone'), 'commit actually landed in git history');
+  assert(gitLog.includes('test: commit from Quorum clone'), 'commit actually landed in git history');
   await win.click('#btn-close-diff');
 
   // ---- Worktree thread ----
@@ -147,7 +217,7 @@ function assert(cond, msg) {
   await visible('#worktree-badge');
   assert(true, 'worktree badge shown for isolated thread');
   const wtBranch = (await win.textContent('#project-branch')).trim();
-  assert(wtBranch.startsWith('codex/'), 'thread runs on its own codex/* branch (got: ' + wtBranch + ')');
+  assert(wtBranch.startsWith('quorum/'), 'thread runs on its own quorum/* branch (got: ' + wtBranch + ')');
   const wtList = execSync('git worktree list', { cwd: project }).toString();
   assert(wtList.split('\n').filter(Boolean).length >= 2, 'git worktree actually created');
   await win.waitForFunction(() => document.querySelector('#working').classList.contains('hidden'), { timeout: 40000 });
@@ -182,6 +252,15 @@ function assert(cond, msg) {
   assert(true, 'custom slash prompt added in settings');
   await win.click('#btn-save-settings');
   await hidden('#settings-modal');
+
+  // Runners deliberately outlive the app - that is the whole point of them -
+  // so a test that starts runs has to end them, or it leaves live agents
+  // behind on the machine and hangs waiting for its own children.
+  const registry = require('../src/runner/registry');
+  for (const claim of registry.listRunners(sessDir)) {
+    await registry.stopRunner(sessDir, claim.sessionId);
+  }
+  assert(registry.listRunners(sessDir).length === 0, 'runners stopped after the test');
 
   await app.close();
   console.log('\nAll smoke tests passed ✅');

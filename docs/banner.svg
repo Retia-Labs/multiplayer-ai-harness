@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 420" width="1280" height="420" role="img" aria-label="Quorum Desktop — a multiplayer AI coding IDE. One run, several people, one record. A Retia Labs product.">
+  <title>Quorum Desktop — a multiplayer AI coding IDE</title>
+  <desc>A single agent run drawn as a timeline. The agent works along it while three people attach at different moments: one steers, one approves a gate, one joins late and is caught up from the beginning.</desc>
+
+  <defs>
+    <!-- The run fades in at the left: you are looking at the middle of
+         something that started before you opened it. -->
+    <!-- User space, not the default object bounding box: a perfectly
+         horizontal line has zero height, so a bounding-box gradient collapses
+         and the stroke renders as nothing at all. -->
+    <linearGradient id="run" gradientUnits="userSpaceOnUse" x1="40" y1="0" x2="1240" y2="0">
+      <stop offset="0"    stop-color="#5E9B79" stop-opacity="0"/>
+      <stop offset=".08"  stop-color="#5E9B79" stop-opacity=".85"/>
+      <stop offset=".85"  stop-color="#5E9B79" stop-opacity=".85"/>
+      <stop offset="1"    stop-color="#5E9B79" stop-opacity=".12"/>
+    </linearGradient>
+
+    <linearGradient id="fade" gradientUnits="userSpaceOnUse" x1="1160" y1="0" x2="1280" y2="0">
+      <stop offset="0" stop-color="#0F0D09" stop-opacity="0"/>
+      <stop offset="1" stop-color="#0F0D09" stop-opacity="1"/>
+    </linearGradient>
+
+    <style>
+      .sans  { font-family: 'Archivo', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+      .mono  { font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .serif { font-family: 'Newsreader', Georgia, 'Times New Roman', serif; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="420" fill="#0F0D09"/>
+
+  <!-- hairline grid, barely there -->
+  <g stroke="#1A1712" stroke-width="1">
+    <line x1="0" y1="104" x2="1280" y2="104"/>
+    <line x1="0" y1="334" x2="1280" y2="334"/>
+  </g>
+
+  <!-- ── wordmark ─────────────────────────────────────────────── -->
+  <g transform="translate(72 62)">
+    <!-- the Quorum mark: one run at the centre, people and agents around it -->
+    <g transform="translate(0 -14)" fill="none">
+      <circle cx="16" cy="16" r="12.5" stroke="#D9D3C5" stroke-width="1.6" opacity=".42"/>
+      <circle cx="16" cy="16" r="4" fill="#D9D3C5"/>
+      <line x1="16" y1="16" x2="24.84" y2="7.16" stroke="#D9D3C5" stroke-width="1.5"/>
+      <circle cx="24.84" cy="7.16" r="3" fill="#D9D3C5"/>
+      <line x1="16" y1="16" x2="3.92" y2="12.76" stroke="#D9D3C5" stroke-width="1.3" opacity=".62"/>
+      <circle cx="3.92" cy="12.76" r="2.5" fill="#D9D3C5" opacity=".62"/>
+      <line x1="16" y1="16" x2="19.24" y2="28.08" stroke="#D9D3C5" stroke-width="1.3" opacity=".62"/>
+      <circle cx="19.24" cy="28.08" r="2.5" fill="#D9D3C5" opacity=".62"/>
+    </g>
+    <text x="46" y="12" class="sans" font-size="27" font-weight="600" fill="#D9D3C5" letter-spacing="-.4">Quorum</text>
+    <text x="163" y="11" class="mono" font-size="10.5" fill="#6E6757" letter-spacing="3.4">RETIA LABS</text>
+  </g>
+
+  <text x="72" y="150" class="serif" font-size="42" font-weight="500" fill="#D9D3C5" letter-spacing="-.8">A multiplayer AI coding IDE.</text>
+  <text x="72" y="186" class="sans" font-size="17" fill="#8C8474">One run, several people, one record that none of them can forge.</text>
+
+  <!-- ── the run ──────────────────────────────────────────────── -->
+  <g transform="translate(0 262)">
+    <line x1="40" y1="0" x2="1240" y2="0" stroke="url(#run)" stroke-width="2.4"/>
+
+    <!-- the agent working: evenly spaced, indifferent to who is watching -->
+    <g fill="#5E9B79">
+      <circle cx="150" cy="0" r="4"/>
+      <circle cx="228" cy="0" r="4"/>
+      <circle cx="306" cy="0" r="4"/>
+      <circle cx="462" cy="0" r="4"/>
+      <circle cx="540" cy="0" r="4"/>
+      <circle cx="696" cy="0" r="4"/>
+      <circle cx="774" cy="0" r="4"/>
+      <circle cx="852" cy="0" r="4"/>
+      <circle cx="1008" cy="0" r="4"/>
+      <circle cx="1086" cy="0" r="4"/>
+    </g>
+
+    <!-- someone steers, mid-run -->
+    <g>
+      <line x1="384" y1="-52" x2="384" y2="-8" stroke="#D9A05B" stroke-width="1.4" opacity=".75"/>
+      <circle cx="384" cy="0" r="7" fill="#0F0D09" stroke="#D9A05B" stroke-width="2"/>
+      <text x="384" y="-62" class="mono" font-size="11" fill="#D9A05B" text-anchor="middle">priya steers</text>
+    </g>
+
+    <!-- a gate: the run stops until a person answers -->
+    <g>
+      <line x1="618" y1="-52" x2="618" y2="-8" stroke="#D9A05B" stroke-width="1.4" opacity=".75"/>
+      <rect x="611" y="-7" width="14" height="14" rx="2" fill="#0F0D09" stroke="#D9A05B" stroke-width="2"/>
+      <text x="618" y="-62" class="mono" font-size="11" fill="#D9A05B" text-anchor="middle">sam approves</text>
+    </g>
+
+    <!-- someone joins late, and is caught up from the beginning -->
+    <g>
+      <line x1="930" y1="8" x2="930" y2="52" stroke="#3E9A86" stroke-width="1.4" opacity=".75"/>
+      <circle cx="930" cy="0" r="7" fill="#0F0D09" stroke="#3E9A86" stroke-width="2"/>
+      <path d="M930 44 L150 44" stroke="#3E9A86" stroke-width="1.1" opacity=".38" stroke-dasharray="3 4"/>
+      <path d="M150 44 l7 -4 l0 8 z" fill="#3E9A86" opacity=".55"/>
+      <text x="930" y="66" class="mono" font-size="11" fill="#3E9A86" text-anchor="start" dx="10">ana joins — replayed from the start</text>
+    </g>
+
+    <!-- the run continues past the frame -->
+    <rect x="1160" y="-90" width="120" height="180" fill="url(#fade)"/>
+  </g>
+
+  <!-- ── the claims, stated plainly ───────────────────────────── -->
+  <g class="mono" font-size="11.5" fill="#8C8474" letter-spacing=".4">
+    <text x="72" y="374">detached runs</text>
+    <text x="238" y="374" fill="#3C352A">·</text>
+    <text x="262" y="374">hash-chained log</text>
+    <text x="452" y="374" fill="#3C352A">·</text>
+    <text x="476" y="374">approvals from anywhere</text>
+    <text x="742" y="374" fill="#3C352A">·</text>
+    <text x="766" y="374">replay and fork</text>
+    <text x="944" y="374" fill="#3C352A">·</text>
+    <text x="968" y="374">zero runtime dependencies</text>
+  </g>
+</svg>
