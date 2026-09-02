@@ -43,7 +43,7 @@ function assert(cond, msg) {
 
   console.log('Launching Electron…');
   const app = await electron.launch({
-    args: ['.', '--user-data-dir=' + userData, '--no-sandbox'],
+    args: ['src/main/main.js', '--user-data-dir=' + userData, '--no-sandbox'],
     cwd: path.join(__dirname, '..'),
     env: { ...process.env, ELECTRON_DISABLE_SANDBOX: '1' }
   });

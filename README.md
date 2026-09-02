@@ -1,101 +1,136 @@
-# Codex Desktop Clone
+# Multiplayer AI Harness
 
-A working clone of the OpenAI **Codex desktop app**, built with Electron. It reproduces the
-core experience end to end: the home hero, threads, an agentic loop with plan checklists and
-file-edit cards, approval modes, isolated git worktrees, a two-pane Changes review panel with
-commit, automations, and more.
+A working prototype of a **multiplayer, bring-your-own-provider agent workbench** — the
+"mission control" layer from the strategy dossier: several people supervise coding agents
+together, on inference they already pay for, with keys and code that never leave their machines.
 
-| Home | Thread | Changes review |
-| --- | --- | --- |
-| ![Home](docs/home.png) | ![Thread](docs/thread.png) | ![Changes](docs/changes.png) |
+| Fleet | Bob approves Alice's agent | Alice sees it land | Changes review |
+| --- | --- | --- | --- |
+| ![Fleet](docs/harness/fleet.png) | ![Approval](docs/harness/bob-approval.png) | ![Thread](docs/harness/alice-thread.png) | ![Changes](docs/harness/changes.png) |
 
-## Features
+The repo also still contains the original single-player **Codex desktop clone** it grew out of
+(`src/`, run with `npm run codex-clone`; see [docs/](docs/) for its screenshots).
 
-**Agentic chat**
-- Real agent loop with three tools: `shell` (streaming output), `write_file` (rendered as
-  collapsible diff cards), and `update_plan` (a live step checklist that updates in place).
-- With an **OpenAI API key** (Settings), messages go to the Chat Completions API with
-  streaming, function calling, reasoning effort, and token-usage reporting per turn.
-- Without a key, an offline **demo agent** streams simulated reasoning/replies but drives the
-  same real tool pipeline — it actually writes files and runs commands.
-- **Reasoning items** ("Thought about it") with a shimmer while thinking, collapsible after.
-- **Steer mid-run**: sending while a turn is running queues the message into the loop
-  (rendered as a dashed bubble), like steering in Codex.
-- **Stop** button, error surfaced inline, per-turn token usage in the top bar.
+## The demo
 
-**Approval modes** (like the real app)
-- `Read Only` — only safe inspection commands; no file writes.
-- `Agent` — safe commands auto-run; risky commands and out-of-workspace writes show an
-  inline **Approve / Deny** card.
-- `Full Access` — everything auto-runs.
+1. Alice starts a thread on her runtime: *"Delete the build directory."*
+2. Her agent plans, then wants to run `rm -rf build`. Policy says that needs a human.
+3. Bob — in his own browser, or on his phone — sees it in **Needs attention**, opens the thread,
+   watches the same live stream (presence shows both), and clicks **Approve**.
+4. Alice's screen shows *"bob approved"*; the command runs **on Alice's machine**; both watch the
+   plan tick to done. Carol joins late and replays the entire log.
+5. Bob types while the next turn is running — it lands as an attributed **steer** inside Alice's turn.
 
-**Threads**
-- Persistent, searchable, date-grouped, auto-titled; rename via double-click.
-- **Parallel turns**: multiple threads can run at once. The sidebar shows a spinner while a
-  thread works, an amber dot when it's waiting for approval, and a green **Ready** badge when
-  it finished in the background (plus a desktop notification + toast).
-- **Archive** threads into a collapsible section, or delete them.
-- **Isolated worktrees**: toggle on the home screen to run a thread in its own
-  `git worktree` on a `codex/*` branch, so the agent never touches your checkout.
-  Worktrees are cleaned up when the thread is deleted.
+That whole flow is exercised by the browser end-to-end test (`npm run test:e2e`) with two real
+Chromium sessions, and it runs offline against the built-in demo agent.
 
-**Composer**
-- `@` file mentions with fuzzy autocomplete over `git ls-files`.
-- `/` slash prompts — built-ins (`/review`, `/explain`, `/tests`, `/commit-msg`) plus
-  custom prompts you define in Settings.
-- Image attachments (sent as multimodal input to the API), model picker,
-  **reasoning effort** selector (Low → Extra high), access-mode picker.
-- Home-screen hero with suggestion chips and a project dropdown (recents + open folder).
+## Architecture
 
-**Changes review panel**
-- Two-pane review: file list (A/M/D + per-file stats) and a line-numbered diff table,
-  untracked files included.
-- **Commit** (message box → `git add -A && git commit`), **Copy patch** to clipboard,
-  **Revert file** / delete untracked, live changed-file badge in the top bar.
+```
+alice's machine                          hub (sync service)                 teammates
+┌──────────────────────┐                 ┌───────────────────────────┐      ┌──────────────┐
+│ desktop / web client │──IPC/WS──┐      │ append-only thread logs   │──WS──│ bob: browser │
+│ agent runtime daemon │──WS──────┼─────▶│ presence · fleet registry │◀─WS──│ carol: phone │
+│  keys · tools · git  │  append  │      │ command routing (single   │      └──────────────┘
+│  worktrees · policy  │◀─commands┘      │ writer per thread)        │
+└──────────┬───────────┘                 └───────────────────────────┘
+           │ inference: direct, on alice's own keys — never through the hub
+           ▼
+   OpenAI · Anthropic · Ollama · OpenRouter · Codex CLI
+```
 
-**Automations**
-- Recurring prompts (hourly → weekly) that spawn fresh `⚡` threads on schedule, with
-  per-automation access mode, pause/resume, run-now, and delete.
+- **Hub** (`packages/hub`) — WebSocket + HTTP. Per-thread append-only event log in `node:sqlite`,
+  seq numbers, snapshot-on-subscribe, presence, org/user identity, runtime fleet registry, and
+  routing of human commands to the one runtime that owns each thread. Also serves the web UI and a
+  seq-cursor polling fallback (`GET /api/threads/:id/events?after=N`). It never sees provider keys
+  and never runs inference.
+- **Runtime** (`packages/runtime`) — headless daemon per machine. Holds provider keys, registers its
+  projects, owns threads, runs turns. Provider adapters normalize OpenAI, Anthropic, Ollama /
+  OpenAI-compatible, OpenRouter, and the real **Codex CLI** (`codex exec --json`, translated
+  event-for-event) behind one streaming interface; a **demo** provider drives the real tool pipeline
+  with no key. Executors run commands **locally** or through a **Crabbox** remote runner.
+- **Protocol** (`packages/protocol`) — `thread → turn → item` vocabulary modeled on Codex's
+  app-server protocol: `item/started` → deltas → `item/completed`, `turn/plan/updated`,
+  `item/commandExecution/requestApproval` answered with `accept | acceptForSession | decline | cancel`,
+  `serverRequest/resolved` broadcast to all subscribers, `turn/steer` with `expectedTurnId`.
+- **Policy engine** — Codex's `untrusted | on-request | never` approval policies ×
+  `read-only | workspace-write | danger-full-access` sandboxes, plus a trusted read-only command list
+  and a risky-command heuristic. Every agent action resolves to *allow / ask / deny*; *ask* becomes a
+  routable approval anyone in the org can answer.
+- **Web UI** (`apps/web`) — one vanilla-JS client used by browsers and the desktop shell: fleet view
+  (runtime cards, needs-attention queue with inline approve), org-wide thread list with live status,
+  shared thread view with presence avatars, attributed messages/steers/approvals, plan / command /
+  file-change cards, and a Changes panel (diff, commit, revert, copy patch) served by the runtime.
+- **Desktop shell** (`apps/desktop`) — Electron: spawns a local hub + runtime, loads the same UI,
+  adds a native folder picker. Point it at a remote hub with `HUB_HTTP_URL`.
 
-**Polish**
-- Dark & light themes, toasts, desktop notifications (toggleable), animations, thread-scoped
-  branch display, worktree badge, persistent settings/threads on disk.
+Why an event log and not CRDTs: each thread has exactly one writer (its runtime). Humans send
+commands; the runtime turns them into events. Late-join, replay, audit, and polling fallback all fall
+out of "replay from seq N".
 
 ## Run it
 
 ```bash
 npm install
-npm start
+
+# 1. hub (serves the UI on http://127.0.0.1:7777)
+npm run hub
+
+# 2. a runtime on any machine that should execute agents (keys stay here)
+OPENAI_API_KEY=sk-… node packages/runtime --hub ws://127.0.0.1:7777 --name alice --project ~/code/myrepo
+#    no key? the demo provider works out of the box; Ollama works with OLLAMA_BASE_URL
+
+# 3. open http://127.0.0.1:7777 in as many browsers as you like (each picks a name)
 ```
 
-On a headless machine: `xvfb-run -a npm start`.
+Or the desktop shell, which does 1–3 for you: `npm run desktop` (`HARNESS_PROJECTS=/path/a:/path/b`).
 
-## Test it
+Runtime config can also live in `~/.harness/runtime.json`:
 
-An end-to-end smoke test launches the real app with Playwright, creates a scratch git repo,
-and drives the whole surface — demo agent (reasoning, plan, file edit, shell), @ mentions,
-slash prompts, the Changes panel including a real commit, worktree threads, archiving,
-automations, and settings (33 assertions). It also produces the README screenshots:
+```json
+{ "hub": "ws://hub.example:7777", "org": "acme", "user": "alice",
+  "projects": ["/home/alice/code/api"], "executor": "local",
+  "providers": { "anthropic": { "apiKey": "…" }, "openai": { "apiKey": "…" } } }
+```
+
+## Tests
 
 ```bash
-xvfb-run -a npm run smoke
+npm run test:unit       # policy matrix, codex exec JSONL translator, diff, hub store
+npm run test:protocol   # scripted hub + runtime + two WebSocket clients (no browser)
+npm run test:e2e        # two real Chromium users: approve / steer / late-join / changes / worktree
+npm run test:desktop    # Electron shell boots hub + runtime and runs a turn (needs xvfb)
+npm run smoke           # the original Codex-clone smoke test
 ```
 
 ## Layout
 
 ```
-src/main/main.js      Electron main process, IPC wiring, automations scheduler
-src/main/store.js     Settings, threads, automations persistence (JSON in userData)
-src/main/agent.js     Agent loop: OpenAI + demo backends, tools (shell / write_file /
-                      update_plan), approvals, steering queue, line-diff for edit cards
-src/main/gitutils.js  Branch/status/diff/commit/revert/patch + worktree management
-src/main/preload.js   contextBridge API exposed to the renderer
-src/renderer/         UI (vanilla JS, no build step): index.html, styles.css, app.js, markdown.js
-test/smoke.js         Playwright end-to-end smoke test
+packages/protocol/       event + command vocabulary (Codex-style names)
+packages/hub/            server.js (WS/HTTP), store.js (sqlite event log)
+packages/runtime/        index.js (daemon/CLI), session.js (turn loop, tools, approvals),
+                         providers.js, codex-exec.js, executors.js (local, crabbox),
+                         policy.js, git.js, diff.js, store.js, hub-client.js
+apps/web/                shared UI (index.html, app.js, styles.css, markdown.js)
+apps/desktop/            Electron shell
+src/                     the original Codex desktop clone (single-player)
+test/                    unit, protocol smoke, browser e2e, desktop smoke, clone smoke
 ```
 
-## Notes
+## References & attribution
 
-- Not affiliated with OpenAI; this is a functional homage for experimentation.
-- The API key is stored locally in `userData/settings.json` and only sent to the base URL
-  you configure (default `https://api.openai.com/v1`).
+- **openai/codex** (Apache-2.0) was used as the reference for the protocol shape — thread/turn/item
+  types, notification and approval names, decision enums, approval/sandbox policy vocabulary, and the
+  `codex exec --json` event format the `codex-cli` adapter consumes. This repository is an independent
+  JavaScript implementation; no Codex source code is included.
+- **openclaw/crabbox** (MIT) informed the execution model: control-plane/data-plane separation,
+  seq-cursored event streams with an HTTP polling fallback, "only `exitCode` is success", and the
+  `crabbox run -- <cmd>` executor integration. No Crabbox source code is included.
+
+## Status & known gaps
+
+This is a prototype, not a product: identity is name-based (no SSO), the hub has no TLS or
+per-thread ACLs, sandboxing is policy + worktrees (no containers yet), and the Codex-CLI and Crabbox
+adapters are integration-tested only against fixtures because neither binary is present in CI.
+The dossier's Phase 2 exit criterion — *"Alice's agent hits an approval wall, Bob approves from his
+phone, both watch the diff land live"* — is what this repo demonstrates.
