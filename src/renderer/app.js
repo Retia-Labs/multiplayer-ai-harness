@@ -1,4 +1,4 @@
-/* Codex desktop clone — renderer logic */
+/* Quorum desktop clone — renderer logic */
 (function () {
   const $ = (sel) => document.querySelector(sel);
 
@@ -48,7 +48,32 @@
     commitMsg: $('#commit-msg'),
     commitBtn: $('#btn-commit'),
     copyPatchBtn: $('#btn-copy-patch'),
+    pushBtn: $('#btn-push'),
+    prBtn: $('#btn-pr'),
     closeDiff: $('#btn-close-diff'),
+    codeBtn: $('#btn-code'),
+    codeView: $('#code-view'),
+    codeTitle: $('#code-title'),
+    codeSave: $('#btn-code-save'),
+    closeCode: $('#btn-close-code'),
+    editorRoot: $('#editor-root'),
+    shareBtn: $('#btn-share'),
+    shareLabel: $('#share-label'),
+    joinBtn: $('#btn-join'),
+    presence: $('#presence'),
+    roomModal: $('#room-modal'),
+    roomTitle: $('#room-title'),
+    roomClose: $('#room-close'),
+    roomSharePane: $('#room-share-pane'),
+    roomJoinPane: $('#room-join-pane'),
+    roomCode: $('#room-code'),
+    roomCopy: $('#room-copy'),
+    roomRelayNote: $('#room-relay-note'),
+    roomStop: $('#room-stop'),
+    joinCode: $('#join-code'),
+    joinRelay: $('#join-relay'),
+    joinError: $('#join-error'),
+    joinGo: $('#join-go'),
     automationsModal: $('#automations-modal'),
     closeAutomations: $('#btn-close-automations'),
     automationList: $('#automation-list'),
@@ -101,7 +126,7 @@
 
   // ---------------- init ----------------
   async function init() {
-    state.settings = await window.codex.settings.get();
+    state.settings = await window.quorum.settings.get();
     state.customPrompts = state.settings.customPrompts || [];
     applyTheme();
     buildModelPicker();
@@ -111,16 +136,26 @@
 
     const recent = state.settings.recentProjects || [];
     if (recent.length) {
-      const p = await window.codex.project.describe(recent[0]).catch(() => null);
+      const p = await window.quorum.project.describe(recent[0]).catch(() => null);
       if (p) setProject(p);
     }
     await refreshThreads();
-    const runningIds = await window.codex.agent.running();
+    const runningIds = await window.quorum.agent.running();
     runningIds.forEach((id) => state.running.add(id));
     showHome();
     bindEvents();
-    window.codex.agent.onEvent(onAgentEvent);
-    window.codex.agent.onAutomation(({ threadId }) => {
+    window.quorum.agent.onEvent(onAgentEvent);
+    // Durable events carry what PEOPLE said and did. The live channel only
+    // carries what the agent is doing, so a room conversation would otherwise
+    // be invisible until a reload.
+    window.quorum.session.onEvents(({ threadId, events }) => {
+      if (threadId !== state.activeThreadId) return;
+      for (const ev of events) {
+        if (ev.kind === 'note.posted') renderRoomNote(ev);
+        if (ev.kind === 'directive.sent' && ev.actor.startsWith('human:')) renderRoomNote(ev, true);
+      }
+    });
+    window.quorum.agent.onAutomation(({ threadId }) => {
       refreshThreads();
       toast('<b>Automation started</b> — running in a new thread');
       state.running.add(threadId);
@@ -162,9 +197,12 @@
     state.activeThreadId = null;
     state.activeThread = null;
     closeDiff();
+    closeCode();
     el.chatView.classList.add('hidden');
     el.homeView.classList.remove('hidden');
     el.composerHostHome.appendChild(el.composer);
+    el.shareBtn.classList.add('hidden');
+    el.presence.classList.add('hidden');
     updateTopbar();
     renderThreadList();
     el.input.focus();
@@ -214,7 +252,7 @@
 
   async function refreshProject() {
     if (!state.project) return;
-    const p = await window.codex.project.describe(state.project.dir).catch(() => null);
+    const p = await window.quorum.project.describe(state.project.dir).catch(() => null);
     if (p) setProject(p);
   }
 
@@ -227,7 +265,7 @@
   async function refreshChangesBadge() {
     const dir = workDirForActive();
     if (!dir) { el.changesCount.classList.add('hidden'); return; }
-    const st = await window.codex.git.status(dir);
+    const st = await window.quorum.git.status(dir);
     if (st && st.length) {
       el.changesCount.textContent = st.length;
       el.changesCount.classList.remove('hidden');
@@ -237,7 +275,7 @@
   }
 
   async function showProjectMenu() {
-    const recent = await window.codex.project.recent();
+    const recent = await window.quorum.project.recent();
     el.homeProjectMenu.innerHTML = '';
     for (const dir of recent) {
       const b = document.createElement('button');
@@ -245,7 +283,7 @@
       b.innerHTML = `<span class="pi-title">${escapeHtml(dir.split('/').pop())}</span><span class="pi-sub">${escapeHtml(dir)}</span>`;
       b.addEventListener('click', async () => {
         el.homeProjectMenu.classList.add('hidden');
-        const p = await window.codex.project.describe(dir);
+        const p = await window.quorum.project.describe(dir);
         setProject(p);
       });
       el.homeProjectMenu.appendChild(b);
@@ -255,7 +293,7 @@
     open.innerHTML = '<span class="pi-title">Open folder…</span>';
     open.addEventListener('click', async () => {
       el.homeProjectMenu.classList.add('hidden');
-      const p = await window.codex.project.pick();
+      const p = await window.quorum.project.pick();
       if (p) setProject(p);
     });
     el.homeProjectMenu.appendChild(open);
@@ -268,7 +306,7 @@
 
   // ---------------- threads ----------------
   async function refreshThreads() {
-    state.threads = await window.codex.threads.list();
+    state.threads = await window.quorum.threads.list();
     renderThreadList();
   }
 
@@ -314,7 +352,7 @@
       : '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M20.54 5.23 19.15 3.55A1.9 1.9 0 0 0 17.7 3H6.3c-.6 0-1.13.21-1.45.55L3.46 5.23A2 2 0 0 0 3 6.5V19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6.5c0-.48-.17-.93-.46-1.27M12 17.5 6.5 12H10v-2h4v2h3.5zM5.12 5l.81-1h12l.94 1z"/></svg>';
     arch.addEventListener('click', async (e) => {
       e.stopPropagation();
-      await window.codex.threads.archive(t.id, !t.archived);
+      await window.quorum.threads.archive(t.id, !t.archived);
       if (state.activeThreadId === t.id && !t.archived) showHome();
       refreshThreads();
     });
@@ -324,7 +362,7 @@
     del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z"/></svg>';
     del.addEventListener('click', async (e) => {
       e.stopPropagation();
-      await window.codex.threads.delete(t.id);
+      await window.quorum.threads.delete(t.id);
       if (state.activeThreadId === t.id) showHome();
       refreshThreads();
     });
@@ -334,7 +372,7 @@
     item.addEventListener('click', () => selectThread(t.id));
     item.addEventListener('dblclick', async () => {
       const name = prompt('Rename thread', t.title);
-      if (name) { await window.codex.threads.rename(t.id, name); refreshThreads(); }
+      if (name) { await window.quorum.threads.rename(t.id, name); refreshThreads(); }
     });
     return item;
   }
@@ -376,10 +414,13 @@
   }
 
   async function selectThread(id) {
+    // The room chip and presence belong to the thread, so they refresh with it.
+    setTimeout(refreshRoomChip, 0);
     state.activeThreadId = id;
     state.ready.delete(id);
     closeDiff();
-    const t = await window.codex.threads.get(id);
+    closeCode();
+    const t = await window.quorum.threads.get(id);
     state.activeThread = t;
     clearMessages();
     renderThreadList();
@@ -388,7 +429,7 @@
     if (t.mode) el.modeSelect.value = t.mode;
     if (t.effort) el.effortSelect.value = t.effort;
     if (t.projectDir && (!state.project || state.project.dir !== t.projectDir)) {
-      const p = await window.codex.project.describe(t.projectDir).catch(() => null);
+      const p = await window.quorum.project.describe(t.projectDir).catch(() => null);
       if (p) setProject(p);
     }
     updateTopbar();
@@ -556,7 +597,7 @@
       if (ev.threadId !== state.activeThreadId) {
         state.ready.add(ev.threadId);
         const t = state.threads.find((x) => x.id === ev.threadId);
-        notify('Codex', (t ? t.title : 'A thread') + ' is ready for review');
+        notify('Quorum', (t ? t.title : 'A thread') + ' is ready for review');
         toast('<b>' + escapeHtml(t ? t.title : 'Thread') + '</b> finished — ready for review');
       }
       refreshThreads();
@@ -567,7 +608,7 @@
     if (ev.threadId !== state.activeThreadId) {
       if (ev.kind === 'approval-request') {
         const t = state.threads.find((x) => x.id === ev.threadId);
-        notify('Codex needs approval', ev.command || '');
+        notify('Quorum needs approval', ev.command || '');
         toast('<b>' + escapeHtml(t ? t.title : 'Thread') + '</b> is waiting for approval');
       }
       return;
@@ -659,7 +700,7 @@
     card.className = 'approval-card';
     const title = document.createElement('div');
     title.className = 'approval-title';
-    title.textContent = ev.action === 'write' ? 'Codex wants to write a file' : 'Codex wants to run a command';
+    title.textContent = ev.action === 'write' ? 'Quorum wants to write a file' : 'Quorum wants to run a command';
     const cmd = document.createElement('div');
     cmd.className = 'approval-cmd mono';
     cmd.textContent = (ev.action === 'write' ? '' : '$ ') + ev.command;
@@ -672,7 +713,7 @@
     deny.className = 'deny';
     deny.textContent = 'Deny';
     const answer = (ok) => {
-      window.codex.agent.approve({ threadId: ev.threadId, callId: ev.callId, approved: ok });
+      window.quorum.agent.approve({ threadId: ev.threadId, callId: ev.callId, approved: ok });
       state.needsApproval.delete(ev.threadId);
       renderThreadList();
       wrap.remove();
@@ -697,7 +738,7 @@
     if (!text) return;
 
     if (!state.activeThreadId) {
-      const t = await window.codex.threads.create({
+      const t = await window.quorum.threads.create({
         projectDir: state.project ? state.project.dir : null,
         worktree: el.worktreeCheck.checked
       });
@@ -724,9 +765,9 @@
     const model = el.modelSelect.value;
     const mode = el.modeSelect.value;
     const effort = el.effortSelect.value;
-    window.codex.settings.set({ model, mode, effort });
+    window.quorum.settings.set({ model, mode, effort });
     try {
-      await window.codex.agent.send({ threadId: state.activeThreadId, text, model, mode, effort, images });
+      await window.quorum.agent.send({ threadId: state.activeThreadId, text, model, mode, effort, images });
     } catch (err) {
       const d = document.createElement('div');
       d.className = 'turn-error';
@@ -763,7 +804,7 @@
     const dir = workDirForActive();
     if (!dir) return [];
     if (state.fileCache.dir !== dir) {
-      state.fileCache = { dir, files: await window.codex.project.files(dir) };
+      state.fileCache = { dir, files: await window.quorum.project.files(dir) };
     }
     return state.fileCache.files;
   }
@@ -848,9 +889,259 @@
     el.diffView.classList.remove('hidden');
     el.changesBtn.classList.add('active');
     el.diffPane.innerHTML = '<div class="diff-empty">Loading…</div>';
-    state.diffFiles = (await window.codex.git.diff(dir)) || [];
+    refreshGitButtons();
+    state.diffFiles = (await window.quorum.git.diff(dir)) || [];
     state.diffSel = 0;
     renderDiffPanel();
+  }
+
+  /* ---------- GitHub ----------
+     Push and pull-request run through the git and gh the user already has
+     configured. If gh is missing, the PR button says so rather than failing
+     when pressed - an offer the app cannot honour is worse than no offer. */
+
+  async function refreshGitButtons() {
+    const caps = state.githubCaps || (state.githubCaps = await window.quorum.github.capabilities());
+    el.pushBtn.classList.toggle('hidden', !caps.git);
+    el.prBtn.classList.toggle('hidden', !caps.git);
+    if (!caps.canOpenPr) {
+      el.prBtn.disabled = true;
+      el.prBtn.title = caps.gh
+        ? 'Run "gh auth login" to open pull requests from here'
+        : 'Install the GitHub CLI (gh) to open pull requests from here';
+    } else {
+      el.prBtn.disabled = false;
+      el.prBtn.title = 'Open a pull request for this branch';
+    }
+  }
+
+  async function doPush() {
+    if (!state.activeThreadId) return;
+    el.pushBtn.disabled = true;
+    el.pushBtn.textContent = 'Pushing…';
+    try {
+      const res = await window.quorum.github.push(state.activeThreadId);
+      toast('<b>Pushed</b> ' + escapeHtml(res.branch) + ' to origin');
+    } catch (err) {
+      toast('<b>Push failed</b> — ' + escapeHtml(String(err.message || err).replace(/^Error: /, '')), 6000);
+    } finally {
+      el.pushBtn.disabled = false;
+      el.pushBtn.textContent = 'Push';
+    }
+  }
+
+  async function doOpenPr() {
+    if (!state.activeThreadId) return;
+    const existing = await window.quorum.github.currentPr(state.activeThreadId).catch(() => null);
+    if (existing && existing.url) {
+      toast('<b>Already open</b> — PR #' + existing.number + ' for this branch');
+      return;
+    }
+    const t = state.activeThread;
+    const title = window.prompt('Pull request title', (t && t.title) || 'Changes from Quorum');
+    if (!title) return;
+    el.prBtn.disabled = true;
+    el.prBtn.textContent = 'Opening…';
+    try {
+      const res = await window.quorum.github.openPr(state.activeThreadId, { title });
+      toast('<b>Pull request opened</b><br>' + escapeHtml(res.url), 8000);
+    } catch (err) {
+      toast('<b>Could not open a PR</b> — ' + escapeHtml(String(err.message || err).replace(/^Error: /, '')), 7000);
+    } finally {
+      el.prBtn.disabled = false;
+      el.prBtn.textContent = 'Open PR';
+    }
+  }
+
+  /* ---------- Share / join ----------
+     Sharing hands out a code to a run this machine owns. Joining subscribes to
+     one somebody else owns. The difference matters and the UI keeps it visible:
+     a guest is taking part in a run, not driving it. */
+
+  /**
+   * A message from a person in the room.
+   *
+   * Rendered distinctly from your own messages and from the agent's, because
+   * "who said this" is the first thing you need to know in a room and the last
+   * thing you should have to work out from context.
+   */
+  function renderRoomNote(ev, isDirective) {
+    const who = ev.actor.startsWith('human:') ? ev.actor.slice(6) : 'system';
+    if (who === (state.settings.displayName || '') && !isDirective) return;
+    const seen = state.roomNotes || (state.roomNotes = new Set());
+    if (seen.has(ev.id)) return;
+    seen.add(ev.id);
+
+    const row = document.createElement('div');
+    row.className = 'msg msg-room' + (who === 'system' ? ' is-system' : '');
+    row.innerHTML =
+      '<div class="room-who">' + escapeHtml(who) + (isDirective ? ' steered the run' : '') + '</div>' +
+      '<div class="bubble">' + escapeHtml(ev.payload.text || '') + '</div>';
+    el.messages.appendChild(row);
+    el.messages.scrollTop = el.messages.scrollHeight;
+  }
+
+  async function refreshRoomChip() {
+    if (!state.activeThreadId) {
+      el.shareBtn.classList.add('hidden');
+      el.presence.classList.add('hidden');
+      return;
+    }
+    el.shareBtn.classList.remove('hidden');
+    const info = await window.quorum.room.info(state.activeThreadId).catch(() => null);
+    state.room = info;
+    if (info && info.joined) {
+      el.shareLabel.textContent = 'In ' + info.code;
+      el.shareBtn.classList.add('active');
+    } else if (info && info.code) {
+      el.shareLabel.textContent = info.code;
+      el.shareBtn.classList.add('active');
+    } else {
+      el.shareLabel.textContent = 'Share';
+      el.shareBtn.classList.remove('active');
+    }
+  }
+
+  function renderPresence(present) {
+    const others = (present || []).filter((p) => p.name !== (state.settings.displayName || ''));
+    if (!others.length) {
+      el.presence.classList.add('hidden');
+      el.presence.innerHTML = '';
+      return;
+    }
+    el.presence.classList.remove('hidden');
+    el.presence.innerHTML = others
+      .map((p) => {
+        const initials = p.name.slice(0, 2).toUpperCase();
+        const where = p.viewing ? ' · ' + p.viewing : '';
+        return '<span class="who" title="' + escapeHtml(p.name + where) + '">' + escapeHtml(initials) + '</span>';
+      })
+      .join('');
+  }
+
+  async function openShare() {
+    if (!state.activeThreadId) return;
+    const info = state.room;
+    if (info && info.joined) {
+      // Already a guest here. Sharing again would be nonsense - you are not the
+      // one hosting this.
+      showRoomModal({
+        title: 'You are in ' + info.code,
+        code: info.code,
+        note: 'Hosted by someone else on ' + info.relay + '. Leave from the thread menu.',
+        canStop: false
+      });
+      return;
+    }
+    if (info && info.code) {
+      showRoomModal({ title: 'Sharing this run', code: info.code, note: 'Relay: ' + info.relay, canStop: true });
+      return;
+    }
+    showRoomModal({ title: 'Share this run', code: 'opening…', note: '', canStop: true });
+    try {
+      const shared = await window.quorum.room.share(state.activeThreadId);
+      el.roomCode.textContent = shared.code;
+      el.roomRelayNote.textContent = 'Relay: ' + (shared.joinUrl || '').replace(/\/r\/.*$/, '');
+      refreshRoomChip();
+    } catch (err) {
+      el.roomCode.textContent = '—';
+      el.roomRelayNote.textContent = String(err.message || err);
+    }
+  }
+
+  function showRoomModal({ title, code, note, canStop }) {
+    el.roomTitle.textContent = title;
+    el.roomCode.textContent = code;
+    el.roomRelayNote.textContent = note || '';
+    el.roomStop.classList.toggle('hidden', !canStop);
+    el.roomSharePane.classList.remove('hidden');
+    el.roomJoinPane.classList.add('hidden');
+    el.roomModal.classList.remove('hidden');
+  }
+
+  function openJoin() {
+    el.roomTitle.textContent = 'Join a session';
+    el.roomSharePane.classList.add('hidden');
+    el.roomJoinPane.classList.remove('hidden');
+    el.joinError.classList.add('hidden');
+    el.joinRelay.value = state.settings.relayUrl || 'http://127.0.0.1:7788';
+    el.roomModal.classList.remove('hidden');
+    el.joinCode.focus();
+  }
+
+  async function doJoin() {
+    const code = el.joinCode.value.trim();
+    const relay = el.joinRelay.value.trim();
+    if (!code) return;
+    el.joinGo.disabled = true;
+    el.joinGo.textContent = 'Joining…';
+    el.joinError.classList.add('hidden');
+    try {
+      const thread = await window.quorum.room.join(code, relay);
+      await window.quorum.settings.set({ relayUrl: relay });
+      state.settings.relayUrl = relay;
+      el.roomModal.classList.add('hidden');
+      await refreshThreads();
+      await selectThread(thread.id);
+      toast('<b>Joined ' + escapeHtml(code.toUpperCase()) + '</b> — catching up on the run');
+    } catch (err) {
+      el.joinError.textContent = String(err.message || err).replace(/^Error: /, '');
+      el.joinError.classList.remove('hidden');
+    } finally {
+      el.joinGo.disabled = false;
+      el.joinGo.textContent = 'Join';
+    }
+  }
+
+  /* ---------- Code (editor) ----------
+     The editor reads the same workspace the agent is working in - the worktree
+     when the thread has one - so what a person opens is literally what the run
+     is changing, not a copy of it. */
+  let editor = null;
+
+  function ensureEditor() {
+    if (editor) return editor;
+    editor = window.QuorumEditor.create({
+      root: el.editorRoot,
+      api: window.quorum,
+      getThreadId: () => state.activeThreadId,
+      onDirty: (has) => {
+        el.codeSave.classList.toggle('primary', has);
+        el.codeSave.disabled = !has;
+        el.codeSave.textContent = has ? 'Save' : 'Saved';
+      }
+    });
+    return editor;
+  }
+
+  async function openCode() {
+    if (!state.activeThreadId) return;
+    if (state.diffOpen) closeDiff();
+    state.codeOpen = true;
+    el.homeView.classList.add('hidden');
+    el.chatView.classList.add('hidden');
+    el.codeView.classList.remove('hidden');
+    el.codeBtn.classList.add('active');
+    const t = await window.quorum.threads.get(state.activeThreadId);
+    const dir = (t && (t.workDir || t.projectDir)) || '';
+    // Split on both separators: these paths are absolute and on Windows they
+    // arrive with backslashes, so a forward-slash-only split returns the whole
+    // path and the header shows an unreadable temp directory.
+    const name = dir.split(/[\\/]/).filter(Boolean).pop() || 'Workspace';
+    el.codeTitle.textContent = t && t.branch ? name + '  ·  ' + t.branch : name;
+    el.codeTitle.title = dir;
+    el.codeSave.disabled = true;
+    el.codeSave.textContent = 'Saved';
+    await ensureEditor().refresh();
+  }
+
+  function closeCode() {
+    if (!state.codeOpen) return;
+    state.codeOpen = false;
+    el.codeView.classList.add('hidden');
+    el.codeBtn.classList.remove('active');
+    if (state.activeThreadId) el.chatView.classList.remove('hidden');
+    else el.homeView.classList.remove('hidden');
   }
 
   function closeDiff() {
@@ -900,10 +1191,10 @@
     revert.addEventListener('click', async () => {
       if (!confirm((f.untracked ? 'Delete ' : 'Discard changes to ') + f.path + '?')) return;
       const dir = workDirForActive();
-      const r = await window.codex.git.revertFile(dir, f.path, !!f.untracked);
+      const r = await window.quorum.git.revertFile(dir, f.path, !!f.untracked);
       if (r.ok) {
         toast('<b>' + escapeHtml(f.path) + '</b> ' + (f.untracked ? 'deleted' : 'reverted'));
-        state.diffFiles = (await window.codex.git.diff(dir)) || [];
+        state.diffFiles = (await window.quorum.git.diff(dir)) || [];
         state.diffSel = 0;
         renderDiffPanel();
         refreshChangesBadge();
@@ -954,12 +1245,12 @@
   async function doCommit() {
     const dir = workDirForActive();
     if (!dir || !state.diffFiles.length) return;
-    const msg = el.commitMsg.value.trim() || 'Changes from Codex';
-    const r = await window.codex.git.commit(dir, msg);
+    const msg = el.commitMsg.value.trim() || 'Changes from Quorum';
+    const r = await window.quorum.git.commit(dir, msg);
     if (r.ok) {
       toast('<b>Committed</b> — ' + escapeHtml(msg));
       el.commitMsg.value = '';
-      state.diffFiles = (await window.codex.git.diff(dir)) || [];
+      state.diffFiles = (await window.quorum.git.diff(dir)) || [];
       state.diffSel = 0;
       renderDiffPanel();
       refreshProject();
@@ -974,7 +1265,7 @@
   }
 
   async function renderAutomations() {
-    const autos = await window.codex.automations.list();
+    const autos = await window.quorum.automations.list();
     el.automationList.innerHTML = '';
     if (!autos.length) {
       const d = document.createElement('div');
@@ -1000,21 +1291,21 @@
       runNow.className = 'mini-btn';
       runNow.textContent = 'Run now';
       runNow.addEventListener('click', async () => {
-        await window.codex.automations.run(a.id);
+        await window.quorum.automations.run(a.id);
         el.automationsModal.classList.add('hidden');
       });
       const tgl = document.createElement('button');
       tgl.className = 'mini-btn';
       tgl.textContent = a.enabled ? 'Pause' : 'Resume';
       tgl.addEventListener('click', async () => {
-        await window.codex.automations.save({ id: a.id, enabled: !a.enabled });
+        await window.quorum.automations.save({ id: a.id, enabled: !a.enabled });
         renderAutomations();
       });
       const x = document.createElement('button');
       x.className = 'row-x';
       x.textContent = '×';
       x.addEventListener('click', async () => {
-        await window.codex.automations.delete(a.id);
+        await window.quorum.automations.delete(a.id);
         renderAutomations();
       });
       row.append(main, runNow, tgl, x);
@@ -1026,7 +1317,7 @@
     const name = el.autoName.value.trim();
     const promptText = el.autoPrompt.value.trim();
     if (!name || !promptText) { toast('⚠ Automation needs a name and a prompt'); return; }
-    await window.codex.automations.save({
+    await window.quorum.automations.save({
       name,
       prompt: promptText,
       everyMinutes: parseInt(el.autoInterval.value, 10),
@@ -1075,7 +1366,7 @@
   }
 
   async function saveSettings() {
-    state.settings = await window.codex.settings.set({
+    state.settings = await window.quorum.settings.set({
       openaiApiKey: el.settingApiKey.value.trim(),
       openaiBaseUrl: el.settingBaseUrl.value.trim() || 'https://api.openai.com/v1',
       customModels: el.settingCustomModels.value.trim(),
@@ -1103,7 +1394,7 @@
       el.archivedList.classList.toggle('hidden');
     });
     el.openProject.addEventListener('click', async () => {
-      const p = await window.codex.project.pick();
+      const p = await window.quorum.project.pick();
       if (p) setProject(p);
     });
     el.homeProjectBtn.addEventListener('click', (e) => {
@@ -1148,14 +1439,14 @@
     });
 
     el.attachBtn.addEventListener('click', async () => {
-      const picked = await window.codex.attach.pick();
+      const picked = await window.quorum.attach.pick();
       state.attachments.push(...picked);
       renderAttachRow();
     });
 
     el.send.addEventListener('click', sendMessage);
     el.stop.addEventListener('click', () => {
-      if (state.activeThreadId) window.codex.agent.cancel(state.activeThreadId);
+      if (state.activeThreadId) window.quorum.agent.cancel(state.activeThreadId);
     });
     el.input.addEventListener('input', () => { autosize(); updatePopup(); });
     el.input.addEventListener('keydown', (e) => {
@@ -1172,6 +1463,41 @@
     });
     el.input.addEventListener('blur', () => setTimeout(hidePopup, 150));
 
+    /* ---------- Share / join ---------- */
+    el.pushBtn.addEventListener('click', doPush);
+    el.prBtn.addEventListener('click', doOpenPr);
+    el.shareBtn.addEventListener('click', openShare);
+    el.joinBtn.addEventListener('click', openJoin);
+    el.roomClose.addEventListener('click', () => el.roomModal.classList.add('hidden'));
+    el.roomModal.addEventListener('click', (ev) => {
+      if (ev.target === el.roomModal) el.roomModal.classList.add('hidden');
+    });
+    el.roomCopy.addEventListener('click', () => {
+      navigator.clipboard.writeText(el.roomCode.textContent.trim());
+      el.roomCopy.textContent = 'Copied';
+      setTimeout(() => (el.roomCopy.textContent = 'Copy'), 1400);
+    });
+    el.roomStop.addEventListener('click', async () => {
+      if (!state.activeThreadId) return;
+      await window.quorum.room.unshare(state.activeThreadId);
+      el.roomModal.classList.add('hidden');
+      refreshRoomChip();
+    });
+    el.joinGo.addEventListener('click', doJoin);
+    el.joinCode.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') doJoin(); });
+
+    window.quorum.session.onPresence(({ threadId, present }) => {
+      if (threadId !== state.activeThreadId) return;
+      renderPresence(present);
+    });
+    window.quorum.room.onClosed(({ threadId, reason }) => {
+      if (threadId === state.activeThreadId) toast('The room closed: ' + reason);
+      refreshRoomChip();
+    });
+
+    el.codeBtn.addEventListener('click', () => (state.codeOpen ? closeCode() : openCode()));
+    el.closeCode.addEventListener('click', closeCode);
+    el.codeSave.addEventListener('click', () => editor && editor.save());
     el.changesBtn.addEventListener('click', () => (state.diffOpen ? closeDiff() : openDiff()));
     el.closeDiff.addEventListener('click', closeDiff);
     el.commitBtn.addEventListener('click', doCommit);
@@ -1179,7 +1505,7 @@
     el.copyPatchBtn.addEventListener('click', async () => {
       const dir = workDirForActive();
       if (!dir) return;
-      const r = await window.codex.git.copyPatch(dir);
+      const r = await window.quorum.git.copyPatch(dir);
       toast(r.bytes ? '<b>Patch copied</b> — ' + (r.bytes / 1024).toFixed(1) + ' KB' : 'Nothing to copy');
     });
 

@@ -75,7 +75,18 @@ code, pre, .mono { font-family: "SF Mono", ui-monospace, Menlo, Consolas, monosp
   padding: 14px 12px 8px 16px;
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 14.5px; letter-spacing: -.01em; }
-.brand-mark { opacity: .92; }
+/* The Retia mark is black artwork on transparency, so on the dark theme it
+   would sink into the sidebar. Inverting turns the crystal white and the R
+   black, which is the same mark reading correctly rather than a second file. */
+.brand-mark { opacity: .92; border-radius: 3px; object-fit: contain; filter: invert(1); }
+body[data-theme='light'] .brand-mark { filter: none; }
+/* The maker's name sits under the product name, not beside it in the same
+   weight - it is attribution, not a second brand competing for the eye. */
+.brand-by {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 8.5px; font-weight: 500; letter-spacing: .18em; text-transform: uppercase;
+  opacity: .45; margin-left: -3px; align-self: center;
+}
 .btn-icon {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border-radius: 8px; color: var(--text-dim);
@@ -565,3 +576,237 @@ tr.hunk td { background: var(--bg-raised); color: var(--text-faint); padding: 3p
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: content-box; }
+
+/* ===== Code editor =====
+   The highlight layer and the textarea must agree on every metric that affects
+   glyph position - family, size, line-height, padding, tab-size, white-space -
+   or the caret drifts away from the text it is supposed to be in. Both take
+   them from the same custom properties for exactly that reason. */
+#code-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+.editor-root {
+  --ed-font: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --ed-size: 12.5px;
+  --ed-line: 1.55;
+  --ed-pad: 10px;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ---- file tree ---- */
+.ed-tree {
+  width: 244px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border-soft);
+  min-height: 0;
+}
+.ed-tree-head { padding: 8px; border-bottom: 1px solid var(--border-soft); }
+.ed-filter {
+  width: 100%;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 8px;
+}
+.ed-filter:focus { outline: none; border-color: var(--text-faint); }
+.ed-tree-list { flex: 1; overflow: auto; padding: 4px 0 12px; }
+.ed-tree-empty { padding: 14px 12px; color: var(--text-faint); font-size: 12px; }
+
+.ed-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 3px 8px;
+  background: none;
+  border: 0;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ed-row:hover { background: var(--bg-hover); color: var(--text); }
+.ed-row:focus-visible { outline: 1px solid var(--text-faint); outline-offset: -1px; }
+.ed-row.is-dir { color: var(--text); font-weight: 500; }
+.ed-row.is-active { background: var(--bg-active); color: var(--text); }
+.ed-row.is-locked { opacity: .45; }
+.ed-caret { width: 10px; flex: none; color: var(--text-faint); font-size: 9px; }
+.ed-name { overflow: hidden; text-overflow: ellipsis; }
+.ed-untracked { margin-left: auto; color: var(--green); font-size: 9.5px; font-weight: 600; }
+
+/* ---- tabs ---- */
+.ed-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.ed-tabs {
+  display: flex;
+  gap: 1px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg);
+  min-height: 0;
+}
+.ed-tabs:empty { display: none; }
+.ed-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px 6px 11px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border-soft);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ed-tab:hover { color: var(--text); }
+.ed-tab.is-active { background: var(--code-bg); color: var(--text); box-shadow: inset 0 -2px 0 var(--text-dim); }
+.ed-dot { color: var(--amber); font-size: 9px; }
+.ed-tab-x { background: none; border: 0; color: var(--text-faint); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+.ed-tab-x:hover { color: var(--text); }
+
+/* ---- code surface ---- */
+.ed-pane { flex: 1; min-height: 0; display: flex; background: var(--code-bg); }
+.ed-empty {
+  margin: auto;
+  color: var(--text-faint);
+  font-size: 13px;
+  padding: 40px;
+  text-align: center;
+}
+.ed-code { flex: 1; display: flex; min-height: 0; min-width: 0; }
+
+.ed-gutter {
+  flex: none;
+  overflow: hidden;
+  padding: var(--ed-pad) 8px var(--ed-pad) 12px;
+  font-family: var(--ed-font);
+  font-size: var(--ed-size);
+  line-height: var(--ed-line);
+  color: var(--text-faint);
+  text-align: right;
+  white-space: pre;
+  user-select: none;
+  background: var(--code-bg);
+  border-right: 1px solid var(--border-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.ed-scroll { position: relative; flex: 1; min-width: 0; overflow: hidden; }
+
+.ed-hl, .ed-ta {
+  margin: 0;
+  padding: var(--ed-pad) 14px;
+  font-family: var(--ed-font);
+  font-size: var(--ed-size);
+  line-height: var(--ed-line);
+  white-space: pre;
+  tab-size: 2;
+  border: 0;
+  letter-spacing: normal;
+}
+
+.ed-hl {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--text);
+  will-change: transform;
+}
+
+.ed-ta {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  overflow: auto;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+  outline: none;
+}
+.ed-ta::selection { background: rgba(88, 166, 255, .3); }
+
+/* Token colours. Kept close to the app's existing accent set rather than
+   importing a third-party theme, so the editor looks like part of the app. */
+.t-com { color: var(--text-faint); font-style: italic; }
+.t-str { color: var(--green); }
+.t-num { color: var(--amber); }
+.t-kw  { color: var(--blue); }
+.t-fn  { color: var(--text); font-weight: 600; }
+.t-pun { color: var(--text-dim); }
+
+.ed-status {
+  flex: none;
+  padding: 5px 12px;
+  font-family: var(--ed-font);
+  font-size: 11px;
+  color: var(--text-faint);
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg);
+  min-height: 24px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ed-status.ok { color: var(--green); }
+.ed-status.warn { color: var(--amber); }
+.ed-status.bad { color: var(--red); }
+
+/* A save button that cannot do anything should say so rather than sitting
+   there looking like a button that is simply broken. */
+#btn-code-save:disabled { opacity: .4; cursor: default; background: none; border: 1px solid var(--border); color: var(--text-dim); }
+#code-title { font-weight: 650; }
+
+/* ===== Rooms: presence, sharing, and people talking =====
+   A room makes the app about people as much as about the agent, so the things
+   that say WHO get real weight rather than being footnotes on a message. */
+.presence { display: flex; align-items: center; gap: -4px; margin-right: 4px; }
+.presence .who {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; margin-left: -5px;
+  border-radius: 50%; background: var(--bg-active); color: var(--text);
+  border: 1.5px solid var(--bg);
+  font-size: 9.5px; font-weight: 700; letter-spacing: .02em;
+  cursor: default;
+}
+.presence .who:first-child { margin-left: 0; }
+
+#btn-share.active { color: var(--text); border-color: var(--text-faint); }
+#share-label { font-variant-numeric: tabular-nums; }
+
+/* A message from someone else in the room. */
+.msg-room { margin: 10px 0; }
+.msg-room .room-who {
+  font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--amber); margin-bottom: 3px;
+}
+.msg-room .bubble {
+  display: inline-block; padding: 8px 12px; border-radius: 12px;
+  background: var(--bg-raised); border: 1px solid var(--border-soft);
+  color: var(--text); max-width: 70ch;
+}
+.msg-room.is-system .room-who { color: var(--text-faint); }
+.msg-room.is-system .bubble { background: none; border-style: dashed; color: var(--text-dim); }
+
+/* Share / join modal */
+.room-lede { color: var(--text-dim); font-size: 13px; line-height: 1.55; margin-bottom: 16px; max-width: 56ch; }
+.room-code-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.room-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 26px; font-weight: 600; letter-spacing: .1em;
+  padding: 10px 16px; border-radius: 8px;
+  background: var(--code-bg); border: 1px solid var(--border);
+  color: var(--text); user-select: all;
+}
+.room-note { color: var(--text-faint); font-size: 11.5px; margin-bottom: 16px; word-break: break-all; }
+.room-error { color: var(--red); font-size: 12.5px; margin: 8px 0; }
+#join-code { text-transform: uppercase; letter-spacing: .12em; font-family: ui-monospace, monospace; }
