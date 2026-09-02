@@ -8,14 +8,15 @@
     "smoke": "node test/smoke.js",
     "test:kernel": "node --test test/kernel.test.js",
     "test:workspace": "node --test test/workspace.test.js",
-    "test": "node --test test/kernel.test.js test/workspace.test.js test/net.test.js test/github.test.js test/runner.test.js test/relay.test.js",
+    "test": "node --test test/kernel.test.js test/workspace.test.js test/net.test.js test/github.test.js test/anthropic.test.js test/runner.test.js test/relay.test.js",
     "test:net": "node --test test/net.test.js",
     "test:runner": "node --test test/runner.test.js",
     "test:relay": "node --test test/relay.test.js",
     "relay": "node bin/relay.js",
     "test:github": "node --test test/github.test.js",
     "dist": "electron-builder",
-    "dist:dir": "electron-builder --dir"
+    "dist:dir": "electron-builder --dir",
+    "test:anthropic": "node --test test/anthropic.test.js"
   },
   "license": "MIT",
   "devDependencies": {
@@ -40,13 +41,16 @@
       "src/runner/**",
       "src/net/**",
       "src/main/**",
-      "bin/**"
+      "bin/**",
+      "node_modules/**"
     ],
     "files": [
       "src/**",
       "bin/**",
       "package.json",
-      "!**/*.map"
+      "node_modules/**",
+      "!**/*.map",
+      "!**/test/**"
     ],
     "directories": {
       "output": "dist",
@@ -88,5 +92,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0"
   }
 }

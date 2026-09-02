@@ -110,7 +110,13 @@ class AgentSession {
     this.running = true;
     this.emit({ kind: 'turn-start' });
     try {
-      if (this.settings.openaiApiKey) {
+      // Bring-your-own harness: whichever provider has a key wins, and the
+      // offline demo agent is the fallback rather than an error. Claude is
+      // tried first because it is what this ships configured for.
+      if (this.settings.anthropicApiKey || (!this.settings.openaiApiKey && process.env.ANTHROPIC_API_KEY)) {
+        const { runAnthropic } = require('./providers/anthropic');
+        await runAnthropic(this, userText, images);
+      } else if (this.settings.openaiApiKey) {
         await this.runOpenAI(userText, images);
       } else {
         await this.runDemo(userText);

@@ -288,10 +288,21 @@
         </button>
       </div>
       <div class="modal-body">
+        <!-- Bring your own harness. Whichever key is present decides which
+             model runs; with neither, the offline demo agent takes over. -->
         <label class="field">
-          <span>OpenAI API key</span>
+          <span>Anthropic API key <small>(Claude — recommended)</small></span>
+          <input id="setting-anthropic-key" type="password" placeholder="sk-ant-…" spellcheck="false" />
+          <small>Stored locally, on this machine only. Never sent to the relay.</small>
+        </label>
+        <label class="field">
+          <span>Claude model</span>
+          <input id="setting-anthropic-model" type="text" placeholder="claude-opus-5" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>OpenAI API key <small>(optional)</small></span>
           <input id="setting-api-key" type="password" placeholder="sk-…" spellcheck="false" />
-          <small>Stored locally. Leave empty to use the offline demo agent.</small>
+          <small>Used only when there is no Anthropic key. Leave both empty for the offline demo agent.</small>
         </label>
         <label class="field">
           <span>API base URL</span>

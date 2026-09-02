@@ -8,6 +8,8 @@ const DEFAULT_SETTINGS = {
   effort: 'medium', // low | medium | high | xhigh
   mode: 'agent', // 'read-only' | 'agent' | 'full-access'
   openaiApiKey: '',
+  anthropicApiKey: '',
+  anthropicModel: 'claude-opus-5',
   openaiBaseUrl: 'https://api.openai.com/v1',
   customModels: '',
   notifications: true,

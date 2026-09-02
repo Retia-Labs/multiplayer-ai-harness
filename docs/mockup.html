@@ -1,0 +1,538 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>html{color-scheme:dark}body{margin:0}img{max-width:100%}</style>
+<title>Quorum Desktop</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  /* One visual world on purpose: the Retia console palette the product already
+     ships on its site, its banner and the app itself. Every colour is painted
+     explicitly so the page holds on any host ground. */
+  :root {
+    --bg:#0F0D09; --bg-1:#14110C; --bg-2:#1A1712; --bg-3:#201C15;
+    --line:#221E17; --line-2:#2E2820; --line-3:#3C352A;
+    --fg:#D9D3C5; --fg-1:#B0AA9A; --fg-2:#8C8474; --fg-3:#6E6757;
+    --agent:#5E9B79; --agent-d:#17281F; --agent-b:#2A4737;
+    --human:#D9A05B; --human-d:#2E2311; --human-b:#55401D;
+    --ok:#3E9A86; --bad:#CB6552; --violet:#9C8AC4;
+    --display:'Newsreader',Georgia,'Times New Roman',serif;
+    --sans:'Archivo',system-ui,-apple-system,'Segoe UI',sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1140px; margin: 0 auto; padding: 0 26px; }
+
+  /* ---------- masthead ---------- */
+  header.top { padding: 54px 0 30px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 20px; }
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand b { font-size: 14px; font-weight: 600; letter-spacing: -.01em; }
+  .eyebrow { font-family: var(--mono); font-size: 9.5px; letter-spacing: .22em; text-transform: uppercase; color: var(--fg-3); }
+  h1 { font-family: var(--display); font-weight: 500; font-size: clamp(34px,5.2vw,54px); line-height: 1.04; letter-spacing: -.024em; margin: 0; max-width: 16ch; text-wrap: balance; }
+  .stand { font-size: 17px; color: var(--fg-1); max-width: 62ch; margin: 0; line-height: 1.58; }
+  .stand strong { color: var(--fg); font-weight: 600; }
+
+  section { padding-top: 60px; }
+  h2 { font-family: var(--display); font-weight: 500; font-size: 28px; letter-spacing: -.018em; margin: 0 0 5px; text-wrap: balance; }
+  .sec-note { font-family: var(--mono); font-size: 10.5px; color: var(--fg-3); margin: 0 0 22px; }
+  p { max-width: 66ch; margin: 0 0 14px; color: var(--fg-1); }
+  code { font-family: var(--mono); font-size: .86em; background: var(--bg-2); border: 1px solid var(--line); border-radius: 2px; padding: 1px 5px; color: var(--fg-1); }
+
+  /* ---------- the three steps ---------- */
+  .steps { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); grid-template-columns: 1fr; margin-bottom: 30px; }
+  @media (min-width: 820px) { .steps { grid-template-columns: repeat(3,1fr); } }
+  .stepc { background: var(--bg-1); padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 6px; }
+  .stepc .n { font-family: var(--mono); font-size: 10px; letter-spacing: .18em; color: var(--fg-3); }
+  .stepc h3 { font-family: var(--sans); font-size: 15.5px; font-weight: 650; margin: 0; letter-spacing: -.005em; }
+  .stepc p { font-size: 13px; margin: 0; color: var(--fg-2); max-width: none; }
+  .stepc .cmd { font-family: var(--mono); font-size: 11.5px; color: var(--agent); margin-top: 4px; }
+
+  /* ---------- app chrome ---------- */
+  .app { border: 1px solid var(--line-2); border-radius: 7px; overflow: hidden; background: var(--bg-1); box-shadow: 0 24px 70px rgba(0,0,0,.5); }
+  .titlebar { display: flex; align-items: center; gap: 8px; padding: 9px 13px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot.r { background: #4a3430; } .dot.y { background: #4a3f2a; } .dot.g { background: #2c4136; }
+  .titlebar .name { margin-left: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--fg-3); letter-spacing: .06em; }
+
+  .shell { display: grid; grid-template-columns: 184px 1fr; min-height: 486px; }
+  .side { background: var(--bg-1); border-right: 1px solid var(--line); padding: 12px 0; }
+  .side-head { display: flex; align-items: center; gap: 7px; padding: 0 13px 12px; }
+  .side-head .n { font-size: 13px; font-weight: 650; }
+  .side-label { font-family: var(--mono); font-size: 9px; letter-spacing: .18em; text-transform: uppercase; color: var(--fg-3); padding: 12px 13px 4px; }
+  .thread { display: flex; align-items: center; gap: 7px; padding: 6px 13px; font-size: 12.5px; color: var(--fg-2); border-left: 2px solid transparent; }
+  .thread.on { background: var(--bg-3); color: var(--fg); border-left-color: var(--human); }
+  .pip { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .pip.run { background: var(--agent); } .pip.wait { background: var(--human); } .pip.idle { background: var(--line-3); }
+  .thread .tt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .main { display: flex; flex-direction: column; min-width: 0; }
+  .bar { display: flex; align-items: center; gap: 9px; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+  .bar .path { font-family: var(--mono); font-size: 11px; color: var(--fg-2); }
+  .bar .spacer { flex: 1; }
+  .chip { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; padding: 3px 8px; border-radius: 3px; border: 1px solid var(--line-2); color: var(--fg-2); white-space: nowrap; }
+  .chip.live { color: var(--agent); border-color: var(--agent-b); background: var(--agent-d); }
+  .chip.gate { color: var(--human); border-color: var(--human-b); background: var(--human-d); }
+  .chip.hide { opacity: 0; pointer-events: none; }
+  .faces { display: flex; }
+  .face { width: 21px; height: 21px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; border: 1.5px solid var(--bg-1); margin-left: -6px; color: var(--bg); }
+  .face:first-child { margin-left: 0; }
+  .face.p { background: var(--human); } .face.s { background: var(--ok); } .face.a { background: var(--violet); }
+
+  /* ---------- demo body ---------- */
+  .demo-grid { display: grid; grid-template-columns: 1fr 258px; min-height: 486px; }
+  .stream { padding: 16px 18px; overflow: hidden; display: flex; flex-direction: column; gap: 11px; }
+  .ev { display: flex; gap: 10px; animation: rise .32s ease both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .ev { animation: none; } }
+  .ev .who { flex: none; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8.5px; font-weight: 700; color: var(--bg); }
+  .who.agent { background: var(--agent); } .who.priya { background: var(--human); }
+  .who.sam { background: var(--ok); } .who.ana { background: var(--violet); }
+  .who.sys { background: var(--line-3); color: var(--fg-2); }
+  .ev .body { min-width: 0; flex: 1; }
+  .ev .nm { font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-3); margin-bottom: 2px; }
+  .ev .tx { font-size: 13.5px; color: var(--fg-1); line-height: 1.5; }
+  .ev.think .tx { color: var(--fg-3); font-style: italic; }
+  .card { border: 1px solid var(--line-2); border-radius: 5px; background: var(--bg-2); padding: 9px 11px; margin-top: 4px; font-family: var(--mono); font-size: 11.5px; color: var(--fg-1); }
+  .card .hd { font-size: 9px; letter-spacing: .16em; text-transform: uppercase; color: var(--fg-3); margin-bottom: 6px; display: flex; justify-content: space-between; gap: 10px; }
+  .card .hd .edit { color: var(--fg-3); border: 1px solid var(--line-3); border-radius: 3px; padding: 0 5px; letter-spacing: .1em; }
+  .card.gate { border-color: var(--human-b); background: var(--human-d); }
+  .card.gate .hd { color: var(--human); }
+  .card .add { color: var(--agent); }
+  .plan { list-style: none; padding: 0; margin: 0; }
+  .plan li { display: flex; gap: 7px; padding: 2px 0; align-items: baseline; }
+  .plan .bx { color: var(--fg-3); }
+  .plan li.done { color: var(--fg-3); text-decoration: line-through; }
+  .plan li.done .bx { color: var(--ok); }
+  .plan li.now { color: var(--fg); } .plan li.now .bx { color: var(--human); }
+  .btnrow { display: flex; gap: 7px; margin-top: 8px; }
+  .mini { font-family: var(--sans); font-size: 11.5px; font-weight: 500; padding: 4px 11px; border-radius: 4px; border: 1px solid var(--line-3); background: none; color: var(--fg-1); }
+  .mini.yes { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+
+  .rail { border-left: 1px solid var(--line); background: var(--bg); display: flex; flex-direction: column; }
+  .rail-h { font-family: var(--mono); font-size: 9px; letter-spacing: .18em; text-transform: uppercase; color: var(--fg-3); padding: 12px 14px 8px; border-bottom: 1px solid var(--line); }
+  .log { flex: 1; overflow: hidden; padding: 8px 0; }
+  .row { display: grid; grid-template-columns: 24px 1fr; gap: 8px; padding: 3px 14px; font-family: var(--mono); font-size: 10.5px; color: var(--fg-2); animation: rise .3s ease both; }
+  .row .sq { color: var(--fg-3); font-variant-numeric: tabular-nums; }
+  .row .kd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row.human .kd { color: var(--human); } .row.agent .kd { color: var(--agent); }
+  .verify { border-top: 1px solid var(--line); padding: 10px 14px; font-family: var(--mono); font-size: 10px; color: var(--ok); display: flex; align-items: center; gap: 7px; }
+
+  .controls { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+  button.ctl { font-family: var(--sans); font-size: 13px; font-weight: 600; padding: 8px 18px; border-radius: 5px; cursor: pointer; background: var(--fg); color: var(--bg); border: 1px solid var(--fg); transition: opacity .15s; }
+  button.ctl:hover { opacity: .88; }
+  button.ctl.ghost { background: none; color: var(--fg-1); border-color: var(--line-3); }
+  button.ctl:focus-visible { outline: 2px solid var(--human); outline-offset: 2px; }
+  .scrub { flex: 1; min-width: 160px; height: 3px; background: var(--line-2); border-radius: 2px; }
+  .scrub .fill { height: 100%; background: var(--agent); border-radius: 2px; width: 0; transition: width .3s; }
+  .step-label { font-family: var(--mono); font-size: 10.5px; color: var(--fg-3); min-width: 150px; }
+
+  /* ---------- claims ---------- */
+  .claims { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); grid-template-columns: 1fr; }
+  @media (min-width: 760px) { .claims { grid-template-columns: repeat(2,1fr); } }
+  .claim { background: var(--bg-1); padding: 18px 20px; }
+  .claim h3 { font-family: var(--display); font-size: 19px; font-weight: 500; margin: 0 0 6px; letter-spacing: -.012em; }
+  .claim p { font-size: 13px; margin: 0; color: var(--fg-2); max-width: none; }
+  .claim .k { font-family: var(--mono); font-size: 9px; letter-spacing: .18em; text-transform: uppercase; color: var(--agent); display: block; margin-bottom: 8px; }
+
+  /* ---------- rfs ---------- */
+  .uses { display: grid; gap: 22px; }
+  .use { border-top: 1px solid var(--line); padding-top: 20px; display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 880px) { .use { grid-template-columns: 200px 1fr; gap: 28px; align-items: start; } }
+  .use .who-for { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--human); }
+  .use h3 { font-family: var(--display); font-size: 20px; font-weight: 500; margin: 4px 0 0; letter-spacing: -.012em; }
+  .use p { font-size: 13.5px; margin: 0 0 10px; }
+  .use .same { font-family: var(--mono); font-size: 11px; color: var(--fg-3); border-left: 2px solid var(--line-3); padding-left: 10px; }
+  .use .same b { color: var(--agent); font-weight: 500; }
+
+  .tablewrap { overflow-x: auto; margin-top: 16px; }
+  table.st { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 540px; }
+  table.st th { text-align: left; font-family: var(--mono); font-size: 9px; letter-spacing: .16em; text-transform: uppercase; color: var(--fg-3); font-weight: 500; padding: 0 14px 9px 0; border-bottom: 1px solid var(--line-2); }
+  table.st td { padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); color: var(--fg-1); vertical-align: top; }
+  td.tag { font-family: var(--mono); font-size: 10.5px; white-space: nowrap; }
+  .built { color: var(--ok); } .soon { color: var(--human); } .no { color: var(--fg-3); }
+
+  footer { margin-top: 58px; padding: 22px 0 90px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 10.5px; color: var(--fg-3); display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+  @media (max-width: 860px) {
+    .shell { grid-template-columns: 1fr; }
+    .side { display: none; }
+    .demo-grid { grid-template-columns: 1fr; }
+    .rail { border-left: 0; border-top: 1px solid var(--line); max-height: 220px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="top">
+    <div class="brand">
+      <svg width="18" height="18" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <circle cx="16" cy="16" r="12.5" stroke="#D9D3C5" stroke-width="1.6" opacity=".42"/>
+        <circle cx="16" cy="16" r="4" fill="#D9D3C5"/>
+        <line x1="16" y1="16" x2="24.84" y2="7.16" stroke="#D9D3C5" stroke-width="1.5"/>
+        <circle cx="24.84" cy="7.16" r="3" fill="#D9D3C5"/>
+        <line x1="16" y1="16" x2="3.92" y2="12.76" stroke="#D9D3C5" stroke-width="1.3" opacity=".62"/>
+        <circle cx="3.92" cy="12.76" r="2.5" fill="#D9D3C5" opacity=".62"/>
+        <line x1="16" y1="16" x2="19.24" y2="28.08" stroke="#D9D3C5" stroke-width="1.3" opacity=".62"/>
+        <circle cx="19.24" cy="28.08" r="2.5" fill="#D9D3C5" opacity=".62"/>
+      </svg>
+      <b>Quorum</b>
+      <span class="eyebrow">Retia Labs</span>
+    </div>
+
+    <h1>Download it. Read out a code. Build together.</h1>
+
+    <p class="stand">Quorum is a multiplayer AI coding IDE. You describe what you want, an agent does it, and <strong>anyone you give a code to can join the same run</strong> — watch it, talk in it, redirect it, approve the risky bits. Nobody has to look at the code unless they want to type.</p>
+  </header>
+
+  <!-- ═══════════ HOW IT GOES ═══════════ -->
+  <section>
+    <h2>Ninety seconds, start to finish</h2>
+    <p class="sec-note">What a person actually does · no accounts, no setup, no repo access needed to join</p>
+
+    <div class="steps">
+      <div class="stepc">
+        <span class="n">01</span>
+        <h3>Download and open it</h3>
+        <p>One installer, Mac, Windows or Linux. Paste a Claude key in Settings, or don't — the offline agent still runs commands and writes files.</p>
+        <span class="cmd">Quorum Setup.exe · 77 MB</span>
+      </div>
+      <div class="stepc">
+        <span class="n">02</span>
+        <h3>Say what you want</h3>
+        <p>Plain sentences. The agent plans, runs commands, edits files, and stops to ask you before anything risky.</p>
+        <span class="cmd">"the refund webhook 500s on retries"</span>
+      </div>
+      <div class="stepc">
+        <span class="n">03</span>
+        <h3>Read out the code</h3>
+        <p>Press Share. Anyone who types that code joins the run, is replayed everything they missed, and can talk, steer and approve.</p>
+        <span class="cmd">CXNQ-Q2WH</span>
+      </div>
+    </div>
+
+    <p>That's the whole product. The demo below is that session, playing at the speed it really happens.</p>
+  </section>
+
+  <!-- ═══════════ THE DEMO ═══════════ -->
+  <section>
+    <h2>Three people, one agent</h2>
+    <p class="sec-note">Playable · left is the room · right is the record underneath it</p>
+
+    <div class="app">
+      <div class="titlebar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="name">Quorum — payments-api</span>
+      </div>
+
+      <div class="shell">
+        <aside class="side">
+          <div class="side-head">
+            <svg width="15" height="15" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <circle cx="16" cy="16" r="12.5" stroke="#D9D3C5" stroke-width="1.8" opacity=".42"/>
+              <circle cx="16" cy="16" r="4.5" fill="#D9D3C5"/>
+              <line x1="16" y1="16" x2="24.84" y2="7.16" stroke="#D9D3C5" stroke-width="1.7"/>
+              <circle cx="24.84" cy="7.16" r="3" fill="#D9D3C5"/>
+            </svg>
+            <span class="n">Quorum</span>
+          </div>
+          <div class="side-label">Today</div>
+          <div class="thread on"><span class="pip run" id="pip"></span><span class="tt">Refund webhook 500s</span></div>
+          <div class="thread"><span class="pip wait"></span><span class="tt">Bump stripe SDK</span></div>
+          <div class="thread"><span class="pip idle"></span><span class="tt">Flaky auth test</span></div>
+          <div class="side-label">Yesterday</div>
+          <div class="thread"><span class="pip idle"></span><span class="tt">Add idempotency keys</span></div>
+        </aside>
+
+        <div class="main">
+          <div class="bar">
+            <span class="path">payments-api · quorum/refund-500s</span>
+            <span class="spacer"></span>
+            <span class="chip hide" id="code-chip">Code</span>
+            <span class="chip" id="room-chip">not shared</span>
+            <span class="chip live" id="state-chip">running</span>
+            <div class="faces" id="faces"><span class="face p" title="Priya">PR</span></div>
+          </div>
+
+          <div class="demo-grid">
+            <div class="stream" id="stream"></div>
+            <div class="rail">
+              <div class="rail-h">The record</div>
+              <div class="log" id="log"></div>
+              <div class="verify"><span>✓</span> <span id="verify">chain intact · 0 events</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="ctl" id="play">▶ Play the session</button>
+      <button class="ctl ghost" id="step">Step</button>
+      <button class="ctl ghost" id="reset">Reset</button>
+      <span class="step-label" id="label">ready</span>
+      <div class="scrub"><div class="fill" id="fill"></div></div>
+    </div>
+
+    <p style="margin-top:18px">Two things to watch. <strong>The Code button stays hidden</strong> until the agent touches a file — this is a room you talk in, not an editor you stare at. And <strong>Sam's approval is the same kind of row as the agent's own actions</strong> in the right-hand column: one ordered, chained log, which is how someone joining at event 12 can be shown 1 to 11 and be genuinely caught up.</p>
+  </section>
+
+  <!-- ═══════════ WHY IT HOLDS ═══════════ -->
+  <section>
+    <h2>Four things that are true of it</h2>
+    <p class="sec-note">All four are built and covered by tests today</p>
+
+    <div class="claims">
+      <div class="claim">
+        <span class="k">the run is not in your window</span>
+        <h3>Close the laptop; it keeps going</h3>
+        <p>The agent runs in its own process. Quit the app mid-task and reopen it — the work continued and the app reattaches. That is also why anyone else can join: there is something to join.</p>
+      </div>
+      <div class="claim">
+        <span class="k">join with a code, not an account</span>
+        <h3>No repo, no install, no login</h3>
+        <p>Someone who has never seen the codebase can watch it being changed, ask questions, and approve a risky command. They are replayed everything from before they arrived.</p>
+      </div>
+      <div class="claim">
+        <span class="k">approvals are facts, not pop-ups</span>
+        <h3>Anyone in the room can unblock it</h3>
+        <p>A risky command stops the run for everybody. Whoever is around answers, from a laptop or a phone. The answer is recorded against a person, and the agent cannot approve itself.</p>
+      </div>
+      <div class="claim">
+        <span class="k">the log is hash-chained</span>
+        <h3>Nobody can rewrite what happened</h3>
+        <p>Every event commits to the one before it. Edit or drop anything earlier and every hash after it breaks. Being in the room lets you take part in a run — never forge its history.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════ OTHER ROOMS ═══════════ -->
+  <section>
+    <h2>The same room, different work</h2>
+    <p class="sec-note">The YC request says: anywhere a team already crowds around one problem. These are the crowds that already exist.</p>
+
+    <p>Nothing below needs a new product. A run is a run: something long, something with steps, something that occasionally has to stop and ask a person. Only the tools the agent is given change.</p>
+
+    <div class="uses">
+
+      <div class="use">
+        <div>
+          <span class="who-for">on-call · incidents</span>
+          <h3>The war room</h3>
+        </div>
+        <div>
+          <p>Three engineers already crowd around one problem at 3am, in a Slack huddle, watching one person type. Now the agent reads logs and proposes the fix while everyone watches, and the person with production access approves the deploy — from their phone, without opening a laptop.</p>
+          <div class="same">Same room. Different tools: <b>logs, metrics, deploy</b> instead of shell and write_file. The incident review writes itself, because the log already says who approved what and when.</div>
+        </div>
+      </div>
+
+      <div class="use">
+        <div>
+          <span class="who-for">support · escalations</span>
+          <h3>The escalated ticket</h3>
+        </div>
+        <div>
+          <p>An agent works one hard ticket end to end: reads the account, reproduces the problem, drafts the fix and the reply. Support watches, the engineer joins when it gets technical, and the refund needs someone with authority to approve it.</p>
+          <div class="same">Same room. Different tools: <b>the CRM, the account, the refund API</b>. The approval gate is already the shape this needs.</div>
+        </div>
+      </div>
+
+      <div class="use">
+        <div>
+          <span class="who-for">deals · pricing</span>
+          <h3>The deal desk</h3>
+        </div>
+        <div>
+          <p>A rep, a solutions engineer and a finance approver already crowd around one contract. The agent assembles the quote, the security answers and the redlines; finance approves the discount inside the run rather than three days later in email.</p>
+          <div class="same">Same room. Different tools: <b>the CRM, the pricing sheet, the contract</b>. Who approved which discount is exactly the question the chained log answers.</div>
+        </div>
+      </div>
+
+      <div class="use">
+        <div>
+          <span class="who-for">regulated work</span>
+          <h3>The one that pays</h3>
+        </div>
+        <div>
+          <p>Compliance, legal, clinical, financial operations. Teams that already accept process friction because they must be able to answer "who approved this, and when" a year later — and who cannot use a tool that only remembers a chat transcript.</p>
+          <div class="same">Same room, same tools, <b>same log</b> — and here the tamper-evidence is not a nice detail, it is the reason they can buy it at all.</div>
+        </div>
+      </div>
+
+    </div>
+
+    <p style="margin-top:26px">The honest ordering: coding is the one we know and the one with the volume, so it ships first. Incidents are the nearest neighbour — an on-call rotation is a crowd that already exists, unlike day-to-day coding where pairing is rare. The regulated cases are the ones where the log stops being a feature and becomes the reason to pay.</p>
+  </section>
+
+  <!-- ═══════════ STATE OF IT ═══════════ -->
+  <section>
+    <h2>Where it actually is</h2>
+    <p class="sec-note">101 unit and integration tests · 48 end-to-end assertions against the real app</p>
+
+    <div class="tablewrap">
+      <table class="st">
+        <thead><tr><th>Thing</th><th></th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td>Runs survive quitting the app</td><td class="tag"><span class="built">built</span></td><td>Own process; the window just reads it.</td></tr>
+          <tr><td>Join a run with a code</td><td class="tag"><span class="built">built</span></td><td>Works behind NAT with nothing to configure.</td></tr>
+          <tr><td>Talk, steer and approve from the room</td><td class="tag"><span class="built">built</span></td><td>Including from a machine with no copy of the repo.</td></tr>
+          <tr><td>Tamper-evident record</td><td class="tag"><span class="built">built</span></td><td>Tested: a room member cannot forge it.</td></tr>
+          <tr><td>Claude as the model</td><td class="tag"><span class="built">built</span></td><td>Adaptive thinking, streaming, effort. Bring your own key.</td></tr>
+          <tr><td>Code stays out of the way</td><td class="tag"><span class="built">built</span></td><td>Editor appears only once a file is touched.</td></tr>
+          <tr><td>Downloadable installer</td><td class="tag"><span class="built">built</span></td><td>Windows built and verified; Mac and Linux configured.</td></tr>
+          <tr><td>Replay to any moment, fork from there</td><td class="tag"><span class="soon">no UI</span></td><td>Works behind the scenes; no button yet.</td></tr>
+          <tr><td>Hosted relay</td><td class="tag"><span class="soon">next</span></td><td>Someone has to run one today. One small process.</td></tr>
+          <tr><td>Runs that need nobody's laptop awake</td><td class="tag"><span class="no">later</span></td><td>The honest limit of "long-running" right now.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>
+    <span>Quorum · Retia Labs</span>
+    <span>2 September 2026</span>
+  </footer>
+</div>
+
+<script>
+  /* The demo plays one event list into two views: the room on the left and the
+     log on the right. Same array for both, because that is the relationship the
+     real product has. */
+
+  const SCRIPT = [
+    { label: 'Priya asks', ev: 'session.started', by: 'priya',
+      stream: { who: 'priya', nm: 'Priya', tx: 'The refund webhook is 500-ing when Stripe retries a delivery. Find out why and fix it.' } },
+
+    { ev: 'turn.reasoning', by: 'agent',
+      stream: { who: 'agent', nm: 'Quorum', cls: 'think', tx: 'Reading the handler and the last 200 webhook deliveries…' } },
+
+    { label: 'it plans', ev: 'plan.set', by: 'agent',
+      stream: { who: 'agent', nm: 'Quorum', plan: [['now','Reproduce with a replayed event'],['','Make the handler idempotent'],['','Add a regression test']] } },
+
+    { ev: 'command.ran', by: 'agent',
+      stream: { who: 'agent', nm: 'Quorum', card: { hd: 'ran a command', body: '$ npm run replay -- evt_1KpX9\n→ 500 Internal Server Error' } } },
+
+    { label: 'Priya shares it', ev: 'note.posted', by: 'sys', room: 'CXNQ-Q2WH',
+      stream: { who: 'sys', nm: 'System', tx: 'Run shared. Anyone with code CXNQ-Q2WH can join.' } },
+
+    { label: 'Sam joins', ev: 'presence.seen', by: 'sam', join: 'sam',
+      stream: { who: 'sys', nm: 'System', tx: 'Sam joined and was replayed the run from the beginning.' } },
+
+    { label: 'code appears', ev: 'artifact.changed', by: 'agent', code: true,
+      stream: { who: 'agent', nm: 'Quorum', card: { hd: 'edited handlers/refund.js', edit: true, body: '+ const seen = await store.has(event.id);\n+ if (seen) return res.status(200).end();', add: true } } },
+
+    { label: 'it stops to ask', ev: 'gate.requested', by: 'agent', state: 'blocked',
+      stream: { who: 'agent', nm: 'Quorum', gate: 'stripe refunds create --amount 4200 --idempotency-key evt_1KpX9' } },
+
+    { label: 'Sam approves', ev: 'gate.resolved', by: 'sam', state: 'running',
+      stream: { who: 'sam', nm: 'Sam · from his phone', tx: 'Approved — that key is the event id, so a retry is safe.' } },
+
+    { label: 'Ana redirects it', ev: 'directive.sent', by: 'ana', join: 'ana',
+      stream: { who: 'ana', nm: 'Ana · steering', tx: 'Also assert we never call Stripe twice for one event id.' } },
+
+    { ev: 'directive.honored', by: 'agent',
+      stream: { who: 'agent', nm: 'Quorum', cls: 'think', tx: 'Honoured Ana’s directive — added the assertion to the regression test.' } },
+
+    { label: 'done', ev: 'run.finished', by: 'agent', state: 'done',
+      stream: { who: 'agent', nm: 'Quorum', plan: [['done','Reproduce with a replayed event'],['done','Make the handler idempotent'],['done','Add a regression test']] } }
+  ];
+
+  const $ = (s) => document.querySelector(s);
+  const stream = $('#stream'), log = $('#log'), faces = $('#faces');
+  const stateChip = $('#state-chip'), roomChip = $('#room-chip'), codeChip = $('#code-chip');
+  const verify = $('#verify'), label = $('#label'), fill = $('#fill'), pip = $('#pip');
+
+  let at = 0, timer = null;
+  const FACE = { sam: ['s','SA','Sam'], ana: ['a','AN','Ana'] };
+  const esc = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  function render(i) {
+    const s = SCRIPT[i], d = s.stream;
+
+    const row = document.createElement('div');
+    row.className = 'ev' + (d.cls ? ' ' + d.cls : '');
+    let inner = '';
+    if (d.tx) inner = '<div class="tx">' + esc(d.tx) + '</div>';
+    if (d.card) {
+      inner = '<div class="card"><div class="hd"><span>' + esc(d.card.hd) + '</span>' +
+        (d.card.edit ? '<span class="edit">edit</span>' : '') + '</div><div class="' +
+        (d.card.add ? 'add' : '') + '" style="white-space:pre-wrap">' + esc(d.card.body) + '</div></div>';
+    }
+    if (d.gate) {
+      inner = '<div class="card gate"><div class="hd"><span>waiting for someone to approve</span></div>' +
+        esc(d.gate) + '<div class="btnrow"><button class="mini yes">Approve</button><button class="mini">Deny</button></div></div>';
+    }
+    if (d.plan) {
+      inner = '<div class="card"><div class="hd"><span>plan</span></div><ul class="plan">' +
+        d.plan.map((p) => '<li class="' + p[0] + '"><span class="bx">' +
+          (p[0] === 'done' ? '✓' : p[0] === 'now' ? '▸' : '○') + '</span>' + esc(p[1]) + '</li>').join('') +
+        '</ul></div>';
+    }
+    row.innerHTML = '<span class="who ' + d.who + '">' +
+      (d.who === 'agent' ? 'Q' : d.nm.slice(0,2).toUpperCase()) +
+      '</span><div class="body"><div class="nm">' + esc(d.nm) + '</div>' + inner + '</div>';
+    stream.appendChild(row);
+    while (stream.children.length > 6) stream.removeChild(stream.firstChild);
+
+    const lr = document.createElement('div');
+    lr.className = 'row ' + (s.by === 'agent' ? 'agent' : s.by === 'sys' ? '' : 'human');
+    lr.innerHTML = '<span class="sq">' + String(i + 1).padStart(2,'0') + '</span><span class="kd">' + esc(s.ev) + '</span>';
+    log.appendChild(lr);
+    while (log.children.length > 13) log.removeChild(log.firstChild);
+
+    if (s.room) roomChip.textContent = s.room;
+    if (s.code) codeChip.classList.remove('hide');
+    if (s.join) {
+      const f = FACE[s.join];
+      if (f && !faces.querySelector('.face.' + f[0])) {
+        const el = document.createElement('span');
+        el.className = 'face ' + f[0];
+        el.title = f[2];
+        el.textContent = f[1];
+        faces.appendChild(el);
+      }
+    }
+    if (s.state) {
+      stateChip.textContent = s.state;
+      stateChip.className = 'chip ' + (s.state === 'blocked' ? 'gate' : s.state === 'done' ? '' : 'live');
+      pip.className = 'pip ' + (s.state === 'blocked' ? 'wait' : s.state === 'done' ? 'idle' : 'run');
+    }
+
+    verify.textContent = 'chain intact · ' + (i + 1) + ' events';
+    label.textContent = s.label || '…';
+    fill.style.width = ((i + 1) / SCRIPT.length * 100) + '%';
+  }
+
+  function step() {
+    if (at >= SCRIPT.length) return stop();
+    render(at++);
+    if (at >= SCRIPT.length) { stop(); label.textContent = 'session complete'; }
+  }
+  function stop() { clearInterval(timer); timer = null; $('#play').textContent = '▶ Play the session'; }
+  function reset() {
+    stop(); at = 0;
+    stream.innerHTML = ''; log.innerHTML = '';
+    faces.innerHTML = '<span class="face p" title="Priya">PR</span>';
+    roomChip.textContent = 'not shared';
+    codeChip.classList.add('hide');
+    stateChip.textContent = 'running'; stateChip.className = 'chip live';
+    pip.className = 'pip run';
+    verify.textContent = 'chain intact · 0 events';
+    label.textContent = 'ready';
+    fill.style.width = '0';
+  }
+
+  $('#play').addEventListener('click', () => {
+    if (timer) return stop();
+    if (at >= SCRIPT.length) reset();
+    $('#play').textContent = '❚❚ Pause';
+    step();
+    timer = setInterval(step, 1800);
+  });
+  $('#step').addEventListener('click', () => { stop(); step(); });
+  $('#reset').addEventListener('click', reset);
+  reset();
+</script>
+
+</html>

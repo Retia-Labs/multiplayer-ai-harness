@@ -86,6 +86,8 @@
     closeSettings: $('#btn-close-settings'),
     saveSettings: $('#btn-save-settings'),
     settingApiKey: $('#setting-api-key'),
+    settingAnthropicKey: $('#setting-anthropic-key'),
+    settingAnthropicModel: $('#setting-anthropic-model'),
     settingBaseUrl: $('#setting-base-url'),
     settingCustomModels: $('#setting-custom-models'),
     settingTheme: $('#setting-theme'),
@@ -121,7 +123,8 @@
     diffOpen: false,
     diffFiles: [],
     diffSel: 0,
-    customPrompts: []
+    customPrompts: [],
+    touchedFiles: new Set()
   };
 
   // ---------------- init ----------------
@@ -203,6 +206,7 @@
     el.composerHostHome.appendChild(el.composer);
     el.shareBtn.classList.add('hidden');
     el.presence.classList.add('hidden');
+    el.codeBtn.classList.add('hidden');
     updateTopbar();
     renderThreadList();
     el.input.focus();
@@ -416,6 +420,7 @@
   async function selectThread(id) {
     // The room chip and presence belong to the thread, so they refresh with it.
     setTimeout(refreshRoomChip, 0);
+    setTimeout(refreshCodeAffordance, 0);
     state.activeThreadId = id;
     state.ready.delete(id);
     closeDiff();
@@ -588,6 +593,12 @@
 
   // ---------------- agent events ----------------
   function onAgentEvent(ev) {
+    // The agent touching a file is what makes code worth offering. Tracked per
+    // thread so switching threads does not carry the affordance across.
+    if (ev.kind === 'item-done' && ev.item && ev.item.type === 'edit') {
+      state.touchedFiles.add(ev.threadId);
+      if (ev.threadId === state.activeThreadId) refreshCodeAffordance();
+    }
     // Global status bookkeeping first.
     if (ev.kind === 'turn-start') state.running.add(ev.threadId);
     if (ev.kind === 'approval-request') state.needsApproval.add(ev.threadId);
@@ -891,6 +902,7 @@
     el.diffPane.innerHTML = '<div class="diff-empty">Loading…</div>';
     refreshGitButtons();
     state.diffFiles = (await window.quorum.git.diff(dir)) || [];
+    refreshCodeAffordance();
     state.diffSel = 0;
     renderDiffPanel();
   }
@@ -979,6 +991,20 @@
       '<div class="bubble">' + escapeHtml(ev.payload.text || '') + '</div>';
     el.messages.appendChild(row);
     el.messages.scrollTop = el.messages.scrollHeight;
+  }
+
+  /**
+   * Show the Code button only once there is code worth opening.
+   *
+   * This is meant to be a room you talk in, not an editor you stare at. Most
+   * people never need to see a file; the ones who do need to type usually want
+   * one specific file the agent just touched, which is what the Edit action on
+   * a changed file is for.
+   */
+  function refreshCodeAffordance() {
+    const touched = state.touchedFiles.has(state.activeThreadId) ||
+      (state.diffFiles && state.diffFiles.length) || state.codeOpen;
+    el.codeBtn.classList.toggle('hidden', !state.activeThreadId || !touched);
   }
 
   async function refreshRoomChip() {
@@ -1334,6 +1360,8 @@
   // ---------------- settings ----------------
   function openSettings() {
     el.settingApiKey.value = state.settings.openaiApiKey || '';
+    el.settingAnthropicKey.value = state.settings.anthropicApiKey || '';
+    el.settingAnthropicModel.value = state.settings.anthropicModel || '';
     el.settingBaseUrl.value = state.settings.openaiBaseUrl || 'https://api.openai.com/v1';
     el.settingCustomModels.value = state.settings.customModels || '';
     el.settingTheme.value = state.settings.theme || 'dark';
@@ -1368,6 +1396,8 @@
   async function saveSettings() {
     state.settings = await window.quorum.settings.set({
       openaiApiKey: el.settingApiKey.value.trim(),
+      anthropicApiKey: el.settingAnthropicKey.value.trim(),
+      anthropicModel: el.settingAnthropicModel.value.trim(),
       openaiBaseUrl: el.settingBaseUrl.value.trim() || 'https://api.openai.com/v1',
       customModels: el.settingCustomModels.value.trim(),
       theme: el.settingTheme.value,
