@@ -116,6 +116,29 @@ class Client {
   const c = await bob.command(thread.id, { method: 'git/commit', message: 'from bob' });
   assert(c.ok, 'git/commit via runtime succeeded');
 
+  // ---- team awareness + collision radar ----
+  // Alice's thread creates NOTES.md; a second thread on the same project then tries to create it too.
+  await alice.command(thread.id, { method: 'turn/start', input: [{ type: 'text', text: 'Create NOTES.md' }] });
+  await alice.wait((m) => m.type === 'event' && m.method === 'turn/completed' && m.seq > (state => state)(0) && alice.events.some((e) => e.method === 'item/completed' && e.item.type === 'fileChange'), 30000);
+  const act = await bob.wait((m) => m.type === 'workspace.activity' && m.threads.some((t) => t.threadId === thread.id && t.files.some((f) => f.path === 'NOTES.md')));
+  assert(true, 'hub tracks NOTES.md as touched by alice\'s thread (workspace.activity)');
+  const { thread: t2 } = await bob.command(null, { method: 'thread/start', cwd: project }, rt.id);
+  bob.send({ type: 'thread.subscribe', threadId: t2.id });
+  await bob.wait((m) => m.type === 'thread.snapshot' && m.thread.id === t2.id);
+  await new Promise((r) => setTimeout(r, 200)); // let the hub push the activity snapshot to the runtime
+  await bob.command(t2.id, { method: 'turn/start', input: [{ type: 'text', text: 'Create NOTES.md' }] });
+  const col = await bob.wait((m) => m.type === 'event' && m.threadId === t2.id && m.method === 'item/fileChange/requestApproval', 30000);
+  assert(/collision/.test(col.reason) && col.collision && col.collision.threadId === thread.id, 'second thread writing the same file is escalated to approval with a collision reason: ' + col.reason);
+  await bob.command(t2.id, { method: 'approval/resolve', requestId: col.requestId, decision: 'accept' });
+  await bob.wait((m) => m.type === 'event' && m.threadId === t2.id && m.method === 'turn/completed', 30000);
+  const ov = await alice.wait((m) => m.type === 'workspace.activity' && m.overlaps.some((o) => o.path === 'NOTES.md' && o.threads.length === 2));
+  assert(ov.overlaps[0].severity === 'collision', 'hub reports the overlap between the two threads as a collision');
+
+  // ---- handoff ----
+  await alice.command(thread.id, { method: 'thread/assign', assignee: { userId: 'u_bob', name: 'bob', color: '#c026d3' }, note: 'please review and merge' });
+  const asg = await bob.wait((m) => m.type === 'thread.updated' && m.thread.id === thread.id && m.thread.assignee && m.thread.assignee.name === 'bob');
+  assert(asg.thread.handoffNote === 'please review and merge', 'thread handed off to bob with a note (attributed event + thread.updated)');
+
   rt.stop(); await hub.close();
   console.log('\nprotocol smoke passed ✅');
   process.exit(0);

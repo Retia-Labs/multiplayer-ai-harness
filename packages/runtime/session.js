@@ -20,7 +20,8 @@ const TOOLS = [
 ];
 
 class TurnSession {
-  constructor({ thread, turnId, by, input, provider, model, settings, executor, emit, history, log = () => {} }) {
+  constructor({ thread, turnId, by, input, provider, model, settings, executor, emit, history, teammates, log = () => {} }) {
+    this.teammates = teammates || (() => []);
     this.thread = thread;
     this.turnId = turnId || uid('turn');
     this.by = by;
@@ -176,14 +177,20 @@ class TurnSession {
       ? { lines: content.split('\n').slice(0, 400).map((t) => ({ kind: 'add', text: t })), additions: content.split('\n').length, deletions: 0 }
       : lineDiff(oldText, content);
     const item = { id: uid('chg'), type: ItemTypes.FILE_CHANGE, status: ItemStatus.IN_PROGRESS, changes: [{ path: relPath, kind, additions: d.additions, deletions: d.deletions, lines: d.lines }] };
-    const decision = decideFileWrite(abs, { workspace: this.cwd, ...this.settings });
+    let decision = decideFileWrite(abs, { workspace: this.cwd, ...this.settings });
+    const collision = decision.verdict === 'allow' && this.settings.approvalPolicy !== 'never' ? this.collisionFor(relPath) : null;
+    if (collision) {
+      const who = (collision.thread.by && collision.thread.by.name) || 'a teammate';
+      decision = { verdict: 'ask', reason: `collision: ${who}'s thread "${collision.thread.name}" changed ${relPath} ${Math.round((Date.now() - collision.ts) / 60000)} min ago` };
+      item.collision = { threadId: collision.thread.threadId, name: collision.thread.name, by: collision.thread.by };
+    }
     this.emit(Events.ITEM_STARTED, { item });
     if (decision.verdict === 'deny') {
       item.status = ItemStatus.DECLINED; this.emit(Events.ITEM_COMPLETED, { item });
       return { item, result: 'Declined by policy: ' + decision.reason };
     }
     if (decision.verdict === 'ask') {
-      const dec = await this.requestApproval(Events.FILECHANGE_REQUEST_APPROVAL, { itemId: item.id, changes: item.changes.map((c) => ({ path: c.path, kind: c.kind, additions: c.additions, deletions: c.deletions })), reason: decision.reason });
+      const dec = await this.requestApproval(Events.FILECHANGE_REQUEST_APPROVAL, { itemId: item.id, changes: item.changes.map((c) => ({ path: c.path, kind: c.kind, additions: c.additions, deletions: c.deletions })), reason: decision.reason, collision: item.collision || null });
       if (dec === ApprovalDecision.DECLINE || dec === ApprovalDecision.CANCEL) {
         item.status = ItemStatus.DECLINED; this.emit(Events.ITEM_COMPLETED, { item });
         if (dec === ApprovalDecision.CANCEL) this.interrupt();
@@ -212,8 +219,32 @@ class TurnSession {
       this.thread.worktree ? `You are in an isolated git worktree on branch ${this.thread.branch}.` : '',
       `Sandbox policy: ${sb}. Approval policy: ${ap}.`,
       'Tools: `shell` runs bash in the workspace; `write_file` creates/replaces a file; `update_plan` shows a live checklist — use it for multi-step work and keep statuses current.',
-      'Prefer small verifiable steps; verify with shell when practical. When done, summarize concisely in Markdown.'
+      'Prefer small verifiable steps; verify with shell when practical. When done, summarize concisely in Markdown.',
+      this.teamAwareness()
     ].filter(Boolean).join('\n');
+  }
+
+  // What teammates' agents are doing on this project right now — so agents divide work instead of colliding.
+  teamAwareness() {
+    const mates = this.teammates();
+    if (!mates.length) return '';
+    const lines = mates.map((t) => {
+      const who = (t.by && t.by.name) || 'someone';
+      const files = t.files.slice(0, 12).map((f) => f.path).join(', ');
+      return `- ${who}'s thread "${t.name}" (${t.active ? 'running now' : 'recently active'}${t.worktree ? ', isolated worktree ' + t.branch : ''})${files ? ' touched: ' + files : ''}`;
+    });
+    return 'Team activity on this project (avoid duplicating or clobbering this work; coordinate through the user if you must touch the same files):\n' + lines.join('\n');
+  }
+
+  collisionFor(relPath) {
+    if (this.thread.worktree) return null; // isolated branch: merge risk, not a live collision
+    const HOT_MS = 30 * 60000;
+    for (const t of this.teammates()) {
+      if (t.worktree) continue;
+      const hit = t.files.find((f) => f.path === relPath && Date.now() - f.ts < HOT_MS);
+      if (hit) return { thread: t, ts: hit.ts };
+    }
+    return null;
   }
 
   buildMessages() {
@@ -273,6 +304,9 @@ class TurnSession {
 
   // ---------- demo backend (no key needed; drives the real tool/approval pipeline) ----------
   async runDemo() {
+    // Every demo turn opens with a paced "thinking" phase, like a real model — this is also the
+    // window in which teammates can steer.
+    await this.streamText(ItemTypes.REASONING, 'Reading the request, checking team activity on this project, and deciding on the safest sequence of steps before touching anything.', 16, 70);
     await this.runDemoScenario();
     if (this.steerQueue.length && !this.cancelled) {
       const extra = this.steerQueue.splice(0).map((s) => s.input.filter((i) => i.type === 'text').map((i) => i.text).join(' ')).join('; ');
@@ -286,7 +320,6 @@ class TurnSession {
     const note = '\n\n_Demo agent — add a provider key on this runtime to connect a real model._';
 
     if (/\b(delete|remove|clean|wipe|install|deploy|push|reset)\b/.test(lower)) {
-      await this.streamText(ItemTypes.REASONING, 'This is a destructive or outward-facing action — under the on-request policy I should run it through approval so whoever is watching can sign off.');
       const target = (text.match(/\b(?:delete|remove|clean|wipe)\s+(?:the\s+)?([\w./-]+)/i) || [])[1];
       const cmd = /\binstall\b/.test(lower) ? 'npm install' : /\bpush\b/.test(lower) ? 'git push origin HEAD' : `rm -rf ${target && target !== 'the' ? target : 'build'}`;
       this.updatePlan([{ step: 'Confirm scope', status: 'completed' }, { step: `Run \`${cmd}\``, status: 'inProgress' }, { step: 'Verify workspace', status: 'pending' }], 'Requires approval before the risky step.');
@@ -301,7 +334,6 @@ class TurnSession {
       return;
     }
     if (/\b(create|write|add|make|build|generate)\b/.test(lower) && !/\bdiff|changes\b/.test(lower)) {
-      await this.streamText(ItemTypes.REASONING, 'Lay out a short plan, create the file in the workspace, then verify it exists before summarizing.');
       this.updatePlan([{ step: 'Inspect the workspace', status: 'inProgress' }, { step: 'Create the requested file', status: 'pending' }, { step: 'Verify the result', status: 'pending' }]);
       await this.execCommand('ls -la');
       this.updatePlan([{ step: 'Inspect the workspace', status: 'completed' }, { step: 'Create the requested file', status: 'inProgress' }, { step: 'Verify the result', status: 'pending' }]);
@@ -314,7 +346,6 @@ class TurnSession {
       return;
     }
     if (/\b(what|show|list|look|explore|files|structure|around|repo)\b/.test(lower)) {
-      await this.streamText(ItemTypes.REASONING, 'A quick listing plus git status should give the overview.');
       const ls = await this.execCommand('ls -la');
       await this.execCommand('git status --short --branch');
       const n = Math.max((ls.aggregatedOutput || '').split('\n').filter(Boolean).length - 1, 0);
@@ -326,8 +357,6 @@ class TurnSession {
       await this.streamText(ItemTypes.AGENT_MESSAGE, 'Those are the working-tree changes. The **Changes** panel has per-file diffs, revert, and commit.' + note);
       return;
     }
-    // Think out loud at a human pace so teammates have a window to steer mid-turn.
-    await this.streamText(ItemTypes.REASONING, 'Reading the request and checking whether anyone watching adds guidance before I answer. This demo agent has no model behind it, so I will explain what I can do offline.', 18, 60);
     await this.streamText(ItemTypes.AGENT_MESSAGE,
       `I'm the built-in **demo agent**, so I can't really work on:\n\n> ${text}\n\nTry: “**delete** the build directory” (approval flow), “**create** NOTES.md” (plan + file edit), “**explore** the repo”, or “show the **diff**”.` + note);
   }

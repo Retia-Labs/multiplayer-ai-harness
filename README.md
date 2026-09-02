@@ -8,6 +8,10 @@ together, on inference they already pay for, with keys and code that never leave
 | --- | --- | --- | --- |
 | ![Fleet](docs/harness/fleet.png) | ![Approval](docs/harness/bob-approval.png) | ![Thread](docs/harness/alice-thread.png) | ![Changes](docs/harness/changes.png) |
 
+| Team activity (who's touching what) | Collision stopped for approval |
+| --- | --- |
+| ![Team activity](docs/harness/team-activity.png) | ![Collision](docs/harness/collision.png) |
+
 The repo also still contains the original single-player **Codex desktop clone** it grew out of
 (`src/`, run with `npm run codex-clone`; see [docs/](docs/) for its screenshots).
 
@@ -20,6 +24,10 @@ The repo also still contains the original single-player **Codex desktop clone** 
 4. Alice's screen shows *"bob approved"*; the command runs **on Alice's machine**; both watch the
    plan tick to done. Carol joins late and replays the entire log.
 5. Bob types while the next turn is running — it lands as an attributed **steer** inside Alice's turn.
+6. Alice's agent creates `NOTES.md`; minutes later Bob's agent tries to write the same file. The
+   **collision radar** stops it for approval — naming Alice's thread — instead of silently clobbering.
+7. Alice **hands the thread off** to Bob with a note; it shows up in his sidebar as assigned to him,
+   full session attached. Anyone can **export the audit log** of any thread.
 
 That whole flow is exercised by the browser end-to-end test (`npm run test:e2e`) with two real
 Chromium sessions, and it runs offline against the built-in demo agent.
@@ -36,7 +44,7 @@ alice's machine                          hub (sync service)                 team
 └──────────┬───────────┘                 └───────────────────────────┘
            │ inference: direct, on alice's own keys — never through the hub
            ▼
-   OpenAI · Anthropic · Ollama · OpenRouter · Codex CLI
+   OpenAI · Anthropic · Ollama · OpenRouter · Codex CLI · Claude Code CLI
 ```
 
 - **Hub** (`packages/hub`) — WebSocket + HTTP. Per-thread append-only event log in `node:sqlite`,
@@ -46,13 +54,22 @@ alice's machine                          hub (sync service)                 team
   and never runs inference.
 - **Runtime** (`packages/runtime`) — headless daemon per machine. Holds provider keys, registers its
   projects, owns threads, runs turns. Provider adapters normalize OpenAI, Anthropic, Ollama /
-  OpenAI-compatible, OpenRouter, and the real **Codex CLI** (`codex exec --json`, translated
-  event-for-event) behind one streaming interface; a **demo** provider drives the real tool pipeline
+  OpenAI-compatible, OpenRouter, and the real **Codex CLI** (`codex exec --json`) and **Claude Code
+  CLI** (`claude -p --output-format stream-json`) — both translated event-for-event, so teammates
+  can bring their own subscriptions — behind one streaming interface; a **demo** provider drives the real tool pipeline
   with no key. Executors run commands **locally** or through a **Crabbox** remote runner.
 - **Protocol** (`packages/protocol`) — `thread → turn → item` vocabulary modeled on Codex's
   app-server protocol: `item/started` → deltas → `item/completed`, `turn/plan/updated`,
   `item/commandExecution/requestApproval` answered with `accept | acceptForSession | decline | cancel`,
   `serverRequest/resolved` broadcast to all subscribers, `turn/steer` with `expectedTurnId`.
+- **Team awareness & collision radar** — the hub derives, from the event log, which live threads are
+  touching which files on each project. It's pushed to every client (fleet "Team activity", overlap
+  alerts) *and* to every runtime, which injects it into each agent's system prompt so agents divide
+  work instead of duplicating it. Unlike an advisory "shared brain", it's enforced: a second agent
+  writing a file another live thread changed in the last 30 minutes is escalated to a human approval
+  that names the other thread. Isolated worktrees downgrade this to a merge-risk warning.
+- **Handoff & audit** — assign a thread to a teammate with a note (an attributed event; they get an
+  "assigned to you" inbox), and export any thread's full event log as JSON.
 - **Policy engine** — Codex's `untrusted | on-request | never` approval policies ×
   `read-only | workspace-write | danger-full-access` sandboxes, plus a trusted read-only command list
   and a risky-command heuristic. Every agent action resolves to *allow / ask / deny*; *ask* becomes a
@@ -108,8 +125,8 @@ npm run smoke           # the original Codex-clone smoke test
 ```
 packages/protocol/       event + command vocabulary (Codex-style names)
 packages/hub/            server.js (WS/HTTP), store.js (sqlite event log)
-packages/runtime/        index.js (daemon/CLI), session.js (turn loop, tools, approvals),
-                         providers.js, codex-exec.js, executors.js (local, crabbox),
+packages/runtime/        index.js (daemon/CLI), session.js (turn loop, tools, approvals, team awareness),
+                         providers.js, codex-exec.js, claude-code.js, executors.js (local, crabbox),
                          policy.js, git.js, diff.js, store.js, hub-client.js
 apps/web/                shared UI (index.html, app.js, styles.css, markdown.js)
 apps/desktop/            Electron shell

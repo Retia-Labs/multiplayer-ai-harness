@@ -3,6 +3,7 @@ const assert = require('assert');
 const { decideCommand, decideFileWrite, PRESETS } = require('../packages/runtime/policy');
 const { translate, sandboxFlags } = require('../packages/runtime/codex-exec');
 const { lineDiff } = require('../packages/runtime/diff');
+const cc = require('../packages/runtime/claude-code');
 const { HubStore } = require('../packages/hub/store');
 const { Events } = require('../packages/protocol');
 
@@ -66,6 +67,27 @@ t('codex exec: sandbox policy maps to CLI flags', () => {
   assert.deepEqual(sandboxFlags('read-only'), ['--sandbox', 'read-only']);
   assert.deepEqual(sandboxFlags('workspace-write'), ['--full-auto']);
   assert.deepEqual(sandboxFlags('danger-full-access'), ['--dangerously-bypass-approvals-and-sandbox']);
+});
+
+t('claude code: stream-json translates to protocol events', () => {
+  const state = { cwd: '/w', tools: new Map(), n: 0, usage: null, error: null };
+  assert.deepEqual(cc.translate({ type: 'system', subtype: 'init', session_id: 'cs_1' }, state), []);
+  assert.equal(state.sessionId, 'cs_1');
+  const a1 = cc.translate({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm' }, { type: 'text', text: 'Looking…' }, { type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'npm test' } }, { type: 'tool_use', id: 'tu2', name: 'Write', input: { file_path: '/w/src/a.js', content: 'x' } }, { type: 'tool_use', id: 'tu3', name: 'TodoWrite', input: { todos: [{ content: 'a', status: 'in_progress' }, { content: 'b', status: 'pending' }] } }] } }, state);
+  assert.deepEqual(a1.map((e) => e.method), [Events.ITEM_STARTED, Events.ITEM_COMPLETED, Events.ITEM_STARTED, Events.ITEM_COMPLETED, Events.ITEM_STARTED, Events.ITEM_STARTED, Events.TURN_PLAN_UPDATED]);
+  assert.equal(a1[0].item.type, 'reasoning'); assert.equal(a1[2].item.type, 'agentMessage');
+  assert.equal(a1[4].item.type, 'commandExecution'); assert.equal(a1[4].item.command, 'npm test');
+  assert.equal(a1[5].item.type, 'fileChange'); assert.equal(a1[5].item.changes[0].path, 'src/a.js');
+  assert.deepEqual(a1[6].plan.map((p) => p.status), ['inProgress', 'pending']);
+  const r1 = cc.translate({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'ok\n1 passing' }, { type: 'tool_result', tool_use_id: 'tu2', content: 'File written' }] } }, state);
+  assert.equal(r1[0].item.status, 'completed'); assert.equal(r1[0].item.aggregatedOutput, 'ok\n1 passing'); assert.equal(r1[0].item.exitCode, 0);
+  assert.equal(r1[1].item.type, 'fileChange'); assert.equal(r1[1].item.status, 'completed');
+  cc.translate({ type: 'result', subtype: 'success', session_id: 'cs_1', usage: { input_tokens: 100, cache_read_input_tokens: 50, output_tokens: 20 } }, state);
+  assert.deepEqual(state.usage, { input: 150, output: 20 });
+  cc.translate({ type: 'result', subtype: 'error_max_turns', is_error: true, result: 'max turns' }, state);
+  assert.equal(state.error, 'max turns');
+  assert.deepEqual(cc.permissionFlags('read-only'), ['--permission-mode', 'plan']);
+  assert.deepEqual(cc.permissionFlags('danger-full-access'), ['--dangerously-skip-permissions']);
 });
 
 t('diff: counts additions/deletions and collapses context', () => {

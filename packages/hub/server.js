@@ -19,6 +19,7 @@ class Hub {
     this.clients = new Map();   // ws -> { user, role, runtimeId?, subs:Set<threadId> }
     this.runtimes = new Map();  // runtimeId -> ws
     this.pendingCommands = new Map(); // commandId -> origin ws
+    this.activity = new Map();  // threadId -> { threadId, projectKey, files: Map<path, ts>, branch, worktree, by, name, runtimeId, active, lastAt }
     this.server = http.createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ server: this.server });
     this.wss.on('connection', (ws) => this.onConnection(ws));
@@ -111,6 +112,7 @@ class Hub {
       case 'users.list':
         return this.send(ws, { type: 'users', users: this.store.listUsers(ctx.org) });
       case 'thread.subscribe': return this.subscribe(ws, ctx, msg);
+      case 'workspace.activity': return this.send(ws, { type: 'workspace.activity', ...this.activitySnapshot(ctx.org) });
       case 'thread.unsubscribe':
         ctx.subs.delete(msg.threadId);
         return this.broadcastPresence(msg.threadId);
@@ -146,7 +148,12 @@ class Hub {
     const orgId = msg.org || 'local';
     this.store.ensureOrg(orgId);
     let user = msg.token ? this.store.userByToken(msg.token) : null;
-    if (!user && msg.name) user = this.store.loginOrCreate(orgId, msg.name, msg.color);
+    let created = false;
+    if (!user && msg.name) {
+      const before = this.store.listUsers(orgId).length;
+      user = this.store.loginOrCreate(orgId, msg.name, msg.color);
+      created = this.store.listUsers(orgId).length > before;
+    }
     if (!user) throw new Error('hello needs a token or a name');
     ctx.user = user; ctx.org = user.org_id; ctx.role = msg.role === 'runtime' ? 'runtime' : 'client';
     if (ctx.role === 'runtime') {
@@ -163,6 +170,8 @@ class Hub {
       org: ctx.org, role: ctx.role
     });
     if (ctx.role === 'runtime') this.broadcastRuntimes(ctx.org);
+    if (created) this.broadcastOrg(ctx.org, { type: 'users', users: this.store.listUsers(ctx.org) });
+    this.send(ws, { type: 'workspace.activity', ...this.activitySnapshot(ctx.org) });
     this.log(`hello ${ctx.role} ${user.name}${ctx.runtimeId ? ' runtime=' + ctx.runtimeId : ''}`);
   }
 
@@ -235,9 +244,10 @@ class Hub {
     if (ctx.role !== 'runtime') throw new Error('runtime only');
     const existing = this.store.getThread(msg.thread.id);
     const thread = { ...(existing || {}), ...msg.thread, orgId: ctx.org, runtimeId: ctx.runtimeId };
-    thread.status = thread.status || 'idle';
+    thread.status = thread.status || { type: 'idle' };
     this.store.upsertThread(thread);
     this.broadcastOrg(ctx.org, { type: 'thread.updated', thread });
+    if (thread.cwd) this.touchActivity(thread, ctx.org, {});
   }
 
   onAppend(ws, ctx, msg) {
@@ -264,9 +274,63 @@ class Hub {
       const updated = { ...thread, ...patch, lastSeq: seq, updatedAt: Date.now() };
       this.store.upsertThread(updated);
       this.broadcastOrg(ctx.org, { type: 'thread.updated', thread: updated });
+      if (m === 'turn/started') this.touchActivity(updated, ctx.org, { active: true });
+      if (m === 'turn/completed') this.touchActivity(updated, ctx.org, { active: false });
+    }
+    if (m === 'item/completed' && ev.item && ev.item.type === 'fileChange' && ev.item.status === 'completed') {
+      this.touchActivity(thread, ctx.org, { files: ev.item.changes.map((c) => c.path) });
+    }
+    if (m === 'thread/assignee/updated') {
+      const updated = { ...thread, assignee: ev.assignee || null, handoffNote: ev.note || null, updatedAt: Date.now() };
+      this.store.upsertThread(updated);
+      this.broadcastOrg(ctx.org, { type: 'thread.updated', thread: updated });
     }
   }
 }
+
+// ---------------- team awareness: who is touching what, right now ----------------
+Hub.prototype.touchActivity = function (thread, orgId, { files = [], active } = {}) {
+  if (!thread.cwd) return;
+  let a = this.activity.get(thread.id);
+  if (!a) {
+    a = { threadId: thread.id, orgId, projectKey: thread.cwd, name: thread.name, files: new Map(), branch: thread.branch, worktree: !!thread.worktree, by: thread.createdBy || null, runtimeId: thread.runtimeId, runtimeName: thread.runtimeName, active: false, lastAt: Date.now() };
+    this.activity.set(thread.id, a);
+  }
+  a.name = thread.name; a.branch = thread.branch; a.worktree = !!thread.worktree;
+  if (typeof active === 'boolean') a.active = active;
+  for (const f of files) a.files.set(f, Date.now());
+  a.lastAt = Date.now();
+  this.broadcastActivity(orgId);
+};
+
+Hub.prototype.activitySnapshot = function (orgId) {
+  const HOT_MS = 30 * 60000;
+  const now = Date.now();
+  const threads = [];
+  for (const a of this.activity.values()) {
+    if (a.orgId !== orgId) continue;
+    if (!this.store.getThread(a.threadId)) { this.activity.delete(a.threadId); continue; }
+    const files = [...a.files.entries()].filter(([, ts]) => now - ts < HOT_MS).map(([path, ts]) => ({ path, ts }));
+    if (!a.active && !files.length) continue;
+    threads.push({ threadId: a.threadId, name: a.name, projectKey: a.projectKey, branch: a.branch, worktree: a.worktree, by: a.by, runtimeId: a.runtimeId, runtimeName: a.runtimeName, active: a.active, lastAt: a.lastAt, files });
+  }
+  // Overlaps: same project, same file, ≥2 distinct threads.
+  const byFile = new Map();
+  for (const t of threads) for (const f of t.files) {
+    const key = t.projectKey + '::' + f.path;
+    if (!byFile.has(key)) byFile.set(key, { projectKey: t.projectKey, path: f.path, threads: [] });
+    byFile.get(key).threads.push({ threadId: t.threadId, name: t.name, by: t.by, branch: t.branch, worktree: t.worktree, active: t.active, ts: f.ts });
+  }
+  const overlaps = [...byFile.values()].filter((o) => o.threads.length > 1)
+    .map((o) => ({ ...o, severity: o.threads.every((t) => t.worktree) ? 'merge-risk' : 'collision' }));
+  return { threads, overlaps, generatedAt: now };
+};
+
+Hub.prototype.broadcastActivity = function (orgId) {
+  const snap = this.activitySnapshot(orgId);
+  const msg = { type: 'workspace.activity', ...snap };
+  for (const [ws, ctx] of this.clients) if (ctx.org === orgId && ctx.user) this.send(ws, msg);
+};
 
 module.exports = { Hub };
 

@@ -59,6 +59,10 @@
         </div>
         <div class="topbar-right">
           <div id="presence" class="presence"></div>
+          <button id="btn-assign" class="chip-btn hidden" title="Hand this thread off to a teammate">
+            <span id="assign-label">Hand off</span>
+          </button>
+          <button id="btn-audit" class="chip-btn hidden" title="Export the full event log (audit trail)">Audit</button>
           <button id="btn-changes" class="chip-btn hidden">
             <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6 3a3 3 0 0 0-1 5.83v6.34A3 3 0 1 0 7 15.17V8.83A3 3 0 0 0 6 3zm12 12.17V9a4 4 0 0 0-4-4h-1.59l1.3-1.29L12.29 2.3 9.59 5l2.7 2.71 1.42-1.42L12.41 5H14a2 2 0 0 1 2 2v8.17a3 3 0 1 0 2 0z"/></svg>
             Changes
@@ -95,6 +99,10 @@
           <div class="fleet-section">
             <div class="fleet-section-head">Needs attention</div>
             <div id="attention-list" class="attention-list"></div>
+          </div>
+          <div class="fleet-section">
+            <div class="fleet-section-head">Team activity <span class="fsh-sub">who is touching what, right now</span></div>
+            <div id="activity-panel" class="activity-panel"></div>
           </div>
         </div>
       </section>
@@ -175,6 +183,21 @@
         <label class="field check-field"><span>Desktop notifications</span><input id="setting-notifications" type="checkbox" checked /></label>
         <div class="field"><span>Connection</span><div id="settings-conn" class="mono small"></div></div>
         <button id="btn-logout" class="mini-btn">Sign out</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Handoff modal ===== -->
+  <div id="assign-modal" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header"><h2>Hand off thread</h2>
+        <button id="btn-close-assign" class="btn-icon"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">Assign ownership of this thread to a teammate. They get it in <b>Assigned to me</b>, with your note and the full session attached — no context lost.</p>
+        <label class="field"><span>Assignee</span><select id="assign-user"></select></label>
+        <label class="field"><span>Note</span><input id="assign-note" type="text" placeholder="e.g. tests pass, please review the migration" spellcheck="false" /></label>
+        <div class="form-row"><button id="btn-do-assign" class="primary-btn">Hand off</button><button id="btn-unassign" class="mini-btn">Clear assignee</button></div>
       </div>
     </div>
   </div>

@@ -11,6 +11,7 @@ const { RuntimeStore } = require('./store');
 const { TurnSession } = require('./session');
 const { createProvider, DEFAULT_MODELS } = require('./providers');
 const { CodexExecBackend, available: codexAvailable } = require('./codex-exec');
+const { ClaudeCodeBackend, available: claudeAvailable } = require('./claude-code');
 const { createExecutor, CrabboxExecutor } = require('./executors');
 const { PRESETS } = require('./policy');
 const git = require('./git');
@@ -35,6 +36,7 @@ class Runtime {
     for (const dir of projects) this.projects.set(path.resolve(dir), { dir: path.resolve(dir), name: path.basename(dir) });
     this.sessions = new Map(); // threadId -> TurnSession
     this.hub = null;
+    this.activity = { threads: [], overlaps: [] }; // team awareness snapshot pushed by the hub
   }
 
   // ---------- providers ----------
@@ -46,12 +48,14 @@ class Runtime {
     }
     list.push({ id: 'ollama', label: 'Ollama / local', configured: true, models: DEFAULT_MODELS.ollama });
     list.push({ id: 'codex-cli', label: 'Codex CLI (codex exec)', configured: codexAvailable(), models: ['gpt-5.1-codex-max', 'gpt-5.1-codex', 'gpt-5.1-codex-mini'] });
+    list.push({ id: 'claude-code', label: 'Claude Code CLI (your subscription)', configured: claudeAvailable(), models: ['default', 'sonnet', 'opus', 'haiku'] });
     return list;
   }
 
   provider(id) {
     if (id === 'demo') return { id: 'demo' };
     if (id === 'codex-cli') return new CodexExecBackend();
+    if (id === 'claude-code') return new ClaudeCodeBackend();
     const cfg = this.providerConfig[id] || {};
     if ((id === 'openai' || id === 'anthropic' || id === 'openrouter') && !cfg.apiKey) throw new Error(`No API key configured for ${id} on runtime ${this.name}`);
     return createProvider({ id, ...cfg });
@@ -79,7 +83,10 @@ class Runtime {
       this.log(`registered runtime ${this.id} (${this.name}) with hub`);
       for (const t of this.store.listThreads()) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
     });
-    this.hub.on('message', (msg) => { if (msg.type === 'command') this.onCommand(msg).catch((err) => this.log('command error: ' + err.message)); });
+    this.hub.on('message', (msg) => {
+      if (msg.type === 'command') this.onCommand(msg).catch((err) => this.log('command error: ' + err.message));
+      else if (msg.type === 'workspace.activity') this.activity = { threads: msg.threads || [], overlaps: msg.overlaps || [] };
+    });
     this.hub.connect();
     return this;
   }
@@ -97,7 +104,7 @@ class Runtime {
   }
 
   publicThread(t) {
-    const { codexSessionId, ...rest } = t; // keep provider session handles local
+    const { codexSessionId, claudeSessionId, ...rest } = t; // keep provider session handles local
     return rest;
   }
 
@@ -171,12 +178,21 @@ class Runtime {
         this.hub.send({ type: 'runtime.update', runtime: this.descriptor() });
         return { project: p };
       }
+      case Commands.THREAD_ASSIGN: {
+        thread.assignee = cmd.assignee || null; thread.handoffNote = cmd.note || null; this.store.upsertThread(thread);
+        this.appendEvent(threadId, { method: Events.THREAD_ASSIGNEE_UPDATED, assignee: thread.assignee, note: thread.handoffNote, by });
+        return { assignee: thread.assignee };
+      }
       case Commands.GIT_DIFF: return { files: await git.diff(thread.workDir), branch: await git.currentBranch(thread.workDir) };
       case Commands.GIT_COMMIT: return await git.commitAll(thread.workDir, cmd.message);
       case Commands.GIT_REVERT_FILE: return await git.revertFile(thread.workDir, cmd.path, !!cmd.untracked);
       case Commands.GIT_PATCH: return { patch: await git.patchText(thread.workDir) };
       default: throw new Error('unknown command: ' + cmd.method);
     }
+  }
+
+  teammatesFor(thread) {
+    return this.activity.threads.filter((t) => t.threadId !== thread.id && t.projectKey === thread.cwd);
   }
 
   async threadStart(cmd, by) {
@@ -220,6 +236,7 @@ class Runtime {
     const session = new TurnSession({
       thread, by, input: cmd.input, provider, model: settings.model, settings, executor: this.executor,
       history: this.store.listItems(thread.id), log: this.log,
+      teammates: () => this.teammatesFor(thread),
       emit: (event) => this.appendEvent(thread.id, event)
     });
     this.sessions.set(thread.id, session);

@@ -20,6 +20,7 @@ const Events = {
   SERVER_REQUEST_RESOLVED: 'serverRequest/resolved', // { turnId, requestId, decision, by }
   THREAD_NAME_UPDATED: 'thread/name/updated',     // { name }
   THREAD_SETTINGS_UPDATED: 'thread/settings/updated', // { settings }
+  THREAD_ASSIGNEE_UPDATED: 'thread/assignee/updated', // { assignee: {userId,name,color}|null, note?, by }
   ERROR: 'error'                                  // { message }
 };
 
@@ -54,6 +55,7 @@ const Commands = {
   THREAD_DELETE: 'thread/delete',     // { } (threadId in envelope)
   THREAD_NAME_SET: 'thread/name/set', // { name }
   THREAD_SETTINGS_UPDATE: 'thread/settings/update', // { settings }
+  THREAD_ASSIGN: 'thread/assign',     // { assignee: {userId,name,color}|null, note? } → { assignee }
   TURN_START: 'turn/start',           // { input: [{type:'text',text}|{type:'image',url}], settings? } → { turnId }
   TURN_STEER: 'turn/steer',           // { input, expectedTurnId } → { turnId }
   TURN_INTERRUPT: 'turn/interrupt',   // { turnId }

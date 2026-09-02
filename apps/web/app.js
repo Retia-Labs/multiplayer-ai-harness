@@ -6,7 +6,9 @@
     app: $('#app'), threadList: $('#thread-list'), threadSearch: $('#thread-search'), newThread: $('#btn-new-thread'), navFleet: $('#nav-fleet'),
     me: $('#me'), settingsBtn: $('#btn-settings'),
     topbarTitle: $('#topbar-title'), topbarBranch: $('#topbar-branch'), topbarWorktree: $('#topbar-worktree'), topbarRuntime: $('#topbar-runtime'),
-    presence: $('#presence'), changesBtn: $('#btn-changes'),
+    presence: $('#presence'), changesBtn: $('#btn-changes'), assignBtn: $('#btn-assign'), assignLabel: $('#assign-label'), auditBtn: $('#btn-audit'),
+    activityPanel: $('#activity-panel'),
+    assignModal: $('#assign-modal'), closeAssign: $('#btn-close-assign'), assignUser: $('#assign-user'), assignNote: $('#assign-note'), doAssign: $('#btn-do-assign'), unassign: $('#btn-unassign'),
     fleetView: $('#fleet-view'), fleetRuntime: $('#fleet-runtime'), fleetProject: $('#fleet-project'), addProject: $('#btn-add-project'), fleetWorktree: $('#fleet-worktree'),
     composerHostHome: $('#composer-host-home'), runtimeCards: $('#runtime-cards'), attentionList: $('#attention-list'),
     threadView: $('#thread-view'), messages: $('#messages'), working: $('#working'), workingLabel: $('#working-label'), stop: $('#btn-stop'), composerHostThread: $('#composer-host-thread'),
@@ -25,6 +27,8 @@
     plans: new Map(),     // turnId -> plan card
     approvals: new Map(), // requestId -> card wrap
     viewers: [],
+    users: [],
+    activity: { threads: [], overlaps: [] },
     pending: new Map(),   // command id -> {resolve,reject}
     diffOpen: false, diffFiles: [], diffSel: 0,
     prefs: loadPrefs()
@@ -100,7 +104,7 @@
         try { localStorage.setItem('harness.session', JSON.stringify({ token: m.user.token, org: m.org, name: m.user.name })); } catch {}
         el.login.classList.add('hidden'); el.app.classList.remove('hidden');
         el.me.innerHTML = ''; el.me.append(avatar(state.me, 'sm'), document.createTextNode(state.me.name + ' · ' + state.org));
-        send({ type: 'threads.list' }); send({ type: 'runtimes.list' });
+        send({ type: 'threads.list' }); send({ type: 'runtimes.list' }); send({ type: 'users.list' }); send({ type: 'workspace.activity' });
         if (state.subscribedId) send({ type: 'thread.subscribe', threadId: state.subscribedId, afterSeq: state.lastSeq || 0 });
         break;
       case 'threads':
@@ -112,6 +116,17 @@
         renderRuntimes();
         break;
       case 'thread.updated': onThreadUpdated(m.thread); break;
+      case 'users': state.users = m.users; if (!el.assignModal.classList.contains('hidden')) fillAssignUsers(); break;
+      case 'workspace.activity': {
+        const prevOverlaps = state.activity.overlaps.map((o) => o.projectKey + '::' + o.path);
+        state.activity = { threads: m.threads || [], overlaps: m.overlaps || [] };
+        for (const o of state.activity.overlaps) {
+          const key = o.projectKey + '::' + o.path;
+          if (!prevOverlaps.includes(key) && o.severity === 'collision') toast('<b>Collision:</b> ' + esc(o.path) + ' is being changed by ' + esc(o.threads.map((t) => (t.by && t.by.name) || '?').join(' and ')), { ms: 7000 });
+        }
+        renderActivity();
+        break;
+      }
       case 'thread.deleted':
         state.threads.delete(m.threadId);
         if (state.activeThreadId === m.threadId) showFleet();
@@ -154,6 +169,10 @@
     if (flags.includes('waitingOnApproval') && !prevFlags.includes('waitingOnApproval') && t.id !== state.activeThreadId) {
       notify('Approval needed', (t.name || 'A thread') + ': ' + ((t.pendingApproval && t.pendingApproval.command) || 'file change'));
       toast('<b>' + esc(t.name) + '</b> needs approval', { action: 'Open', onAction: () => selectThread(t.id) });
+    }
+    if (t.assignee && state.me && t.assignee.userId === state.me.id && (!prev || !prev.assignee || prev.assignee.userId !== state.me.id)) {
+      notify('Thread handed to you', t.name + (t.handoffNote ? ' — ' + t.handoffNote : ''));
+      toast('<b>' + esc(t.name) + '</b> was handed off to you' + (t.handoffNote ? ' — ' + esc(t.handoffNote) : ''), { action: 'Open', onAction: () => selectThread(t.id) });
     }
     if (prev && prev.status && prev.status.type === 'active' && t.status && t.status.type !== 'active' && t.id !== state.activeThreadId && prev.lastTurnBy) {
       toast('<b>' + esc(t.name) + '</b> finished — ready for review', { action: 'Open', onAction: () => selectThread(t.id) });
@@ -239,6 +258,32 @@
     }
   }
 
+  function renderActivity() {
+    const { threads, overlaps } = state.activity;
+    el.activityPanel.innerHTML = '';
+    if (!threads.length) { el.activityPanel.innerHTML = '<div class="activity-empty">No agents have touched files in the last 30 minutes.</div>'; return; }
+    for (const o of overlaps) {
+      const row = document.createElement('div'); row.className = 'overlap-item ' + o.severity;
+      const path = document.createElement('span'); path.className = 'ov-path'; path.textContent = o.path;
+      const who = document.createElement('span'); who.className = 'ov-who';
+      who.append(document.createTextNode('changed by '));
+      o.threads.forEach((t, i) => { if (i) who.append(document.createTextNode(' and ')); who.append(avatar(t.by || { name: '?' }, 'sm'), document.createTextNode((t.by && t.by.name) || '?' + (t.worktree ? ' (worktree ' + t.branch + ')' : ''))); });
+      const sev = document.createElement('span'); sev.className = 'ov-sev'; sev.textContent = o.severity === 'collision' ? 'collision' : 'merge risk';
+      row.append(path, who, sev);
+      el.activityPanel.appendChild(row);
+    }
+    for (const t of threads) {
+      const row = document.createElement('div'); row.className = 'activity-row';
+      const live = document.createElement('span'); live.className = 'ar-live' + (t.active ? ' on' : '');
+      const title = document.createElement('span'); title.className = 'ar-title'; title.textContent = t.name;
+      const files = document.createElement('span'); files.className = 'ar-files'; files.textContent = t.files.map((f) => f.path).join('  ') || (t.active ? 'running, no file changes yet' : '');
+      const branch = document.createElement('span'); branch.className = 'chip mono'; branch.textContent = (t.worktree ? '⎇ ' : '') + (t.branch || '');
+      row.append(live, avatar(t.by || { name: '?' }, 'sm'), title, files, branch);
+      row.addEventListener('click', () => selectThread(t.threadId));
+      el.activityPanel.appendChild(row);
+    }
+  }
+
   // ================= views =================
   function showFleet() {
     if (state.subscribedId) send({ type: 'thread.unsubscribe', threadId: state.subscribedId });
@@ -281,9 +326,13 @@
   function updateTopbar() {
     const t = state.activeThread;
     if (!t) {
-      el.topbarTitle.textContent = 'Fleet'; el.topbarBranch.classList.add('hidden'); el.topbarWorktree.classList.add('hidden'); el.topbarRuntime.classList.add('hidden'); el.changesBtn.classList.add('hidden');
+      el.topbarTitle.textContent = 'Fleet'; el.topbarBranch.classList.add('hidden'); el.topbarWorktree.classList.add('hidden'); el.topbarRuntime.classList.add('hidden'); el.changesBtn.classList.add('hidden'); el.assignBtn.classList.add('hidden'); el.auditBtn.classList.add('hidden');
       return;
     }
+    el.assignBtn.classList.remove('hidden'); el.auditBtn.classList.remove('hidden');
+    el.assignLabel.innerHTML = '';
+    if (t.assignee) { el.assignLabel.append(avatar(t.assignee, 'sm'), document.createTextNode(' ' + t.assignee.name)); el.assignLabel.parentElement.title = 'Assigned to ' + t.assignee.name + (t.handoffNote ? ' — ' + t.handoffNote : ''); }
+    else el.assignLabel.textContent = 'Hand off';
     el.topbarTitle.textContent = t.name;
     el.topbarBranch.textContent = t.branch || ''; el.topbarBranch.classList.toggle('hidden', !t.branch);
     el.topbarWorktree.classList.toggle('hidden', !t.worktree);
@@ -334,12 +383,13 @@
       const title = document.createElement('span'); title.className = 't-title';
       title.textContent = t.name || 'New thread';
       const sub = document.createElement('span'); sub.className = 't-sub';
-      sub.textContent = (t.cwd ? t.cwd.split('/').pop() : '') + (t.runtimeName ? ' · ' + t.runtimeName : '');
+      sub.textContent = (t.assignee && state.me && t.assignee.userId === state.me.id ? '→ assigned to you · ' : '') + (t.cwd ? t.cwd.split('/').pop() : '') + (t.runtimeName ? ' · ' + t.runtimeName : '');
       title.appendChild(sub);
       const del = document.createElement('button'); del.className = 't-del'; del.title = 'Delete thread';
       del.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zM19 4h-3.5l-1-1h-5l-1 1H5v2h14z"/></svg>';
       del.addEventListener('click', (e) => { e.stopPropagation(); if (confirm('Delete thread "' + t.name + '"?')) send({ type: 'thread.delete', threadId: t.id }); });
-      item.append(status, av, title, del);
+      if (t.assignee) { const asg = avatar(t.assignee, 'sm'); asg.classList.add('t-assignee'); asg.title = 'Assigned to ' + t.assignee.name; item.append(status, av, title, asg, del); }
+      else item.append(status, av, title, del);
       item.addEventListener('click', () => selectThread(t.id));
       el.threadList.appendChild(item);
     }
@@ -379,6 +429,16 @@
         break;
       }
       case 'thread/name/updated': if (state.activeThread) { state.activeThread.name = ev.name; updateTopbar(); } break;
+      case 'thread/assignee/updated': {
+        const d = document.createElement('div'); d.className = 'handoff-note';
+        const hn = document.createElement('span'); hn.className = 'hn';
+        hn.append(avatar(ev.by || { name: '?' }, 'sm'), document.createTextNode(((ev.by && ev.by.name) || 'someone') + (ev.assignee ? ' handed this thread to ' : ' cleared the assignee')));
+        if (ev.assignee) hn.append(avatar(ev.assignee, 'sm'), document.createTextNode(ev.assignee.name));
+        if (ev.note) hn.append(document.createTextNode(' — “' + ev.note + '”'));
+        d.appendChild(hn); el.messages.appendChild(d);
+        if (state.activeThread) { state.activeThread.assignee = ev.assignee || null; state.activeThread.handoffNote = ev.note || null; updateTopbar(); }
+        break;
+      }
       case 'error': { const d = document.createElement('div'); d.className = 'turn-error'; d.textContent = '⚠ ' + ev.message; el.messages.appendChild(d); break; }
     }
     scrollToBottom(!replay);
@@ -457,10 +517,11 @@
 
   function renderApproval(ev) {
     const wrap = msgWrap('approval-wrap');
-    const card = document.createElement('div'); card.className = 'approval-card';
+    const card = document.createElement('div'); card.className = 'approval-card' + (ev.collision ? ' collision' : '');
     const isFile = ev.method === 'item/fileChange/requestApproval';
-    card.innerHTML = '<div class="approval-title">' + (isFile ? 'Agent wants to write outside the workspace' : 'Agent wants to run a command') + '</div>' +
+    card.innerHTML = '<div class="approval-title">' + (ev.collision ? 'Collision — another agent changed this file' : isFile ? 'Agent wants to write outside the workspace' : 'Agent wants to run a command') + '</div>' +
       (ev.reason ? '<div class="approval-reason">' + esc(ev.reason) + '</div>' : '');
+    if (ev.collision) { const c = document.createElement('div'); c.className = 'approval-collision'; c.append(avatar(ev.collision.by || { name: '?' }, 'sm'), document.createTextNode('Open “' + ev.collision.name + '” to coordinate, or approve to overwrite.')); card.appendChild(c); }
     const cmd = document.createElement('div'); cmd.className = 'approval-cmd mono';
     cmd.textContent = isFile ? (ev.changes || []).map((c) => c.kind + ' ' + c.path).join('\n') : '$ ' + ev.command;
     const actions = document.createElement('div'); actions.className = 'approval-actions';
@@ -562,6 +623,14 @@
     el.diffPane.append(head, table);
   }
 
+  function fillAssignUsers() {
+    const cur = el.assignUser.value;
+    el.assignUser.innerHTML = '';
+    for (const u of state.users) { const o = document.createElement('option'); o.value = u.id; o.textContent = u.name + (state.me && u.id === state.me.id ? ' (me)' : ''); el.assignUser.appendChild(o); }
+    const want = cur || (state.activeThread && state.activeThread.assignee && state.activeThread.assignee.userId);
+    if (want && [...el.assignUser.options].some((o) => o.value === want)) el.assignUser.value = want;
+  }
+
   // ================= events =================
   function bind() {
     el.loginForm.addEventListener('submit', (e) => {
@@ -591,6 +660,30 @@
     el.input.addEventListener('input', autosize);
     el.input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
     el.stop.addEventListener('click', () => { const t = state.activeThread; if (t && t.activeTurnId) command(t.id, { method: 'turn/interrupt', turnId: t.activeTurnId }).catch(() => {}); });
+    el.assignBtn.addEventListener('click', () => {
+      send({ type: 'users.list' });
+      fillAssignUsers();
+      el.assignNote.value = '';
+      el.assignModal.classList.remove('hidden');
+    });
+    el.closeAssign.addEventListener('click', () => el.assignModal.classList.add('hidden'));
+    el.assignModal.addEventListener('click', (e) => { if (e.target === el.assignModal) el.assignModal.classList.add('hidden'); });
+    el.doAssign.addEventListener('click', async () => {
+      const u = state.users.find((x) => x.id === el.assignUser.value); if (!u) return;
+      try { await command(state.activeThreadId, { method: 'thread/assign', assignee: { userId: u.id, name: u.name, color: u.color }, note: el.assignNote.value.trim() }); el.assignModal.classList.add('hidden'); toast('Handed off to <b>' + esc(u.name) + '</b>'); } catch (e) { toast('⚠ ' + esc(e.message)); }
+    });
+    el.unassign.addEventListener('click', async () => {
+      try { await command(state.activeThreadId, { method: 'thread/assign', assignee: null }); el.assignModal.classList.add('hidden'); } catch (e) { toast('⚠ ' + esc(e.message)); }
+    });
+    el.auditBtn.addEventListener('click', async () => {
+      const t = state.activeThread; if (!t) return;
+      try {
+        const r = await fetch('/api/threads/' + t.id + '/events?limit=500'); const j = await r.json();
+        const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), thread: j.thread, events: j.events }, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'audit-' + t.id + '.json'; document.body.appendChild(a); a.click(); a.remove();
+        toast('<b>Audit log exported</b> — ' + j.events.length + ' events');
+      } catch (e) { toast('⚠ ' + esc(e.message)); }
+    });
     el.changesBtn.addEventListener('click', () => (state.diffOpen ? closeDiff() : openDiff()));
     el.closeDiff.addEventListener('click', closeDiff);
     el.commitBtn.addEventListener('click', async () => {
@@ -613,7 +706,7 @@
     el.logout.addEventListener('click', () => { try { localStorage.removeItem('harness.session'); } catch {} location.reload(); });
     document.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') { e.preventDefault(); showFleet(); }
-      if (e.key === 'Escape') { el.settingsModal.classList.add('hidden'); if (state.diffOpen) closeDiff(); }
+      if (e.key === 'Escape') { el.settingsModal.classList.add('hidden'); el.assignModal.classList.add('hidden'); if (state.diffOpen) closeDiff(); }
     });
   }
 
