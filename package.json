@@ -1,15 +1,92 @@
 {
-  "name": "codex-desktop-clone",
+  "name": "quorum-desktop",
   "version": "0.1.0",
-  "description": "A working clone of the OpenAI Codex desktop app, built with Electron.",
+  "description": "Quorum desktop - a live, shared session for long-running agent work. A Retia Labs product.",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
-    "smoke": "node test/smoke.js"
+    "smoke": "node test/smoke.js",
+    "test:kernel": "node --test test/kernel.test.js",
+    "test:workspace": "node --test test/workspace.test.js",
+    "test": "node --test test/kernel.test.js test/workspace.test.js test/net.test.js test/github.test.js test/runner.test.js test/relay.test.js",
+    "test:net": "node --test test/net.test.js",
+    "test:runner": "node --test test/runner.test.js",
+    "test:relay": "node --test test/relay.test.js",
+    "relay": "node bin/relay.js",
+    "test:github": "node --test test/github.test.js",
+    "dist": "electron-builder",
+    "dist:dir": "electron-builder --dir"
   },
   "license": "MIT",
   "devDependencies": {
     "electron": "^33.2.0",
+    "electron-builder": "^26.15.3",
     "playwright-core": "^1.49.0"
+  },
+  "allowScripts": {
+    "electron@33.4.11": true
+  },
+  "author": "Retia Labs",
+  "homepage": "https://retialabs.com",
+  "bin": {
+    "quorum": "bin/quorum.js",
+    "quorum-relay": "bin/relay.js"
+  },
+  "build": {
+    "appId": "com.retialabs.quorum",
+    "productName": "Quorum",
+    "asar": true,
+    "asarUnpack": [
+      "src/runner/**",
+      "src/net/**",
+      "src/main/**",
+      "bin/**"
+    ],
+    "files": [
+      "src/**",
+      "bin/**",
+      "package.json",
+      "!**/*.map"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "build/icon.png",
+      "category": "Development"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }
