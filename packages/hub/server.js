@@ -18,7 +18,11 @@ class Hub {
     this.log = log;
     this.clients = new Map();   // ws -> { user, role, runtimeId?, subs:Set<threadId> }
     this.runtimes = new Map();  // runtimeId -> ws
-    this.pendingCommands = new Map(); // commandId -> origin ws
+    // Command identities are supplied by the caller, so a client that retries after a
+    // dropped socket gets the original outcome instead of the action running twice.
+    // Keyed by user so one client cannot read another's result by guessing an id.
+    this.commandLog = new Map(); // userId/commandId -> { state, result, waiters:Set<ws> }
+    this.inflight = new Map();   // commandId -> the same entry, while the runtime has it
     this.activity = new Map();  // threadId -> { threadId, projectKey, files: Map<path, ts>, branch, worktree, by, name, runtimeId, active, lastAt }
     this.server = http.createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ server: this.server });
@@ -129,12 +133,11 @@ class Hub {
       // ---- runtime-only messages ----
       case 'thread.upsert': return this.onThreadUpsert(ws, ctx, msg);
       case 'append': return this.onAppend(ws, ctx, msg);
-      case 'command.result': {
-        const origin = this.pendingCommands.get(msg.id);
-        this.pendingCommands.delete(msg.id);
-        if (origin) this.send(origin, msg);
-        return;
-      }
+      case 'command.result':
+        // Only the runtime that ran a command may answer for it; otherwise any client
+        // could settle someone else's command by guessing its identity.
+        if (ctx.role !== 'runtime') throw new Error('runtime only');
+        return this.settleCommand(msg);
       case 'runtime.update':
         if (ctx.role !== 'runtime') throw new Error('runtime only');
         this.store.upsertRuntime(ctx.org, { ...msg.runtime, id: ctx.runtimeId });
@@ -224,11 +227,49 @@ class Hub {
     }
     if (!runtimeId) throw new Error('command needs threadId or runtimeId');
     const id = msg.id || uid('cmd');
-    this.pendingCommands.set(id, ws);
+    const key = ctx.user.id + '/' + id;
+
+    // A repeat of an identity we have already accepted is a retry, never a second action:
+    // replay the answer if we have it, otherwise join the caller to the one in flight.
+    const prior = this.commandLog.get(key);
+    if (prior) {
+      if (prior.state === 'done') this.send(ws, { ...prior.result, id, duplicate: true });
+      else prior.waiters.add(ws);
+      return;
+    }
+    const entry = { state: 'pending', waiters: new Set([ws]), key, result: null };
+    this.commandLog.set(key, entry);
+    this.pruneCommandLog();
+
     const ok = this.routeToRuntime(runtimeId, { type: 'command', id, threadId: msg.threadId || null, by: this.who(ctx), command: cmd });
+    // A command that never reached a runtime did not happen, so it stays retryable.
     if (!ok) {
-      this.pendingCommands.delete(id);
+      this.commandLog.delete(key);
       this.send(ws, { type: 'command.result', id, ok: false, error: 'runtime offline' });
+    } else {
+      entry.commandId = id;
+      this.inflight.set(id, entry);
+    }
+  }
+
+  settleCommand(msg) {
+    const entry = this.inflight.get(msg.id);
+    if (!entry) return;             // thread.delete and other hub-issued commands have no caller
+    this.inflight.delete(msg.id);
+    entry.state = 'done';
+    entry.result = msg;
+    for (const ws of entry.waiters) this.send(ws, msg);
+    entry.waiters.clear();
+  }
+
+  // Only settled entries are evictable: dropping one still in flight would let its retry
+  // run the action a second time.
+  pruneCommandLog(max = 2000) {
+    if (this.commandLog.size <= max) return;
+    for (const [key, entry] of this.commandLog) {
+      if (entry.state !== 'done') continue;
+      this.commandLog.delete(key);
+      if (this.commandLog.size <= max) return;
     }
   }
 

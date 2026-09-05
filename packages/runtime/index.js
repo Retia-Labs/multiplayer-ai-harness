@@ -36,6 +36,7 @@ class Runtime {
     for (const dir of projects) this.projects.set(path.resolve(dir), { dir: path.resolve(dir), name: path.basename(dir) });
     this.sessions = new Map(); // threadId -> TurnSession
     this.hub = null;
+    this.providerTap = null;   // (line, ev, session) - raw provider acknowledgments, for proofs
     this.activity = { threads: [], overlaps: [] }; // team awareness snapshot pushed by the hub
   }
 
@@ -54,7 +55,9 @@ class Runtime {
 
   provider(id) {
     if (id === 'demo') return { id: 'demo' };
-    if (id === 'codex-cli') return new CodexExecBackend();
+    // providerTap sees the provider's own event lines. The acceptance harness records
+    // those instead of trusting the harness's own rendering of a turn.
+    if (id === 'codex-cli') return new CodexExecBackend({ onRaw: this.providerTap });
     if (id === 'claude-code') return new ClaudeCodeBackend();
     const cfg = this.providerConfig[id] || {};
     if ((id === 'openai' || id === 'anthropic' || id === 'openrouter') && !cfg.apiKey) throw new Error(`No API key configured for ${id} on runtime ${this.name}`);
@@ -152,8 +155,8 @@ class Runtime {
         const s = this.sessions.get(threadId);
         if (!s || !s.running) throw new Error('no active turn to steer');
         if (cmd.expectedTurnId && cmd.expectedTurnId !== s.turnId) throw new Error('expectedTurnId does not match the active turn');
-        s.steer(cmd.input, by);
-        return { turnId: s.turnId };
+        const delivery = s.steer(cmd.input, by);
+        return { turnId: s.turnId, delivery };
       }
       case Commands.TURN_INTERRUPT: {
         const s = this.sessions.get(threadId);

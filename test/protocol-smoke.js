@@ -5,6 +5,7 @@ const os = require('os');
 const { execSync } = require('child_process');
 const { Hub } = require('../packages/hub/server');
 const { Runtime } = require('../packages/runtime/index');
+const { localShell } = require('../packages/runtime/executors');
 
 function assert(c, m) { if (!c) throw new Error('ASSERT: ' + m); console.log('  ✓ ' + m); }
 
@@ -45,7 +46,7 @@ class Client {
   fs.mkdirSync(path.join(project, 'build'), { recursive: true });
   fs.writeFileSync(path.join(project, 'build', 'out.txt'), 'x');
   fs.writeFileSync(path.join(project, 'hello.js'), 'console.log(1)\n');
-  execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: '/bin/bash' });
+  execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: localShell().bin });
 
   const hub = new Hub({ dbFile: ':memory:', log: () => {} });
   const addr = await hub.listen(0);

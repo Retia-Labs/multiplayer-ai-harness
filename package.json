@@ -9,12 +9,15 @@
     "runtime": "node packages/runtime/index.js",
     "desktop": "electron apps/desktop/main.js",
     "codex-clone": "electron src/main/main.js",
-    "test": "npm run test:protocol && npm run test:unit && npm run test:e2e",
+    "test": "npm run test:protocol && npm run test:unit && npm run test:codex && npm run test:e2e",
     "test:protocol": "node test/protocol-smoke.js",
     "test:unit": "node test/unit.js",
     "test:e2e": "node test/e2e-multiplayer.js",
     "smoke": "node test/smoke.js",
-    "test:desktop": "xvfb-run -a node test/desktop-smoke.js"
+    "test:desktop": "xvfb-run -a node test/desktop-smoke.js",
+    "test:codex": "node test/codex-acceptance.js --lane control",
+    "proof:codex": "node test/codex-acceptance.js",
+    "codex:probe": "node -e \"console.log(JSON.stringify(require('./packages/runtime/codex-probe').probe(), null, 2))\""
   },
   "license": "MIT",
   "devDependencies": {

@@ -48,9 +48,17 @@ class TurnSession {
   emit(method, payload) { this._emit({ method, turnId: this.turnId, ...payload }); }
 
   // ---------- public control surface ----------
+  // How this provider takes a steer, so a client can tell "the agent has it" from "it is
+  // queued": model/demo backends fold it into the round in flight, the Codex CLI cannot be
+  // interrupted mid-process and gets it as a resumed turn on the same session.
+  deliveryMode() {
+    return this.provider.id === 'codex-cli' ? 'nextProviderTurn' : 'inline';
+  }
+
   steer(input, by) {
     this.steerQueue.push({ input, by });
     this.emitUserMessage(input, by, 'steer');
+    return this.deliveryMode();
   }
 
   interrupt() {

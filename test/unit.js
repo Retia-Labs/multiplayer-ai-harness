@@ -1,7 +1,9 @@
 // Unit tests: policy engine, Codex exec JSONL translator, line diff, hub store.
 const assert = require('assert');
 const { decideCommand, decideFileWrite, PRESETS } = require('../packages/runtime/policy');
-const { translate, sandboxFlags } = require('../packages/runtime/codex-exec');
+const { translate, sandboxFlags, buildArgs } = require('../packages/runtime/codex-exec');
+const codexProbe = require('../packages/runtime/codex-probe');
+const { Hub } = require('../packages/hub/server');
 const { lineDiff } = require('../packages/runtime/diff');
 const cc = require('../packages/runtime/claude-code');
 const { HubStore } = require('../packages/hub/store');
@@ -65,7 +67,7 @@ t('codex exec: JSONL events translate to protocol events', () => {
 });
 t('codex exec: sandbox policy maps to CLI flags', () => {
   assert.deepEqual(sandboxFlags('read-only'), ['--sandbox', 'read-only']);
-  assert.deepEqual(sandboxFlags('workspace-write'), ['--full-auto']);
+  assert.deepEqual(sandboxFlags('workspace-write'), ['--sandbox', 'workspace-write']);
   assert.deepEqual(sandboxFlags('danger-full-access'), ['--dangerously-bypass-approvals-and-sandbox']);
 });
 
@@ -106,6 +108,35 @@ t('hub store: append-only log with sequence numbers and cursor reads', () => {
   assert.equal(s.append('t', { method: 'b' }).seq, 2);
   assert.deepEqual(s.eventsFrom('t', 1).map((e) => e.method), ['b']);
   s.close();
+});
+
+t('codex exec: buildArgs pins the workspace and resumes an existing session in order', () => {
+  const fresh = buildArgs({ prompt: 'go', cwd: '/w', sandboxPolicy: 'workspace-write', model: 'gpt-5.4-mini' });
+  assert.deepEqual(fresh, ['exec', '--json', '--skip-git-repo-check', '-C', '/w', '--sandbox', 'workspace-write', '-m', 'gpt-5.4-mini', 'go']);
+  const resumed = buildArgs({ prompt: 'more', cwd: '/w', sandboxPolicy: 'read-only', sessionId: 'sess-1' });
+  // `codex exec resume` rejects --cd and --sandbox outright: the session carries both.
+  assert.deepEqual(resumed, ['exec', 'resume', '--json', '--skip-git-repo-check', 'sess-1', 'more']);
+  assert.ok(!resumed.includes('-C') && !resumed.includes('--sandbox'));
+});
+
+t('codex probe: resolves a runnable command shape, or a blocker that says what to do', () => {
+  const missing = codexProbe.resolveCodex('definitely-not-a-real-binary-xyz');
+  assert.equal(missing.ok, false);
+  const p = codexProbe.probe({ bin: 'definitely-not-a-real-binary-xyz' });
+  assert.ok(p.blockers.length);
+  assert.ok(p.blockers.every((b) => b.detail && b.alternative), 'every blocker carries an alternative');
+  const real = codexProbe.resolveCodex();
+  if (real.ok) assert.ok(Array.isArray(real.prefix) && real.bin, 'a resolved codex is [bin, ...prefix, ...args]');
+});
+
+t('hub: the command log evicts settled entries and never a command still in flight', () => {
+  const hub = new Hub({ dbFile: ':memory:', log: () => {} });
+  for (let i = 0; i < 5; i++) hub.commandLog.set('u/done' + i, { state: 'done', waiters: new Set() });
+  hub.commandLog.set('u/pending', { state: 'pending', waiters: new Set() });
+  hub.pruneCommandLog(2);
+  assert.ok(hub.commandLog.has('u/pending'), 'the in-flight command survived pruning');
+  assert.ok(hub.commandLog.size <= 3);
+  hub.store.close();
 });
 
 console.log(`\n${n} unit tests passed ✅`);

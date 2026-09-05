@@ -6,6 +6,7 @@
  * Run: xvfb-run -a node test/e2e-multiplayer.js   (or headless without xvfb)
  */
 const { chromium } = require('playwright-core');
+const { localShell } = require('../packages/runtime/executors');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -21,7 +22,7 @@ function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.
   fs.mkdirSync(path.join(project, 'build'), { recursive: true });
   fs.writeFileSync(path.join(project, 'build', 'bundle.js'), '// built\n');
   fs.writeFileSync(path.join(project, 'index.js'), 'console.log("hi")\n');
-  execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: '/bin/bash' });
+  execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: localShell().bin });
 
   const hub = new Hub({ dbFile: ':memory:', staticDir: path.join(__dirname, '..', 'apps', 'web'), log: () => {} });
   const addr = await hub.listen(0);

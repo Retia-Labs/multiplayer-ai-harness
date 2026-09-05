@@ -115,10 +115,24 @@ Runtime config can also live in `~/.harness/runtime.json`:
 ```bash
 npm run test:unit       # policy matrix, codex exec JSONL translator, diff, hub store
 npm run test:protocol   # scripted hub + runtime + two WebSocket clients (no browser)
+npm run test:codex      # Codex acceptance harness, control lane only (no provider spend)
 npm run test:e2e        # two real Chromium users: approve / steer / late-join / changes / worktree
 npm run test:desktop    # Electron shell boots hub + runtime and runs a turn (needs xvfb)
 npm run smoke           # the original Codex-clone smoke test
 ```
+
+### Proving it against the real Codex CLI
+
+```bash
+npm run codex:probe     # which codex, what version, which auth, which capability gaps
+npm run proof:codex     # every lane this machine allows: control + subscription + API key
+```
+
+`proof:codex` runs real `codex exec` turns and spends real provider quota. It writes a
+result matrix and Codex's own event stream to [docs/proofs/](docs/proofs/); the contract it
+establishes - pinned version, platform prerequisites, auth modes, usage owner and the gaps
+that have no answer yet - is written up in
+[docs/proofs/codex-shared-control.md](docs/proofs/codex-shared-control.md).
 
 ## Layout
 
