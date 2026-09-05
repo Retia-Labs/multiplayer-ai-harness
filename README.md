@@ -151,3 +151,10 @@ per-thread ACLs, sandboxing is policy + worktrees (no containers yet), and the C
 adapters are integration-tested only against fixtures because neither binary is present in CI.
 The dossier's Phase 2 exit criterion — *"Alice's agent hits an approval wall, Bob approves from his
 phone, both watch the diff land live"* — is what this repo demonstrates.
+
+## Implementation planning
+
+The [planning index](docs/planning/README.md) links the current implementation spec, team issues,
+accepted decisions, and supporting research. Start with [spec issue #1](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1)
+and the [team issue breakdown](docs/planning/team-issue-breakdown.md). The spec describes the work
+required for early access; it does not claim that the prototype already satisfies those requirements.

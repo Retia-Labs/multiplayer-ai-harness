@@ -1,0 +1,987 @@
+{
+  "parent_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1",
+  "status": "published",
+  "issues": [
+    {
+      "id": "P01",
+      "title": "Prove real Codex shared control and supported authentication",
+      "type": "HITL",
+      "blocked_by": [],
+      "stories": [
+        6,
+        8,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        25,
+        35,
+        48
+      ],
+      "lane": "Runtime/providers",
+      "what": "A bounded integration proof connects two minimal clients to one real interactive Codex task on its execution host. Establish the supported provider/version/authentication contract before implementing the production adapter. Human involvement is limited to real test-account access and confirming the offered authentication arrangement; no customer interview is required.",
+      "criteria": [
+        "Demonstrate real task start, streamed output, teammate input delivery, stale-turn rejection, interruption during tool work, one bounded approval resolution, and explicit provider resume. Record provider acknowledgments rather than UI-only success.",
+        "Use unique command identities and prove retry deduplication. Distinguish one authoritative approval resolution from any claim of exactly-once external side effects after a crash.",
+        "Exercise subscription and API modes separately using authorized test accounts. Document the usage owner and supported multi-human authority; technical login success is not proof of transferable entitlements.",
+        "Pin the tested version, record platform prerequisites and capabilities, and provide a runnable acceptance harness and result matrix. A missing required capability produces a concrete supported alternative or blocker."
+      ],
+      "body_file": "docs/planning/team-issues/p01.md",
+      "label": "ready-for-human",
+      "github_number": 2,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/2",
+      "github_database_id": 5357441778,
+      "native_dependencies": []
+    },
+    {
+      "id": "P02",
+      "title": "Prove encrypted endpoint enrollment, control and customer recovery",
+      "type": "HITL",
+      "blocked_by": [],
+      "stories": [
+        17,
+        26,
+        27,
+        28,
+        29,
+        30,
+        48
+      ],
+      "lane": "Collaboration/encryption",
+      "what": "Build a desktop/runtime/browser experiment with an established encryption stack: verified endpoints exchange one encrypted task and authenticated control, recover on a clean endpoint, and remove a device. Deliver a reviewed protocol/library decision and threat model, not custom cryptography.",
+      "criteria": [
+        "The relay/database/logs cannot read task content or customer keys; document necessary cleartext metadata and browser/application-code and inference-provider trust boundaries.",
+        "An existing trusted endpoint or customer recovery authority verifies new endpoint identity. Test substituted keys, modified controls, replayed approvals, and stale authorization.",
+        "Demonstrate clean-endpoint recovery without operator secrets, history scope, membership/key rotation, and future-content exclusion for removed devices; recovery cannot reinstate expired action-approval grants.",
+        "Demonstrate supported storage and packaging on both desktop platforms and browser. Record offline/revocation acknowledgment behavior, protocol versions, failure cases, and qualified review requirements. This proof is not a completed production security audit."
+      ],
+      "body_file": "docs/planning/team-issues/p02.md",
+      "label": "ready-for-human",
+      "github_number": 3,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/3",
+      "github_database_id": 5357441937,
+      "native_dependencies": []
+    },
+    {
+      "id": "P03",
+      "title": "Install desktop bootstrap builds on macOS and Windows",
+      "type": "AFK",
+      "blocked_by": [],
+      "stories": [
+        1,
+        2,
+        7,
+        48
+      ],
+      "lane": "Desktop/product",
+      "what": "Produce internal installable desktop builds that launch the shared interface and manage the local runtime outside a developer checkout. Connect to a configured remote team service independently from local runtime startup.",
+      "criteria": [
+        "Exercise installation and launch on clean macOS and Windows test environments; no accidental dependency on system Node, a terminal environment, or source-tree paths.",
+        "Show runtime readiness and actionable startup failures. Remote-hub configuration still starts and registers the local execution host.",
+        "Handle packaged resources, platform-specific paths and project selection; record the exact supported OS/architecture targets and explicit prerequisites.",
+        "Provide reproducible internal artifacts and installation evidence. Identify signing/notarization provisioning needed for P19 now; public signed distribution is not required for this internal slice."
+      ],
+      "body_file": "docs/planning/team-issues/p03.md",
+      "label": "ready-for-agent",
+      "github_number": 4,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/4",
+      "github_database_id": 5357442117,
+      "native_dependencies": []
+    },
+    {
+      "id": "P04",
+      "title": "Create a private team and pair an explicitly shared execution host",
+      "type": "AFK",
+      "blocked_by": [],
+      "stories": [
+        4,
+        5,
+        17,
+        45
+      ],
+      "lane": "Collaboration/encryption",
+      "what": "Implement a complete account-to-project setup path: authenticate, create a private team, invite a named person, pair an execution host with local approval, and explicitly authorize one project. Treat identity and host authority as distinct from encryption access and billing.",
+      "criteria": [
+        "An owner can create a team, issue an expiring invitation, accept it as another authenticated user, and remove membership; name-only login and caller-supplied roles cannot bypass authorization.",
+        "Pairing requires local host consent and selecting an allowed workspace. A remote user cannot register arbitrary paths, claim another runtime, or escalate execution policy.",
+        "Direct protocol/HTTP requests enforce account, team, project and host boundaries; outsider history access and foreign runtime routing fail with distinct errors.",
+        "Team administration or a paid seat alone grants neither project decryption nor action-approval authority. UI communicates the pending encryption-enrollment state."
+      ],
+      "body_file": "docs/planning/team-issues/p04.md",
+      "label": "ready-for-agent",
+      "github_number": 5,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/5",
+      "github_database_id": 5357442396,
+      "native_dependencies": []
+    },
+    {
+      "id": "P05",
+      "title": "Create and reconnect to a durably encrypted task",
+      "type": "AFK",
+      "blocked_by": [
+        "P02",
+        "P04"
+      ],
+      "stories": [
+        8,
+        9,
+        24,
+        26,
+        30
+      ],
+      "lane": "Collaboration/encryption",
+      "what": "An enrolled endpoint creates a task and reconstructs its content after reconnect through the hosted ciphertext relay. Use a fixture task to make this independently verifiable before connecting the real provider.",
+      "criteria": [
+        "Persist versioned opaque task/event records and encrypted objective, title, messages, plans, tool arguments/results, diffs and activity; cleartext metadata is explicitly enumerated.",
+        "Ordered replay restores the full task rather than clearing history and applying only new events. Integrity failures and missing events are visible; duplicate delivery does not duplicate records.",
+        "Content-derived server projections, search and file-overlap inspection are moved to authorized endpoints or disabled; no silent plaintext fallback.",
+        "Canary content is absent from relay storage, logs and errors. The fixture-based client-to-relay-to-host acceptance path is reusable by later slices."
+      ],
+      "body_file": "docs/planning/team-issues/p05.md",
+      "label": "ready-for-agent",
+      "github_number": 6,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/6",
+      "github_database_id": 5357442518,
+      "native_dependencies": [
+        "P02",
+        "P04"
+      ]
+    },
+    {
+      "id": "P06",
+      "title": "Run a real Codex task from the installed desktop app",
+      "type": "AFK",
+      "blocked_by": [
+        "P01",
+        "P03",
+        "P05"
+      ],
+      "stories": [
+        1,
+        6,
+        7,
+        8,
+        18,
+        35,
+        44
+      ],
+      "lane": "Runtime/providers",
+      "what": "From an installed app, configure a supported Codex account, select an authorized repository, and run a useful solo feature task with encrypted activity and changes. Replace the noninteractive-only integration with the validated interactive contract.",
+      "criteria": [
+        "A real provider task executes on the displayed host and workspace, produces file changes, and streams meaningful state through the encrypted task path.",
+        "Credentials remain in the provider/host relationship and out of shared descriptors, task content, telemetry and logs; account/version/usage-limit failures are actionable.",
+        "Workspace restrictions and actual provider execution capabilities are enforced locally and shown accurately. Remote clients cannot silently increase privileges.",
+        "Preserve product task identifiers separately from provider session/turn identifiers. Solo task start does not require another teammate to be online or invited."
+      ],
+      "body_file": "docs/planning/team-issues/p06.md",
+      "label": "ready-for-agent",
+      "github_number": 7,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/7",
+      "github_database_id": 5357442781,
+      "native_dependencies": [
+        "P01",
+        "P03",
+        "P05"
+      ]
+    },
+    {
+      "id": "P07",
+      "title": "Invite a verified teammate into encrypted project history",
+      "type": "AFK",
+      "blocked_by": [
+        "P05"
+      ],
+      "stories": [
+        3,
+        4,
+        9,
+        27,
+        30,
+        43
+      ],
+      "lane": "Collaboration/encryption",
+      "what": "An authorized participant grants an invited teammate access to a project and enrolls that teammate's browser or desktop endpoint, allowing it to reconstruct shared task history. A seeded encrypted task is enough to verify this slice.",
+      "criteria": [
+        "Login and a link alone do not establish cryptographic trust. A trusted endpoint or recovery authority completes the accepted endpoint-verification flow.",
+        "Project-level access to existing shared history and future tasks is explained when granted. The teammate can decrypt ordered history and current pending state after joining late.",
+        "Uninvited/unverified endpoints cannot read or control tasks through UI or direct requests. A copied private task link never carries decryption authority.",
+        "Browser persistence, site-data loss and re-enrollment behavior are explicit and tested. Participant role and pending enrollment states are visible."
+      ],
+      "body_file": "docs/planning/team-issues/p07.md",
+      "label": "ready-for-agent",
+      "github_number": 8,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/8",
+      "github_database_id": 5357443085,
+      "native_dependencies": [
+        "P05"
+      ]
+    },
+    {
+      "id": "P08",
+      "title": "Show a sourced, fresh catch-up view for a joining teammate",
+      "type": "AFK",
+      "blocked_by": [
+        "P06",
+        "P07"
+      ],
+      "stories": [
+        9,
+        18,
+        37,
+        38
+      ],
+      "lane": "Desktop/product",
+      "what": "A teammate opens an unfamiliar running task and sees enough verified context to contribute without reading its whole transcript. Build deterministic projections first on an authorized endpoint.",
+      "criteria": [
+        "Show objective, responsible teammate, execution host/provider, current plan/status, recent changes, recorded decisions and current blocker/pending approvals.",
+        "Each decision and summary item links to supporting task events or saved artifacts. Distinguish explicitly recorded decisions from inference; do not invent human approval.",
+        "Display freshness and disconnected/unknown state. A late join and reconnect produce the same catch-up state as continuous observation.",
+        "No server-side plaintext projection is introduced. Generated summaries are optional, do not block completion, and if present run under an authorized customer provider relationship."
+      ],
+      "body_file": "docs/planning/team-issues/p08.md",
+      "label": "ready-for-agent",
+      "github_number": 9,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/9",
+      "github_database_id": 5357443258,
+      "native_dependencies": [
+        "P06",
+        "P07"
+      ]
+    },
+    {
+      "id": "P09",
+      "title": "Let two teammates steer and interrupt the same running task",
+      "type": "AFK",
+      "blocked_by": [
+        "P06",
+        "P07"
+      ],
+      "stories": [
+        10,
+        11,
+        12,
+        13,
+        17
+      ],
+      "lane": "Runtime/providers",
+      "what": "Alice starts a real task and Bob joins, sends an explicit agent correction and optionally interrupts. Deliver these actions through authenticated encrypted control with provider-confirmed outcomes.",
+      "criteria": [
+        "Near-simultaneous inputs retain actor attribution, stable host acceptance order, unique IDs and queued/delivered/rejected outcomes. A visible message alone is not delivery.",
+        "Retries do not redeliver an accepted command; a changed turn rejects stale instructions instead of silently redirecting another turn.",
+        "Interrupt shows requested/stopping until runtime/provider acknowledgment; test during tool execution and host disconnection without claiming completed side effects are undone.",
+        "Host checks current verified collaborator authority and target task/turn. A human help message is never automatically converted into agent input."
+      ],
+      "body_file": "docs/planning/team-issues/p09.md",
+      "label": "ready-for-agent",
+      "github_number": 10,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/10",
+      "github_database_id": 5357443381,
+      "native_dependencies": [
+        "P06",
+        "P07"
+      ]
+    },
+    {
+      "id": "P10",
+      "title": "Delegate approval rights and resolve a real action once",
+      "type": "AFK",
+      "blocked_by": [
+        "P06",
+        "P07"
+      ],
+      "stories": [
+        14,
+        15,
+        16,
+        17
+      ],
+      "lane": "Runtime/providers",
+      "what": "The execution-host owner explicitly grants Bob action-approval rights; Bob resolves one real pending provider action while Alice sees the same decision and outcome.",
+      "criteria": [
+        "Ordinary collaboration does not confer approval rights. The host validates the current verified actor, grant and exact task/turn/host/action before accepting a response.",
+        "Show the exact pending action and its context. Two valid competing responses yield one recorded authoritative resolution; the losing client sees the existing actor and outcome.",
+        "Reject mutated actions, replayed or expired responses, stale grants and stale requests after a restart. Deduplicate accepted dispatch without promising general exactly-once shell effects.",
+        "Per-action approval is the default. Do not expose broad accept-for-session behavior without bounded, enforced and tested semantics."
+      ],
+      "body_file": "docs/planning/team-issues/p10.md",
+      "label": "ready-for-agent",
+      "github_number": 11,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/11",
+      "github_database_id": 5357443567,
+      "native_dependencies": [
+        "P06",
+        "P07"
+      ]
+    },
+    {
+      "id": "P11",
+      "title": "Request help from a named teammate through a private inbox",
+      "type": "AFK",
+      "blocked_by": [
+        "P07",
+        "P08"
+      ],
+      "stories": [
+        39,
+        40,
+        41
+      ],
+      "lane": "Desktop/product",
+      "what": "A task participant requests help or review from a named authorized project member. The recipient opens the exact task/question from an in-app inbox and explicitly resolves or cancels the request.",
+      "criteria": [
+        "Persist an encrypted question, requester, recipient, task/context references and open/resolved/cancelled state; reject recipients outside the authorized project.",
+        "Inbox and task views stay consistent across clients and reconnect. The recipient receives the catch-up context and can act later while host availability remains clear.",
+        "Sending a help request produces no provider input or execution. Sending to the agent is a separate explicit action.",
+        "No general chat, Slack or email integration is required. Any OS notification is generic and contains no decrypted task text."
+      ],
+      "body_file": "docs/planning/team-issues/p11.md",
+      "label": "ready-for-agent",
+      "github_number": 12,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/12",
+      "github_database_id": 5357443787,
+      "native_dependencies": [
+        "P07",
+        "P08"
+      ]
+    },
+    {
+      "id": "P12",
+      "title": "Review corrected work and hand over task responsibility",
+      "type": "AFK",
+      "blocked_by": [
+        "P08",
+        "P09"
+      ],
+      "stories": [
+        18,
+        19,
+        20
+      ],
+      "lane": "Desktop/product",
+      "what": "Participants inspect the real diff after a teammate correction, record the task outcome, and transfer responsibility to an existing project member with an encrypted note.",
+      "criteria": [
+        "The complete scenario shows an original assumption, confirmed teammate correction, resulting file change and navigable supporting task history.",
+        "Handoff changes responsibility only, preserves shared context and clearly displays the unchanged host/workspace/provider usage owner.",
+        "The recipient must already have project access. Responsibility does not silently grant approval rights or transfer provider credentials.",
+        "Record open/completed/cancelled task outcome independently from individual turn status. Reuse the existing diff experience rather than adding a full editor or Git replacement."
+      ],
+      "body_file": "docs/planning/team-issues/p12.md",
+      "label": "ready-for-agent",
+      "github_number": 13,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/13",
+      "github_database_id": 5357443924,
+      "native_dependencies": [
+        "P08",
+        "P09"
+      ]
+    },
+    {
+      "id": "P13",
+      "title": "Associate issues and PRs with authorized private task links",
+      "type": "AFK",
+      "blocked_by": [
+        "P07"
+      ],
+      "stories": [
+        42,
+        43
+      ],
+      "lane": "Desktop/product",
+      "what": "A project member stores an issue or PR URL with a task and copies a private task link that opens the relevant context only for authorized enrolled recipients.",
+      "criteria": [
+        "Validate supported URL schemes and render links safely. Store the related-work URL encrypted and round-trip it across authorized clients.",
+        "A private link routes to authentication, membership checks and endpoint verification; it never reveals task content to an unauthorized visitor.",
+        "Adding an association does not read, comment on, or publish task content to the external issue tracker automatically.",
+        "Allow adding/removing associations and navigating the task from the same link after reconnect; external tracker integration is not required."
+      ],
+      "body_file": "docs/planning/team-issues/p13.md",
+      "label": "ready-for-agent",
+      "github_number": 14,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/14",
+      "github_database_id": 5357444174,
+      "native_dependencies": [
+        "P07"
+      ]
+    },
+    {
+      "id": "P14",
+      "title": "Restore encrypted history on a clean customer device",
+      "type": "AFK",
+      "blocked_by": [
+        "P07"
+      ],
+      "stories": [
+        27,
+        28,
+        30
+      ],
+      "lane": "Collaboration/encryption",
+      "what": "A customer restores the defined project/history and endpoint-trust scope using an existing trusted endpoint or customer-held recovery material, with no operator content-recovery path.",
+      "criteria": [
+        "Exercise recovery on a clean desktop/browser endpoint; wrong material fails, the operator sees only encrypted backups, and all-recovery-method loss is explained honestly.",
+        "Protect persisted secrets using the selected supported desktop/browser storage and document site-data/locked-storage failure behavior.",
+        "Recovery does not restore expired approval grants or provider credentials. Make the restored scope and trust transitions explicit.",
+        "Provide an onboarding recovery exercise and supported replacement/rotation path; do not promise recovery after every trusted endpoint and recovery secret are lost."
+      ],
+      "body_file": "docs/planning/team-issues/p14.md",
+      "label": "ready-for-agent",
+      "github_number": 15,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/15",
+      "github_database_id": 5357444421,
+      "native_dependencies": [
+        "P07"
+      ]
+    },
+    {
+      "id": "P15",
+      "title": "Revoke a teammate device without retaining future control",
+      "type": "AFK",
+      "blocked_by": [
+        "P10",
+        "P14"
+      ],
+      "stories": [
+        17,
+        29,
+        30,
+        45
+      ],
+      "lane": "Collaboration/encryption",
+      "what": "A project owner removes access or revokes a device, and participants see the updated encryption/authorization state and each execution host's acknowledgment.",
+      "criteria": [
+        "Advance authenticated membership/key state; removed endpoints cannot decrypt future content under the new state or authorize actions after host application.",
+        "Show pending revocation for unreachable hosts. Reconcile current membership before enabling controls after reconnect; do not imply instant knowledge on an offline machine.",
+        "Reject substituted identities, replayed grants and stale approval responses. Recovery cannot roll back current authorization.",
+        "Explain that already-read plaintext and participant-held history cannot be erased; role, key and paid-seat state remain distinct."
+      ],
+      "body_file": "docs/planning/team-issues/p15.md",
+      "label": "ready-for-agent",
+      "github_number": 16,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/16",
+      "github_database_id": 5357444539,
+      "native_dependencies": [
+        "P10",
+        "P14"
+      ]
+    },
+    {
+      "id": "P16",
+      "title": "Recover task state after network loss or runtime restart",
+      "type": "AFK",
+      "blocked_by": [
+        "P09",
+        "P10"
+      ],
+      "stories": [
+        12,
+        16,
+        23,
+        24,
+        25
+      ],
+      "lane": "Runtime/providers",
+      "what": "Participants and the execution host recover from browser disconnection, network failure, host sleep, runtime crash and relay restart without losing context or blindly replaying actions.",
+      "criteria": [
+        "Persist enough event/command state to reconcile full prior history, provider lifecycle and pending approvals before controls re-enable.",
+        "Distinguish host connectivity from task/turn outcome. Already-started actions may have continued; show their confirmed results or unknown state accurately.",
+        "Accepted commands are deduplicated; invalid pending approvals expire. No automatic replay of arbitrary side-effecting commands after uncertain completion.",
+        "Use an explicit supported provider resume path; otherwise show recovery-required with an actionable choice. Include reconnect, restart, stale response and crash-window acceptance scenarios."
+      ],
+      "body_file": "docs/planning/team-issues/p16.md",
+      "label": "ready-for-agent",
+      "github_number": 17,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/17",
+      "github_database_id": 5357444717,
+      "native_dependencies": [
+        "P09",
+        "P10"
+      ]
+    },
+    {
+      "id": "P17",
+      "title": "Keep execution alive in the tray and quit explicitly",
+      "type": "AFK",
+      "blocked_by": [
+        "P06"
+      ],
+      "stories": [
+        21,
+        22,
+        23
+      ],
+      "lane": "Desktop/product",
+      "what": "Closing the app window leaves its execution host alive in the tray/menu bar so an authorized browser participant can continue. Explicit quit communicates and applies the effect on running work.",
+      "criteria": [
+        "Close and reopen the installed window while a real task runs; no duplicate runtime appears and the other client remains able to participate.",
+        "Explicit quit warns if tasks are active, confirms the user's intent, shuts down managed processes and reports unavailable state to teammates.",
+        "Test platform process cleanup and tray/menu-bar controls. Sleep or lost connectivity is not reported as a successfully completed or stopped task.",
+        "Fresh app launch restores connection/setup state without automatically replaying an uncertain task or command."
+      ],
+      "body_file": "docs/planning/team-issues/p17.md",
+      "label": "ready-for-agent",
+      "github_number": 18,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/18",
+      "github_database_id": 5357444967,
+      "native_dependencies": [
+        "P06"
+      ]
+    },
+    {
+      "id": "P18",
+      "title": "Execute the complete real collaboration flow on installed Windows",
+      "type": "AFK",
+      "blocked_by": [
+        "P09",
+        "P10",
+        "P17"
+      ],
+      "stories": [
+        2,
+        5,
+        6,
+        7,
+        8,
+        13,
+        15,
+        21,
+        22,
+        23,
+        24,
+        25
+      ],
+      "lane": "Desktop/product",
+      "what": "Close Windows-specific execution gaps and prove a real task, browser teammate correction, delegated approval, file changes and lifecycle behavior on a clean Windows host.",
+      "criteria": [
+        "Platform-aware shell invocation, binary discovery, command shims, drive-letter/project paths and process-tree interruption work in the documented execution environment.",
+        "Any required provider execution environment is explicitly guided and tested; no hidden prerequisite or substitution of browser access for Windows host execution.",
+        "Installed project selection, provider setup, actual changes, remote controls, close/reopen and explicit quit pass on recorded Windows versions.",
+        "Preserve the passing macOS workflow with focused cross-platform checks; do not infer native support solely from a packaged installer."
+      ],
+      "body_file": "docs/planning/team-issues/p18.md",
+      "label": "ready-for-agent",
+      "github_number": 19,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/19",
+      "github_database_id": 5357445063,
+      "native_dependencies": [
+        "P09",
+        "P10",
+        "P17"
+      ]
+    },
+    {
+      "id": "P19",
+      "title": "Ship signed installers with a tested upgrade and recovery path",
+      "type": "HITL",
+      "blocked_by": [
+        "P03",
+        "P14",
+        "P16",
+        "P17",
+        "P18"
+      ],
+      "stories": [
+        1,
+        2,
+        7,
+        21,
+        22,
+        36
+      ],
+      "lane": "Desktop/product",
+      "what": "Produce trustworthy macOS/Windows distribution artifacts and verify upgrade/reinstall/rollback behavior without stranding runtime state, encrypted history or credentials. Human work covers signing accounts/credentials and installed-build review.",
+      "criteria": [
+        "Provision and protect required signing/notarization credentials; produce reproducible artifacts and validate clean-machine install without a developer shell.",
+        "Load trusted packaged application code, isolate/sandbox renderers as appropriate and narrowly validate privileged IPC; the production desktop must not rely on arbitrary remote renderer privileges.",
+        "Test upgrade compatibility for runtime/provider versions, encrypted storage and pending work. Document unsupported downgrades and a recoverable reinstall/rollback procedure.",
+        "Manual update delivery is acceptable initially if clear and verified. Begin provisioning alongside P03 rather than waiting for all runtime features to finish."
+      ],
+      "body_file": "docs/planning/team-issues/p19.md",
+      "label": "ready-for-human",
+      "github_number": 20,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/20",
+      "github_database_id": 5357445232,
+      "native_dependencies": [
+        "P03",
+        "P14",
+        "P16",
+        "P17",
+        "P18"
+      ]
+    },
+    {
+      "id": "P20",
+      "title": "Provide content-safe onboarding diagnostics and support",
+      "type": "AFK",
+      "blocked_by": [
+        "P06",
+        "P07",
+        "P14"
+      ],
+      "stories": [
+        7,
+        30,
+        31
+      ],
+      "lane": "Desktop/product",
+      "what": "Provide a first-run checklist, clear setup/recovery errors and an explicitly reviewed diagnostic export so founders can assist pilot teams without receiving their private code or secrets.",
+      "criteria": [
+        "Guide account, endpoint enrollment, project/host pairing, provider readiness, first solo task and teammate invitation with actionable stage-specific failures.",
+        "Diagnostics include only necessary versions, capability/error identifiers and redacted health state; exclude prompts, paths/repository names, diffs, tool content, keys and credentials.",
+        "Users can inspect the export before sharing; the product does not automatically send it externally. Document privacy/metadata and recovery-loss boundaries plainly.",
+        "Exercise successful onboarding plus representative unsupported-account, missing-runtime, failed-enrollment and recovery errors through installed and browser clients."
+      ],
+      "body_file": "docs/planning/team-issues/p20.md",
+      "label": "ready-for-agent",
+      "github_number": 21,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/21",
+      "github_database_id": 5357445525,
+      "native_dependencies": [
+        "P06",
+        "P07",
+        "P14"
+      ]
+    },
+    {
+      "id": "P21",
+      "title": "Delete shared tasks and offboard projects with explicit retention",
+      "type": "AFK",
+      "blocked_by": [
+        "P05",
+        "P15"
+      ],
+      "stories": [
+        29,
+        30,
+        46
+      ],
+      "lane": "Collaboration/encryption",
+      "what": "An authorized customer deletes task/project records and offboards access, with understandable live-storage, index, backup and participant-copy behavior.",
+      "criteria": [
+        "Remove deleted ciphertext and routing/index references from live stores; deny subsequent fetch/control requests and reflect deletion in authorized clients.",
+        "Publish and implement a bounded backup retention/deletion policy before external release; service restore must not silently reactivate deleted memberships or control grants.",
+        "Apply related access/key revocation without conflating history deletion with erasing participant-held plaintext or copies.",
+        "Test unauthorized deletion, concurrent access, reconnect and restore paths; logs/support exports cannot resurrect deleted content."
+      ],
+      "body_file": "docs/planning/team-issues/p21.md",
+      "label": "ready-for-agent",
+      "github_number": 22,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/22",
+      "github_database_id": 5357445629,
+      "native_dependencies": [
+        "P05",
+        "P15"
+      ]
+    },
+    {
+      "id": "P22",
+      "title": "Measure setup, catch-up and real collaboration without task content",
+      "type": "AFK",
+      "blocked_by": [
+        "P08",
+        "P09",
+        "P10",
+        "P11",
+        "P12"
+      ],
+      "stories": [
+        30,
+        33,
+        47
+      ],
+      "lane": "Desktop/product",
+      "what": "Implement disclosed content-free measurement from actual endpoint/runtime outcomes, making setup failures, viewing/help, delivered intervention, task completion and returning-team behavior separately visible.",
+      "criteria": [
+        "Count an activated person only after a qualifying task has two distinct participating humans and a non-initiator's intervention confirmed delivered; participation means task start or authenticated control/approval action.",
+        "Do not count signup, passive views, help requests or queued-but-undelivered input as activation. Retry deduplication prevents duplicate person/task/event counts.",
+        "Collect setup-stage outcomes, useful solo starts, invites, catch-up/help, direct control, completion and later-week team return without prompts, titles, paths, URLs, diffs or tool content.",
+        "Compute/emit minimal events at authorized endpoints rather than inspecting relay plaintext. Implement disclosure, retention/deletion and a test path covering solo and two-person tasks; interviews are not required."
+      ],
+      "body_file": "docs/planning/team-issues/p22.md",
+      "label": "ready-for-agent",
+      "github_number": 23,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/23",
+      "github_database_id": 5357445748,
+      "native_dependencies": [
+        "P08",
+        "P09",
+        "P10",
+        "P11",
+        "P12"
+      ]
+    },
+    {
+      "id": "P23",
+      "title": "Manage individual paid pilot seats separately from project access",
+      "type": "AFK",
+      "blocked_by": [
+        "P04"
+      ],
+      "stories": [
+        32,
+        45
+      ],
+      "lane": "Desktop/product",
+      "what": "Provide founder-operated individual seat entitlement records and customer-visible billing boundaries, allowing paid pilot operations without building automated checkout or deciding a price now.",
+      "criteria": [
+        "Grant/revoke individual entitlements and record payment/owner status; team, project, decryption and approval rights remain independently enforced.",
+        "Price is configured or recorded later. No invented price, free-reviewer tier, pricing interview or payment is a prerequisite for implementation.",
+        "Separate product seats from customer provider usage. Distinguish actual paid teams from free pilots, verbal intent and unpaid invoices.",
+        "Test entitlement changes and billing/access separation. Do not initiate charges or customer messages as part of this implementation issue."
+      ],
+      "body_file": "docs/planning/team-issues/p23.md",
+      "label": "ready-for-agent",
+      "github_number": 24,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/24",
+      "github_database_id": 5357445913,
+      "native_dependencies": [
+        "P04"
+      ]
+    },
+    {
+      "id": "P24",
+      "title": "Verify the Codex release on both platforms and its privacy boundary",
+      "type": "HITL",
+      "blocked_by": [
+        "P11",
+        "P12",
+        "P13",
+        "P15",
+        "P16",
+        "P19",
+        "P20",
+        "P21",
+        "P22"
+      ],
+      "stories": [
+        1,
+        2,
+        3,
+        7,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        42,
+        43,
+        44,
+        46,
+        47,
+        48
+      ],
+      "lane": "All lanes",
+      "what": "Run the complete installed desktop/browser product through the parent spec's single acceptance boundary, including an independent implementation/threat-model review, and produce the external Codex release go/no-go. Customer interviews are not a gate.",
+      "criteria": [
+        "On both advertised execution platforms, two users complete encrypted join/catch-up, real correction, bounded delegated approval, diff review, help/handoff, private links and background/quit behavior.",
+        "Exercise unauthorized endpoints, malicious relay/replay, stale grants, revocation, clean-device recovery, runtime/network interruption and supported resume. Record provider/auth/version support.",
+        "Complete independent review of implemented privacy and control; inspect live/backup stores, logs, telemetry, notifications and diagnostics for canary plaintext. Claims accurately reflect reviewed scope.",
+        "Confirm usable installed distribution, upgrade/recovery, onboarding/support, documented metadata/retention and service restore. A failed core technical requirement blocks external release and names a concrete remedy, not an interview prerequisite."
+      ],
+      "body_file": "docs/planning/team-issues/p24.md",
+      "label": "ready-for-human",
+      "github_number": 25,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/25",
+      "github_database_id": 5357446157,
+      "native_dependencies": [
+        "P11",
+        "P12",
+        "P13",
+        "P15",
+        "P16",
+        "P19",
+        "P20",
+        "P21",
+        "P22"
+      ]
+    },
+    {
+      "id": "P25",
+      "title": "Prove Claude Code authentication and collaborative controls",
+      "type": "HITL",
+      "blocked_by": [
+        "P01",
+        "P02"
+      ],
+      "stories": [
+        6,
+        34,
+        35,
+        48
+      ],
+      "lane": "Runtime/providers",
+      "what": "Exercise a real Claude integration against the common adapter contract and select the supported SDK/binary and authentication arrangement. Human involvement covers test-account access and any required provider authorization.",
+      "criteria": [
+        "Verify actual queued input versus live steering, interruption, permission callbacks, resume and platform prerequisites; do not equate session resume with adopting any existing running native session.",
+        "Establish the allowed customer subscription/API arrangement for this product; do not assume personal subscription credentials can be routed through an SDK product.",
+        "Produce a versioned capability/auth/platform matrix and runnable acceptance evidence; choose a supported path and explicitly identify any required core behavior that cannot be met.",
+        "Run early once the common contract is stable; this proof does not block the first Codex release and requires no customer interview."
+      ],
+      "body_file": "docs/planning/team-issues/p25.md",
+      "label": "ready-for-human",
+      "github_number": 26,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/26",
+      "github_database_id": 5357446269,
+      "native_dependencies": [
+        "P01",
+        "P02"
+      ]
+    },
+    {
+      "id": "P26",
+      "title": "Release Claude Code through the encrypted team workflow",
+      "type": "AFK",
+      "blocked_by": [
+        "P24",
+        "P25"
+      ],
+      "stories": [
+        6,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        34,
+        35
+      ],
+      "lane": "Runtime/providers",
+      "what": "Add Claude as a selectable provider with the same project/enrollment permissions, catch-up, shared task view and truthful delivery states using the validated path.",
+      "criteria": [
+        "Real two-human tasks pass the advertised steering/queuing, required approval, interruption and supported resume behavior on advertised platforms/auth modes.",
+        "Unsupported or queued outcomes are labeled accurately; never enable a control that silently does something different or has no provider effect.",
+        "E2EE, current membership/grants, replay/recovery, credentials and content-free telemetry preserve the common boundaries.",
+        "Run focused Codex regressions and publish setup/limitations and provider-version support. If a core promise fails, resolve the scope/implementation conflict instead of advertising parity."
+      ],
+      "body_file": "docs/planning/team-issues/p26.md",
+      "label": "ready-for-agent",
+      "github_number": 27,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/27",
+      "github_database_id": 5357446420,
+      "native_dependencies": [
+        "P24",
+        "P25"
+      ]
+    },
+    {
+      "id": "P27",
+      "title": "Prove Cursor authentication and collaborative controls",
+      "type": "HITL",
+      "blocked_by": [
+        "P01",
+        "P02"
+      ],
+      "stories": [
+        6,
+        34,
+        35,
+        48
+      ],
+      "lane": "Runtime/providers",
+      "what": "Exercise real Cursor ACP/SDK candidates and choose the interface satisfying this product's shared-control and delegated-approval contract. Human involvement covers test accounts and any required provider authorization.",
+      "criteria": [
+        "Test actual local steering versus follow-up, cancellation, permission requests and resume; distinguish ACP, local SDK, detached/cloud runs and native IDE session adoption.",
+        "Verify customer account/billing support, platform prerequisites and provider versions without assuming transferable subscriptions.",
+        "Return a runnable experiment, a selected integration path and capability/auth/platform matrix; unsupported required behavior is an explicit implementation/scope blocker.",
+        "Can proceed alongside the Claude proof after the common contract is stable; it does not block the Codex release or require a customer interview."
+      ],
+      "body_file": "docs/planning/team-issues/p27.md",
+      "label": "ready-for-human",
+      "github_number": 28,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/28",
+      "github_database_id": 5357446709,
+      "native_dependencies": [
+        "P01",
+        "P02"
+      ]
+    },
+    {
+      "id": "P28",
+      "title": "Release Cursor through the encrypted team workflow",
+      "type": "AFK",
+      "blocked_by": [
+        "P24",
+        "P27"
+      ],
+      "stories": [
+        6,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24,
+        25,
+        34,
+        35
+      ],
+      "lane": "Runtime/providers",
+      "what": "Add Cursor using the verified integration path and the same private project, encrypted history, catch-up, control and handoff experience.",
+      "criteria": [
+        "Advertised controls produce real provider outcomes during a two-human task on supported platforms/auth modes; queued/follow-up/unsupported actions remain distinct.",
+        "Preserve membership, delegated approvals, encryption/key handling, credential boundaries, reconnect/recovery and minimal telemetry.",
+        "Publish setup, versions and limitations after passing the applicable shared release checks; do not claim existing native-chat takeover or cross-provider execution migration.",
+        "Run focused regressions for existing providers. The Claude release is not a technical dependency; release order follows validated engineering readiness."
+      ],
+      "body_file": "docs/planning/team-issues/p28.md",
+      "label": "ready-for-agent",
+      "github_number": 29,
+      "github_url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/29",
+      "github_database_id": 5357446861,
+      "native_dependencies": [
+        "P24",
+        "P27"
+      ]
+    }
+  ]
+}

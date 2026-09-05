@@ -1,0 +1,5 @@
+# End-to-end encrypted collaboration content
+
+The founder requires end-to-end encryption for shared collaboration content because data privacy is important. TLS and server-side encryption alone do not satisfy this requirement. Recovery relies on authorized devices/teammates or a customer-held recovery key; the operator cannot recover plaintext, and losing every recovery method means losing access to encrypted history. This recovery boundary was accepted on 2026-09-05. Key distribution and the boundary between encrypted content and necessary routing metadata require technical validation.
+
+This changes the hosted-service design: existing server-side inspection of task content cannot be retained unchanged under an E2EE promise. Content-dependent features must be redesigned around authorized clients or execution hosts, and the specification must distinguish the synchronization service from the chosen inference provider. The decision was made on 2026-09-05; no cryptographic implementation has been selected or validated.
