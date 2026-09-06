@@ -15,12 +15,25 @@ const { ClaudeCodeBackend, available: claudeAvailable } = require('./claude-code
 const { createExecutor, CrabboxExecutor } = require('./executors');
 const { PRESETS } = require('./policy');
 const git = require('./git');
-const { Commands, Events, ItemTypes } = require('../protocol');
+const { Commands, Events, ItemTypes, Errors } = require('../protocol');
 
 const uid = (p) => p + '_' + crypto.randomBytes(8).toString('hex');
 
+// Short, readable, and shown only on this machine's console. Possession of it is the
+// evidence that whoever is pairing this host actually has local access to it.
+function pairingCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';  // no look-alike characters
+  let out = '';
+  for (const b of crypto.randomBytes(8)) out += alphabet[b % alphabet.length];
+  return out.slice(0, 4) + '-' + out.slice(4, 8);
+}
+
+// How much execution authority a remote teammate may ask for on this host. The operator
+// raises it explicitly; a turn cannot escalate past it.
+const PRESET_RANK = { 'read-only': 0, 'agent': 1, 'agent-untrusted': 1, 'full-access': 3 };
+
 class Runtime {
-  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, log = () => {} }) {
+  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, maxPreset = 'agent', log = () => {} }) {
     this.hubUrl = hubUrl;
     this.org = org;
     this.userName = userName || os.userInfo().username;
@@ -35,6 +48,13 @@ class Runtime {
     this.projects = new Map();
     for (const dir of projects) this.projects.set(path.resolve(dir), { dir: path.resolve(dir), name: path.basename(dir) });
     this.sessions = new Map(); // threadId -> TurnSession
+    // Only the operator of this machine decides which teams may drive it and how far a
+    // remote teammate may escalate. Both survive restarts.
+    this.teamId = this.store.getKv('teamId') || null;
+    // The desktop shell supplies the code so it can show it to the operator sitting at
+    // this machine; a headless host generates its own and prints it.
+    this.pairingCode = this.teamId ? null : (process.env.HARNESS_PAIRING_CODE || pairingCode());
+    this.maxPreset = maxPreset;
     this.hub = null;
     this.activity = { threads: [], overlaps: [] }; // team awareness snapshot pushed by the hub
   }
@@ -78,17 +98,57 @@ class Runtime {
 
   async start() {
     for (const p of this.projects.values()) await this.describeProject(p);
-    this.hub = new HubClient({ url: this.hubUrl, hello: { role: 'runtime', org: this.org, name: this.userName, runtime: this.descriptor() }, log: this.log });
-    this.hub.on('welcome', () => {
-      this.log(`registered runtime ${this.id} (${this.name}) with hub`);
-      for (const t of this.store.listThreads()) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
+    this.hub = new HubClient({
+      url: this.hubUrl,
+      hello: { role: 'runtime', name: this.userName, runtime: this.descriptor(), pairingCode: this.pairingCode },
+      log: this.log
+    });
+    this.hub.on('welcome', (msg) => {
+      if (msg.paired) {
+        this.log(`registered runtime ${this.id} (${this.name}) with hub`);
+        for (const t of this.store.listThreads()) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
+      } else {
+        this.announcePairing();
+      }
     });
     this.hub.on('message', (msg) => {
       if (msg.type === 'command') this.onCommand(msg).catch((err) => this.log('command error: ' + err.message));
       else if (msg.type === 'workspace.activity') this.activity = { threads: msg.threads || [], overlaps: msg.overlaps || [] };
+      else if (msg.type === 'paired') this.onPaired(msg);
+      else if (msg.type === 'unpaired') this.onUnpaired();
     });
     this.hub.connect();
     return this;
+  }
+
+  // Printed on the host, never sent to a client: a teammate has to be told this code by
+  // whoever is sitting at the machine, or read it here themselves.
+  announcePairing() {
+    const line = '-'.repeat(52);
+    this.log(`\n${line}\n  This host is not paired with a team yet.\n  Pairing code:  ${this.pairingCode}\n  Enter it in Plexus to share ${this.name}.\n${line}`);
+  }
+
+  onPaired(msg) {
+    this.teamId = msg.teamId;
+    this.pairingCode = null;
+    this.store.setKv('teamId', msg.teamId);
+    this.log(`paired with team ${msg.teamId}${msg.pairedBy ? ' by ' + msg.pairedBy.name : ''}`);
+    for (const t of this.store.listThreads()) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
+  }
+
+  onUnpaired() {
+    this.teamId = null;
+    this.store.setKv('teamId', '');
+    this.pairingCode = pairingCode();
+    for (const s of this.sessions.values()) s.interrupt();
+    this.log('this host was unpaired; running turns were stopped');
+    this.announcePairing();
+  }
+
+  // The set of directories the operator explicitly shared. Nothing outside it is reachable,
+  // whatever a remote caller asks for.
+  isAuthorizedProject(dir) {
+    return this.projects.has(path.resolve(dir));
   }
 
   stop() {
@@ -144,6 +204,7 @@ class Runtime {
         this.appendEvent(threadId, { method: Events.THREAD_NAME_UPDATED, name: cmd.name, by });
         return {};
       case Commands.THREAD_SETTINGS_UPDATE:
+        if (cmd.settings && cmd.settings.preset) this.clampPreset(cmd.settings.preset);
         thread.settings = { ...thread.settings, ...cmd.settings }; this.store.upsertThread(thread);
         this.appendEvent(threadId, { method: Events.THREAD_SETTINGS_UPDATED, settings: thread.settings, by });
         return { settings: thread.settings };
@@ -169,15 +230,11 @@ class Runtime {
         const p = this.provider(cmd.provider || 'demo');
         return { models: p.id === 'demo' ? DEFAULT_MODELS.demo : await p.listModels() };
       }
-      case Commands.PROJECT_ADD: {
-        const dir = path.resolve(cmd.dir);
-        if (!fs.existsSync(dir)) throw new Error('directory does not exist: ' + dir);
-        const p = { dir, name: path.basename(dir) };
-        await this.describeProject(p);
-        this.projects.set(dir, p);
-        this.hub.send({ type: 'runtime.update', runtime: this.descriptor() });
-        return { project: p };
-      }
+      case Commands.PROJECT_ADD:
+        // Sharing a folder is a decision made at the machine, not over the network -
+        // otherwise any team member could hand their agent an arbitrary path on someone
+        // else's disk. The host operator adds projects with --project or runtime.json.
+        throw new Error(Errors.PROJECT_ADD_LOCAL_ONLY + ': a project must be authorized on the host itself');
       case Commands.THREAD_ASSIGN: {
         thread.assignee = cmd.assignee || null; thread.handoffNote = cmd.note || null; this.store.upsertThread(thread);
         this.appendEvent(threadId, { method: Events.THREAD_ASSIGNEE_UPDATED, assignee: thread.assignee, note: thread.handoffNote, by });
@@ -197,11 +254,12 @@ class Runtime {
 
   async threadStart(cmd, by) {
     const cwd = cmd.cwd ? path.resolve(cmd.cwd) : null;
-    if (cwd && !this.projects.has(cwd)) {
-      if (!fs.existsSync(cwd)) throw new Error('unknown project: ' + cwd);
-      const p = { dir: cwd, name: path.basename(cwd) }; await this.describeProject(p); this.projects.set(cwd, p);
+    // This used to register any path that happened to exist, which let a remote caller
+    // start an agent anywhere on the host's disk.
+    if (cwd && !this.isAuthorizedProject(cwd)) {
+      throw new Error(Errors.PROJECT_NOT_AUTHORIZED + ': ' + cwd + ' has not been shared on this host');
     }
-    const preset = PRESETS[cmd.settings && cmd.settings.preset] || PRESETS.agent;
+    const preset = PRESETS[this.clampPreset(cmd.settings && cmd.settings.preset)] || PRESETS.agent;
     const thread = {
       id: uid('thr'), name: cmd.name || 'New thread', orgId: this.org, runtimeId: this.id, runtimeName: this.name,
       cwd, workDir: cwd, worktree: false, branch: null, createdBy: by, createdAt: Date.now(), updatedAt: Date.now(),
@@ -227,9 +285,21 @@ class Runtime {
     return {};
   }
 
+  // A remote teammate may pick any preset up to the ceiling the operator set on this host.
+  clampPreset(preset) {
+    if (!preset) return undefined;
+    if (!(preset in PRESET_RANK)) throw new Error(Errors.POLICY_ESCALATION + ': unknown preset ' + preset);
+    const ceiling = PRESET_RANK[this.maxPreset] ?? PRESET_RANK.agent;
+    if (PRESET_RANK[preset] > ceiling) {
+      throw new Error(Errors.POLICY_ESCALATION + ': this host allows at most "' + this.maxPreset + '"');
+    }
+    return preset;
+  }
+
   async turnStart(thread, cmd, by) {
     const active = this.sessions.get(thread.id);
     if (active && active.running) throw new Error('a turn is already running — use turn/steer');
+    if (cmd.settings && cmd.settings.preset) this.clampPreset(cmd.settings.preset);
     const settings = { ...thread.settings, ...(cmd.settings || {}) };
     if (cmd.settings) { thread.settings = settings; this.store.upsertThread(thread); }
     const provider = this.provider(settings.provider || 'demo');
@@ -269,6 +339,7 @@ function parseArgs(argv) {
     else if (a === '--project' || a === '-p') out.projects.push(next());
     else if (a === '--executor') out.executor = next();
     else if (a === '--runtime-name') out.name = next();
+    else if (a === '--max-preset') out.maxPreset = next();
   }
   return out;
 }
@@ -300,6 +371,7 @@ if (require.main === module) {
     providers: providersFromEnv(cfg),
     executor: args.executor || cfg.executor || 'local',
     name: args.name || cfg.runtimeName,
+    maxPreset: args.maxPreset || cfg.maxPreset || 'agent',
     log: (m) => console.log('[runtime]', m)
   });
   rt.start().then(() => console.log(`[runtime] ${rt.name} → ${rt.hubUrl}`));

@@ -14,13 +14,38 @@
     threadView: $('#thread-view'), messages: $('#messages'), working: $('#working'), workingLabel: $('#working-label'), stop: $('#btn-stop'), composerHostThread: $('#composer-host-thread'),
     composer: $('#composer'), input: $('#input'), send: $('#btn-send'), providerSelect: $('#provider-select'), modelSelect: $('#model-select'), effortSelect: $('#effort-select'), presetSelect: $('#preset-select'),
     diffView: $('#diff-view'), diffSummary: $('#diff-summary'), diffFileList: $('#diff-file-list'), diffPane: $('#diff-pane'), commitMsg: $('#commit-msg'), commitBtn: $('#btn-commit'), copyPatchBtn: $('#btn-copy-patch'), closeDiff: $('#btn-close-diff'),
+    teamGate: $('#team-gate'), teamGateWho: $('#team-gate-who'), teamName: $('#team-name'),
+    createTeam: $('#btn-create-team'), joinCode: $('#join-code'), joinTeam: $('#btn-join-team'),
+    gateError: $('#gate-error'), enrollment: $('#enrollment-badge'),
+    inviteBtn: $('#btn-invite'), inviteRow: $('#invite-row'), inviteCode: $('#invite-code'), inviteExpiry: $('#invite-expiry'),
+    pairCode: $('#pair-code'), pairBtn: $('#btn-pair-host'),
     settingsModal: $('#settings-modal'), closeSettings: $('#btn-close-settings'), settingTheme: $('#setting-theme'), settingNotifications: $('#setting-notifications'), settingsConn: $('#settings-conn'), logout: $('#btn-logout'),
     toasts: $('#toasts')
   };
 
   const HUB_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+  // Every one of these is a distinct refusal from the hub; collapsing them into one
+  // message would hide which boundary actually stopped you.
+  const FRIENDLY = {
+    unauthenticated: 'You are not signed in.',
+    not_a_member: 'You are not a member of that team.',
+    owner_role_required: 'Only the team owner can do that.',
+    unknown_team: 'That team does not exist.',
+    unknown_thread: 'That thread does not exist.',
+    foreign_runtime: 'That execution host belongs to another team.',
+    runtime_unpaired: 'That execution host is not paired with a team yet.',
+    invitation_invalid: 'That invitation code is not valid.',
+    invitation_expired: 'That invitation has expired. Ask for a new one.',
+    invitation_already_accepted: 'That invitation has already been used.',
+    invitation_revoked: 'That invitation was revoked.',
+    pairing_code_invalid: 'That pairing code is not valid. Check the code shown on the machine.',
+    pairing_code_expired: 'That pairing code expired. Restart the host to get a new one.',
+    project_not_authorized: 'That folder has not been shared on this host.',
+    project_add_is_host_local: 'A folder has to be shared on the machine itself, not from here.',
+    policy_escalation_refused: 'That host does not allow this much access.'
+  };
   const state = {
-    ws: null, me: null, org: null, connected: false,
+    ws: null, me: null, teams: [], teamId: null, membership: null, connected: false,
     threads: new Map(), runtimes: [],
     activeThreadId: null, activeThread: null, subscribedId: null,
     nodes: new Map(),     // itemId -> refs
@@ -69,17 +94,68 @@
   }
   function applyTheme() { document.body.dataset.theme = state.prefs.theme === 'light' ? 'light' : 'dark'; }
 
+  // ================= teams, invitations and host pairing =================
+  function showTeamGate() {
+    el.app.classList.add('hidden');
+    el.teamGate.classList.remove('hidden');
+    el.teamGateWho.textContent = state.me ? `Signed in as ${state.me.name}` : '';
+  }
+
+  // On the desktop the host is this very machine, so offer its code rather than making
+  // someone hunt for it. In a browser the field stays empty on purpose.
+  async function offerLocalHost() {
+    try {
+      if (!window.harnessDesktop || !window.harnessDesktop.pairingCode) return;
+      const code = await window.harnessDesktop.pairingCode();
+      if (code && !el.pairCode.value) {
+        el.pairCode.value = code;
+        el.pairCode.title = 'The code for this machine, shown by the desktop app.';
+      }
+    } catch {}
+  }
+
+  function enterTeam() {
+    el.teamGate.classList.add('hidden');
+    el.app.classList.remove('hidden');
+    const team = state.teams.find((t) => t.id === state.teamId);
+    state.membership = state.membership || (team && { role: team.role, enrollment: team.enrollment });
+    el.me.innerHTML = '';
+    el.me.append(avatar(state.me, 'sm'), document.createTextNode(state.me.name + ' · ' + (team ? team.name : 'team')));
+    renderEnrollment();
+    offerLocalHost();
+    send({ type: 'threads.list' }); send({ type: 'runtimes.list' }); send({ type: 'users.list' }); send({ type: 'workspace.activity' });
+    if (state.subscribedId) send({ type: 'thread.subscribe', threadId: state.subscribedId, afterSeq: state.lastSeq || 0 });
+  }
+
+  // Being in the team is not the same as being able to read task content. Until endpoint
+  // enrollment ships (issue #3) that is pending for everyone, and saying so is the honest
+  // thing to put on screen.
+  function renderEnrollment() {
+    const enrolled = state.membership && state.membership.enrollment === 'enrolled';
+    el.enrollment.classList.toggle('hidden', !!enrolled);
+    el.enrollment.title = 'Team membership is not encryption access. Endpoint enrollment is not implemented yet.';
+  }
+
+  function showInvite(invitation) {
+    const mins = Math.round((invitation.expiresAt - Date.now()) / 60000);
+    el.inviteCode.value = invitation.code;
+    el.inviteExpiry.textContent = `Expires in ${mins >= 60 ? Math.round(mins / 60) + ' h' : mins + ' min'}. One use.`;
+    el.inviteRow.classList.remove('hidden');
+  }
+
   // ================= connection =================
-  function connect({ name, org, token }) {
+  function connect({ name, token }) {
     const ws = new WebSocket(HUB_URL);
     state.ws = ws;
-    ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'hello', role: 'client', name, org, token })));
+    // A token is an account; a name only ever mints a new one. Always prefer the token, or
+    // every reload would create another stranger with the same display name.
+    ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'hello', role: 'client', name: token ? undefined : name, token })));
     ws.addEventListener('message', (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onMessage(m); });
     ws.addEventListener('close', () => {
       state.connected = false;
       if (state.me) {
         toast('Disconnected from hub — reconnecting…');
-        setTimeout(() => connect({ token: state.me.token, org: state.org }), 1500);
+        setTimeout(() => connect({ token: state.me.token }), 1500);
       } else {
         el.loginHub.textContent = 'Could not reach hub at ' + HUB_URL;
       }
@@ -100,12 +176,31 @@
   function onMessage(m) {
     switch (m.type) {
       case 'welcome':
-        state.me = m.user; state.org = m.org; state.connected = true;
-        try { localStorage.setItem('harness.session', JSON.stringify({ token: m.user.token, org: m.org, name: m.user.name })); } catch {}
-        el.login.classList.add('hidden'); el.app.classList.remove('hidden');
-        el.me.innerHTML = ''; el.me.append(avatar(state.me, 'sm'), document.createTextNode(state.me.name + ' · ' + state.org));
-        send({ type: 'threads.list' }); send({ type: 'runtimes.list' }); send({ type: 'users.list' }); send({ type: 'workspace.activity' });
-        if (state.subscribedId) send({ type: 'thread.subscribe', threadId: state.subscribedId, afterSeq: state.lastSeq || 0 });
+        state.me = m.user; state.teams = m.teams || []; state.teamId = m.teamId; state.connected = true;
+        try { localStorage.setItem('harness.session', JSON.stringify({ token: m.user.token, name: m.user.name })); } catch {}
+        el.login.classList.add('hidden');
+        // An account with no team is the normal first-run state, not an error.
+        if (!state.teamId) { showTeamGate(); break; }
+        enterTeam();
+        break;
+      case 'team':
+        state.teamId = m.team.id;
+        state.membership = m.membership;
+        if (!state.teams.some((t) => t.id === m.team.id)) state.teams.push({ ...m.team, role: m.membership.role });
+        enterTeam();
+        break;
+      case 'teams': state.teams = m.teams; break;
+      case 'invitation':
+        showInvite(m.invitation);
+        break;
+      case 'runtime.paired':
+        toast('Execution host paired with this team.');
+        send({ type: 'runtimes.list' });
+        break;
+      case 'removed':
+        toast('You were removed from this team.');
+        state.teamId = null; state.threads = new Map(); renderThreadList();
+        showTeamGate();
         break;
       case 'threads':
         state.threads = new Map(m.threads.map((t) => [t.id, t]));
@@ -154,7 +249,15 @@
         if (p) { state.pending.delete(m.id); m.ok ? p.resolve(m.result) : p.reject(new Error(m.error || 'command failed')); }
         break;
       }
-      case 'error': toast('⚠ ' + esc(m.message)); break;
+      case 'ok': break;
+      case 'error': {
+        const text = FRIENDLY[m.code] || m.message;
+        if (!el.teamGate.classList.contains('hidden')) {
+          el.gateError.textContent = text;
+          el.gateError.classList.remove('hidden');
+        } else toast('⚠ ' + esc(text));
+        break;
+      }
     }
   }
 
@@ -369,7 +472,7 @@
     const q = el.threadSearch.value.trim().toLowerCase();
     const list = [...state.threads.values()].filter((t) => !q || (t.name || '').toLowerCase().includes(q)).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     el.threadList.innerHTML = '';
-    if (!list.length) { el.threadList.innerHTML = '<div class="thread-empty">' + (q ? 'No matching threads' : 'No threads in this org yet') + '</div>'; return; }
+    if (!list.length) { el.threadList.innerHTML = '<div class="thread-empty">' + (q ? 'No matching threads' : 'No threads in this team yet') + '</div>'; return; }
     let last = null;
     for (const t of list) {
       const g = groupLabel(t.updatedAt || t.createdAt);
@@ -678,7 +781,9 @@
     el.auditBtn.addEventListener('click', async () => {
       const t = state.activeThread; if (!t) return;
       try {
-        const r = await fetch('/api/threads/' + t.id + '/events?limit=500'); const j = await r.json();
+        const r = await fetch('/api/threads/' + t.id + '/events?limit=500', { headers: { authorization: 'Bearer ' + state.me.token } });
+        if (!r.ok) throw new Error((await r.json()).error || r.status);
+        const j = await r.json();
         const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), thread: j.thread, events: j.events }, null, 2)], { type: 'application/json' });
         const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'audit-' + t.id + '.json'; document.body.appendChild(a); a.click(); a.remove();
         toast('<b>Audit log exported</b> — ' + j.events.length + ' events');
@@ -694,9 +799,31 @@
     el.copyPatchBtn.addEventListener('click', async () => {
       try { const r = await command(state.activeThreadId, { method: 'git/patch' }); await navigator.clipboard.writeText(r.patch || ''); toast('<b>Patch copied</b> — ' + ((r.patch || '').length / 1024).toFixed(1) + ' KB'); } catch (e) { toast('⚠ ' + esc(e.message)); }
     });
+    const gateFail = (e) => { el.gateError.textContent = String(e && e.message || e); el.gateError.classList.remove('hidden'); };
+    el.createTeam.addEventListener('click', () => {
+      const name = el.teamName.value.trim();
+      if (!name) return gateFail(new Error('Give the team a name.'));
+      el.gateError.classList.add('hidden');
+      send({ type: 'team/create', name });
+    });
+    el.joinTeam.addEventListener('click', () => {
+      const code = el.joinCode.value.trim();
+      if (!code) return gateFail(new Error('Paste the invitation code you were sent.'));
+      el.gateError.classList.add('hidden');
+      send({ type: 'team/invite/accept', code });
+    });
+    el.inviteBtn.addEventListener('click', () => send({ type: 'team/invite', teamId: state.teamId }));
+    el.inviteCode.addEventListener('focus', () => el.inviteCode.select());
+    el.pairBtn.addEventListener('click', () => {
+      const code = el.pairCode.value.trim();
+      if (!code) return toast('Enter the pairing code shown on that machine.');
+      send({ type: 'runtime/pair', teamId: state.teamId, code });
+      el.pairCode.value = '';
+    });
     el.settingsBtn.addEventListener('click', () => {
       el.settingTheme.value = state.prefs.theme || 'dark'; el.settingNotifications.checked = state.prefs.notifications !== false;
-      el.settingsConn.textContent = HUB_URL + ' · org ' + state.org + ' · ' + (state.me ? state.me.name : '');
+      const team = state.teams.find((t) => t.id === state.teamId);
+      el.settingsConn.textContent = HUB_URL + ' · ' + (team ? team.name + ' (' + (state.membership ? state.membership.role : 'member') + ')' : 'no team') + ' · ' + (state.me ? state.me.name : '');
       el.settingsModal.classList.remove('hidden');
     });
     el.closeSettings.addEventListener('click', () => el.settingsModal.classList.add('hidden'));
@@ -717,8 +844,10 @@
   const params = new URLSearchParams(location.search);
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem('harness.session') || 'null'); } catch {}
-  if (params.get('name')) connect({ name: params.get('name'), org: params.get('org') || 'local' });
-  else if (saved && saved.token) connect({ token: saved.token, org: saved.org });
+  // The saved token wins over a ?name= hint, so relaunching the desktop app returns to the
+  // same account instead of creating a new one each time.
+  if (saved && saved.token) connect({ token: saved.token });
+  else if (params.get('name')) connect({ name: params.get('name') });
   else el.loginName.focus();
   // initial view
   el.composerHostHome.appendChild(el.composer);

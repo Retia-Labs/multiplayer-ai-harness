@@ -7,7 +7,19 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
+const crypto = require('crypto');
+
 const ROOT = path.join(__dirname, '..', '..');
+
+// This process IS the host, so it mints the pairing code and shows it to the person at the
+// machine. It never travels anywhere else.
+function newPairingCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  for (const b of crypto.randomBytes(8)) out += alphabet[b % alphabet.length];
+  return out.slice(0, 4) + '-' + out.slice(4, 8);
+}
+const PAIRING_CODE = newPairingCode();
 const userDataArg = process.argv.find((a) => a.startsWith('--user-data-dir='));
 if (userDataArg) app.setPath('userData', userDataArg.split('=').slice(1).join('='));
 
@@ -59,6 +71,7 @@ async function boot() {
   win.webContents.setWindowOpenHandler(({ url }) => { if (url.startsWith('https://')) shell.openExternal(url); return { action: 'deny' }; });
 }
 
+ipcMain.handle('desktop:pairingCode', async () => PAIRING_CODE);
 ipcMain.handle('desktop:pickFolder', async () => {
   const res = await dialog.showOpenDialog(win, { title: 'Register project folder', properties: ['openDirectory', 'createDirectory'] });
   return res.canceled || !res.filePaths.length ? null : res.filePaths[0];

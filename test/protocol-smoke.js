@@ -2,9 +2,10 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const { Hub } = require('../packages/hub/server');
 const { Runtime } = require('../packages/runtime/index');
+const { TeamOps } = require('../packages/protocol');
 
 function assert(c, m) { if (!c) throw new Error('ASSERT: ' + m); console.log('  ✓ ' + m); }
 
@@ -45,7 +46,10 @@ class Client {
   fs.mkdirSync(path.join(project, 'build'), { recursive: true });
   fs.writeFileSync(path.join(project, 'build', 'out.txt'), 'x');
   fs.writeFileSync(path.join(project, 'hello.js'), 'console.log(1)\n');
-  execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: '/bin/bash' });
+  const git = (...args) => execFileSync('git', args, { cwd: project, stdio: 'ignore' });
+  git('init', '-q', '-b', 'main');
+  git('add', '-A');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init');
 
   const hub = new Hub({ dbFile: ':memory:', log: () => {} });
   const addr = await hub.listen(0);
@@ -55,6 +59,21 @@ class Client {
 
   const alice = new Client(url, 'alice'); await alice.connect();
   const bob = new Client(url, 'bob'); await bob.connect();
+
+  alice.send({ type: TeamOps.TEAM_CREATE, name: 'Retia' });
+  const team = (await alice.wait((m) => m.type === 'team')).team;
+  assert(team && team.id, 'alice created a private team and owns it');
+
+  alice.send({ type: TeamOps.RUNTIME_PAIR, teamId: team.id, code: rt.pairingCode });
+  await alice.wait((m) => m.type === 'runtime.paired');
+  assert(rt.teamId === team.id, 'the host was paired with the code shown on its own console');
+
+  alice.send({ type: TeamOps.INVITE_CREATE, teamId: team.id });
+  const invite = (await alice.wait((m) => m.type === 'invitation')).invitation;
+  bob.send({ type: TeamOps.INVITE_ACCEPT, code: invite.code });
+  await bob.wait((m) => m.type === 'team');
+  assert(true, 'bob joined the team through an expiring invitation');
+
   alice.send({ type: 'runtimes.list' });
   const rl = await alice.wait((m) => m.type === 'runtimes' && m.runtimes.some((r) => r.online));
   assert(rl.runtimes[0].projects[0].name === 'project', 'runtime registered with its project in the fleet');
