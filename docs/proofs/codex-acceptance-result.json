@@ -1,0 +1,419 @@
+{
+  "issue": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/2",
+  "ranAt": "2026-09-06T01:04:29.276Z",
+  "host": {
+    "os": "win32",
+    "arch": "x64",
+    "node": "v24.20.0",
+    "release": "10.0.26200"
+  },
+  "codex": {
+    "version": "0.153.4",
+    "tested": {
+      "versions": [
+        "0.142.1",
+        "0.153.4"
+      ],
+      "newest": "0.153.4",
+      "events": "codex exec --json (thread/turn/item JSONL)"
+    },
+    "resolution": {
+      "kind": "explicit",
+      "path": "C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+      "bin": "C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+      "prefix": []
+    },
+    "auth": {
+      "mode": "chatgpt",
+      "statusLine": null,
+      "codexHome": "C:\\Users\\tkala\\.codex",
+      "openaiApiKeyInEnv": true
+    },
+    "models": {
+      "models": [
+        "gpt-5.5",
+        "gpt-5.4-mini",
+        "codex-auto-review"
+      ],
+      "cachedForClient": "0.142.1",
+      "fetchedAt": "2026-09-06T01:02:51.908249600Z"
+    },
+    "capabilities": {
+      "flags": {
+        "--json": true,
+        "--skip-git-repo-check": true,
+        "--cd": true,
+        "--sandbox": true
+      },
+      "resume": true,
+      "resumeAccepts": {
+        "cd": false,
+        "sandbox": false,
+        "model": true,
+        "json": true
+      },
+      "ephemeral": true,
+      "outputLastMessage": true,
+      "fullAuto": false,
+      "routableApprovals": false,
+      "helpAvailable": true
+    }
+  },
+  "lanes": {
+    "control": "executed",
+    "subscription": "executed",
+    "api": "executed"
+  },
+  "blockers": [
+    {
+      "id": "model-cache-drift",
+      "detail": "The account's model list was cached for Codex 0.142.1, but this host runs 0.153.4; the service rejects models this build cannot describe.",
+      "alternative": "Upgrade the CLI to 0.142.1, or pin a model this build can run with --model."
+    },
+    {
+      "id": "exec-approvals-not-routable",
+      "detail": "`codex exec` enforces its own sandbox and never emits an approval request, so a teammate cannot approve a command Codex itself runs.",
+      "alternative": "Drive Codex through `codex app-server`, whose protocol carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (still experimental as of 0.153.4). Until then run --sandbox read-only so nothing escapes without the harness."
+    }
+  ],
+  "providerAcknowledgments": 23,
+  "results": [
+    {
+      "criterion": "AC4 version & prerequisites",
+      "id": "codex-resolvable",
+      "status": "pass",
+      "detail": "resolved the Codex binary as explicit at C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+      "evidence": {
+        "kind": "explicit",
+        "path": "C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+        "bin": "C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+        "prefix": []
+      }
+    },
+    {
+      "criterion": "AC4 version & prerequisites",
+      "id": "version-pinned",
+      "status": "pass",
+      "detail": "running Codex 0.153.4, one of the builds this adapter is proved against (0.142.1, 0.153.4)",
+      "evidence": {
+        "tested": {
+          "versions": [
+            "0.142.1",
+            "0.153.4"
+          ],
+          "newest": "0.153.4",
+          "events": "codex exec --json (thread/turn/item JSONL)"
+        },
+        "found": "0.153.4"
+      }
+    },
+    {
+      "criterion": "AC4 version & prerequisites",
+      "id": "platform-prerequisites",
+      "status": "pass",
+      "detail": "recorded the prerequisites this adapter depends on for this platform",
+      "evidence": {
+        "platform": {
+          "os": "win32",
+          "arch": "x64",
+          "node": "v24.20.0",
+          "release": "10.0.26200"
+        },
+        "shell": "C:/Program Files/Git/bin/bash.exe",
+        "spawnNote": "Node cannot spawn npm's codex.cmd (EINVAL) or its extensionless shim (ENOENT); the adapter resolves the vendored codex.exe, falling back to cmd.exe /d /s /c",
+        "execFlags": {
+          "--json": true,
+          "--skip-git-repo-check": true,
+          "--cd": true,
+          "--sandbox": true
+        },
+        "deprecated": {
+          "--full-auto": "absent in this build; the adapter sends --sandbox workspace-write"
+        }
+      }
+    },
+    {
+      "criterion": "AC4 version & prerequisites",
+      "id": "capability-gaps-have-an-answer",
+      "status": "info",
+      "detail": "2 capability gap(s) recorded, each with a concrete alternative or blocker",
+      "evidence": [
+        {
+          "id": "model-cache-drift",
+          "detail": "The account's model list was cached for Codex 0.142.1, but this host runs 0.153.4; the service rejects models this build cannot describe.",
+          "alternative": "Upgrade the CLI to 0.142.1, or pin a model this build can run with --model."
+        },
+        {
+          "id": "exec-approvals-not-routable",
+          "detail": "`codex exec` enforces its own sandbox and never emits an approval request, so a teammate cannot approve a command Codex itself runs.",
+          "alternative": "Drive Codex through `codex app-server`, whose protocol carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (still experimental as of 0.153.4). Until then run --sandbox read-only so nothing escapes without the harness."
+        }
+      ]
+    },
+    {
+      "criterion": "AC3 authentication",
+      "id": "usage-owner-and-entitlements",
+      "status": "info",
+      "detail": "recorded who pays and what multi-human authority actually means here",
+      "evidence": {
+        "authMode": "chatgpt",
+        "statusLine": null,
+        "codexHome": "C:\\Users\\tkala\\.codex",
+        "openaiApiKeyPresentInEnv": true,
+        "entitledModels": [
+          "gpt-5.5",
+          "gpt-5.4-mini",
+          "codex-auto-review"
+        ],
+        "usageOwner": "the Codex credential stored on the execution host; every teammate's instruction is billed to that one account",
+        "multiHumanAuthority": "teammates act through the execution host's single provider identity. The harness attributes each instruction to its author, but the provider sees one principal.",
+        "notProved": "technical login success is not evidence that a subscription entitlement may be shared with, or transferred to, teammates. Seat terms are a commercial question, not a test result."
+      }
+    },
+    {
+      "criterion": "AC2 identity & authority",
+      "id": "command-identity-unique",
+      "status": "pass",
+      "detail": "client-generated command ids are unique and echoed back on the result",
+      "evidence": {
+        "sampled": 50,
+        "exampleId": "cmd_55g2mdlt8an",
+        "ok": true
+      }
+    },
+    {
+      "criterion": "AC2 identity & authority",
+      "id": "retry-dedup",
+      "status": "pass",
+      "detail": "the same command identity sent twice ran once and replayed the original result",
+      "evidence": {
+        "commandId": "cmd_retry_1788656628819",
+        "threadsCreated": 1,
+        "threadId": "thr_ad243e98582fdda4",
+        "duplicateFlag": true
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "stale-turn-rejected",
+      "status": "pass",
+      "detail": "a steer carrying a stale expectedTurnId is refused: expectedTurnId does not match the active turn",
+      "evidence": {
+        "activeTurnId": "turn_0681dd2d7f8b",
+        "sentExpectedTurnId": "turn_stale_000",
+        "error": "expectedTurnId does not match the active turn"
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "steer-delivery-contract",
+      "status": "pass",
+      "detail": "bob's steer landed inside alice's turn, attributed, with delivery=inline",
+      "evidence": {
+        "turnId": "turn_0681dd2d7f8b",
+        "delivery": "inline",
+        "attributedTo": "bob",
+        "seq": 19
+      }
+    },
+    {
+      "criterion": "AC2 identity & authority",
+      "id": "single-authoritative-approval",
+      "status": "pass",
+      "detail": "two humans resolved the same approval at once; exactly one outcome was authoritative (accept by bob)",
+      "evidence": {
+        "requestId": "req_c3b40261ce0a",
+        "accepted": 1,
+        "decision": "accept",
+        "by": "bob",
+        "loserError": "no such pending approval"
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "identical-ordered-log",
+      "status": "pass",
+      "detail": "both clients received the same 41 events in the same sequence order",
+      "evidence": {
+        "aliceEvents": 43,
+        "bobEvents": 41,
+        "shared": 41,
+        "lastSeq": 41
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "approval-gated-side-effect",
+      "status": "pass",
+      "detail": "the approved command actually ran on the execution host after the human decision",
+      "evidence": {
+        "turnStatus": "completed",
+        "buildDirRemoved": true
+      }
+    },
+    {
+      "criterion": "AC2 identity & authority",
+      "id": "exactly-once-scope",
+      "status": "info",
+      "detail": "deduplication is relay-scoped: it makes a retried command identity run at most once through the hub. It is NOT a claim of exactly-once external side effects across a runtime crash mid-execution.",
+      "evidence": {
+        "guaranteed": "one routed execution per (user, command id); one authoritative approval resolution per requestId",
+        "notGuaranteed": "a runtime that dies after a command has partially run leaves that partial effect; the harness has no undo and does not fence external side effects",
+        "mitigation": "the append-only thread log records the last acknowledged item, so a human can see what had run before the crash"
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "real-turn-start[subscription]",
+      "status": "pass",
+      "detail": "codex acknowledged thread 01a0743e-39de-77b1-853d-15265f96b485 and completed the turn (completed)",
+      "evidence": {
+        "providerThreadId": "01a0743e-39de-77b1-853d-15265f96b485",
+        "turnStatus": "completed",
+        "providerEventTypes": [
+          "thread.started",
+          "turn.started",
+          "item.completed",
+          "item.started",
+          "turn.completed"
+        ],
+        "providerRanACommand": true,
+        "usage": {
+          "input": 45025,
+          "output": 293
+        }
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "two-client-stream[subscription]",
+      "status": "pass",
+      "detail": "both humans watched the same live Codex turn (14/13 events)",
+      "evidence": {
+        "alice": 14,
+        "bob": 13
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "steer-reaches-provider[subscription]",
+      "status": "pass",
+      "detail": "the steer reached Codex as a resumed turn on session 01a0743e-39de-77b1-853d-15265f96b485 (delivery=nextProviderTurn, provider echoed BETA: true)",
+      "evidence": {
+        "delivery": "nextProviderTurn",
+        "providerThreadStarts": [
+          "01a0743e-39de-77b1-853d-15265f96b485",
+          "01a0743e-39de-77b1-853d-15265f96b485"
+        ],
+        "echoedBeta": true,
+        "providerText": "I’ll print `sample.txt` from the current workspace, then return exactly `READY`.\nREADY\nBETA"
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "provider-resume[subscription]",
+      "status": "pass",
+      "detail": "a second turn explicitly resumed Codex session 01a0743e-39de-77b1-853d-15265f96b485 instead of starting a new one",
+      "evidence": {
+        "codexSessionId": "01a0743e-39de-77b1-853d-15265f96b485",
+        "secondTurnThreadIds": [
+          "01a0743e-39de-77b1-853d-15265f96b485"
+        ],
+        "secondTurnStatus": "completed",
+        "handleLeftRuntime": false
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "interrupt-during-tool-work[subscription]",
+      "status": "pass",
+      "detail": "a teammate stopped Codex mid tool-work; the turn ended as interrupted and the provider process exited",
+      "evidence": {
+        "interruptedBy": "bob",
+        "turnStatus": "interrupted",
+        "providerPids": [
+          24788
+        ],
+        "survivingPids": []
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "approval-during-codex-work[subscription]",
+      "status": "blocked",
+      "detail": "`codex exec` runs its own commands inside its own sandbox and emits no approval request, so no teammate decision is possible for those commands",
+      "evidence": {
+        "provedInstead": "the harness-owned tool path does route a bounded approval to a second human (see approval-gated-side-effect)",
+        "alternative": "`codex app-server` carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (experimental in 0.142.x)",
+        "interimControl": "run the Codex adapter with sandbox read-only so Codex cannot write or reach the network without the harness"
+      }
+    },
+    {
+      "criterion": "AC3 authentication",
+      "id": "auth-mode-exercised[subscription]",
+      "status": "pass",
+      "detail": "lane subscription ran a real turn under auth mode \"chatgpt\"",
+      "evidence": {
+        "lane": "subscription",
+        "authMode": "chatgpt",
+        "codexHome": null,
+        "usageOwner": "the ChatGPT account signed in to the Codex CLI on this execution host",
+        "statusLine": null
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "real-turn-start[api]",
+      "status": "pass",
+      "detail": "codex acknowledged thread 01a0743e-afb0-72d2-accd-74dce272d6cf and completed the turn (completed)",
+      "evidence": {
+        "providerThreadId": "01a0743e-afb0-72d2-accd-74dce272d6cf",
+        "turnStatus": "completed",
+        "providerEventTypes": [
+          "thread.started",
+          "turn.started",
+          "item.started",
+          "item.completed",
+          "turn.completed"
+        ],
+        "providerRanACommand": true,
+        "usage": {
+          "input": 27530,
+          "output": 65
+        }
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "two-client-stream[api]",
+      "status": "pass",
+      "detail": "both humans watched the same live Codex turn (8/7 events)",
+      "evidence": {
+        "alice": 8,
+        "bob": 7
+      }
+    },
+    {
+      "criterion": "AC1 shared control",
+      "id": "control-behaviours[api]",
+      "status": "info",
+      "detail": "steer, resume and interrupt were not re-run on this lane: they exercise provider-agnostic runtime code already proved on the subscription lane",
+      "evidence": {
+        "rerunWith": "node test/codex-acceptance.js --lane api --api-depth full"
+      }
+    },
+    {
+      "criterion": "AC3 authentication",
+      "id": "auth-mode-exercised[api]",
+      "status": "pass",
+      "detail": "lane api ran a real turn under auth mode \"apikey\"",
+      "evidence": {
+        "lane": "api",
+        "authMode": "apikey",
+        "codexHome": "C:\\Users\\tkala\\AppData\\Local\\Temp\\codex-acceptance-sWSD81\\codex-home-api",
+        "usageOwner": "the OpenAI API account behind OPENAI_API_KEY (billed per token, separate from any subscription)",
+        "model": "the CLI default for this account"
+      }
+    }
+  ]
+}

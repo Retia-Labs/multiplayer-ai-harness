@@ -30,9 +30,8 @@ class Hub {
     this.log = log;
     this.clients = new Map();   // ws -> { user, role, runtimeId?, subs:Set<threadId> }
     this.runtimes = new Map();  // runtimeId -> ws
-    this.pendingCommands = new Map(); // commandId -> { origin, runtimeId, runtimeWs }
-    // Hosts that have connected but are not attached to any team yet, keyed by the pairing
-    // code printed on the host's own console. Reading that code is the local consent.
+    this.commandLog = new Map(); // userId/commandId -> pending or settled result
+    this.pendingCommands = new Map(); // wire commandId -> authenticated runtime and retry entry
     this.pendingPairings = new Map(); // pairingCode -> { runtimeId, descriptor, at, ws }
     this.activity = new Map();  // threadId -> { threadId, projectKey, files: Map<path, ts>, branch, worktree, by, name, runtimeId, active, lastAt }
     this.server = http.createServer((req, res) => this.handleHttp(req, res));
@@ -135,14 +134,9 @@ class Hub {
   onClose(ws, ctx) {
     this.clients.delete(ws);
     for (const [commandId, pending] of this.pendingCommands) {
-      if (pending.origin === ws) {
-        // A delete may already have happened on the host. Keep its reconciliation record
-        // even if nobody remains to receive the reply, or the hub can resurrect a ghost.
-        if (pending.commandMethod === Commands.THREAD_DELETE) pending.origin = null;
-        else this.pendingCommands.delete(commandId);
-      } else if (pending.runtimeWs === ws) {
-        this.pendingCommands.delete(commandId);
-        if (pending.origin) this.send(pending.origin, { type: 'command.result', id: commandId, ok: false, error: 'runtime offline' });
+      pending.waiters.delete(ws);
+      if (pending.runtimeWs === ws) {
+        this.settleCommand({ type: 'command.result', id: commandId, ok: false, error: 'runtime offline; execution outcome may be unknown' });
       }
     }
     for (const [code, pending] of this.pendingPairings) {
@@ -214,9 +208,7 @@ class Hub {
             }
           }
           for (const [commandId, pending] of this.pendingCommands) {
-            if (pending.origin !== cws || pending.teamId !== msg.teamId) continue;
-            if (pending.commandMethod === Commands.THREAD_DELETE) pending.origin = null;
-            else this.pendingCommands.delete(commandId);
+            if (pending.teamId === msg.teamId) pending.waiters.delete(cws);
           }
           if (c.teamId === msg.teamId) this.send(cws, { type: 'removed', teamId: msg.teamId });
         }
@@ -260,8 +252,7 @@ class Hub {
         }
         for (const [commandId, pending] of this.pendingCommands) {
           if (pending.runtimeId !== msg.runtimeId) continue;
-          this.pendingCommands.delete(commandId);
-          this.send(pending.origin, { type: 'command.result', id: commandId, ok: false, error: Errors.RUNTIME_UNPAIRED });
+          this.settleCommand({ type: 'command.result', id: commandId, ok: false, error: Errors.RUNTIME_UNPAIRED });
         }
         this.broadcastRuntimes(pairing.teamId);
         return this.send(ws, { type: 'ok', ref: msg.id });
@@ -303,7 +294,6 @@ class Hub {
         if (pending && (pending.runtimeId !== ctx.runtimeId || pending.runtimeWs !== ws)) {
           throw fail(Errors.RUNTIME_AUTHENTICATION, 'command result came from a different runtime');
         }
-        this.pendingCommands.delete(msg.id);
         if (pending && msg.ok && pending.commandMethod === Commands.THREAD_DELETE) {
           const thread = this.store.getThread(pending.threadId);
           if (thread && thread.orgId === pending.teamId && thread.runtimeId === pending.runtimeId) {
@@ -311,7 +301,7 @@ class Hub {
             this.broadcastTeam(thread.orgId, { type: 'thread.deleted', threadId: thread.id });
           }
         }
-        if (pending && pending.origin) this.send(pending.origin, msg);
+        this.settleCommand(msg);
         return;
       }
       case 'runtime.update':
@@ -542,19 +532,52 @@ class Hub {
     const isApproval = cmd.method === Commands.APPROVAL_RESOLVE;
     if (isApproval && !this.store.isApprover(pairing.teamId, ctx.user.id)) throw fail(Errors.NOT_APPROVER);
     const id = msg.id || uid('cmd');
+    const key = ctx.user.id + '/' + id;
+    const fingerprint = JSON.stringify([runtimeId, msg.threadId || null, cmd]);
+    const prior = this.commandLog.get(key);
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) throw fail(Errors.COMMAND_IN_PROGRESS, 'command identity reused with different input');
+      if (prior.state === 'done') this.send(ws, { ...prior.result, id, duplicate: true });
+      else prior.waiters.add(ws);
+      return;
+    }
     if (this.pendingCommands.has(id)) throw fail(Errors.COMMAND_IN_PROGRESS);
-    // The execution host is told whether the hub considered this caller an approver, so it
-    // can refuse on its own account rather than trusting the routing alone.
     const by = { ...this.who(ctx), approver: this.store.isApprover(pairing.teamId, ctx.user.id) };
     const runtimeWs = this.runtimes.get(runtimeId);
-    if (runtimeWs) this.pendingCommands.set(id, {
-      origin: ws, runtimeId, runtimeWs, teamId: pairing.teamId,
+    const entry = {
+      state: 'pending', waiters: new Set([ws]), key, fingerprint, result: null,
+      runtimeId, runtimeWs, teamId: pairing.teamId,
       threadId: msg.threadId || null, commandMethod: cmd.method
-    });
+    };
+    this.commandLog.set(key, entry);
+    this.pruneCommandLog();
+    if (runtimeWs) this.pendingCommands.set(id, entry);
     const ok = runtimeWs ? this.routeToRuntime(runtimeId, { type: 'command', id, threadId: msg.threadId || null, by, command: cmd }) : false;
     if (!ok) {
+      this.commandLog.delete(key);
       this.pendingCommands.delete(id);
       this.send(ws, { type: 'command.result', id, ok: false, error: 'runtime offline' });
+    }
+  }
+
+  settleCommand(msg) {
+    const entry = this.pendingCommands.get(msg.id);
+    if (!entry) return;             // thread.delete and other hub-issued commands have no caller
+    this.pendingCommands.delete(msg.id);
+    entry.state = 'done';
+    entry.result = msg;
+    for (const ws of entry.waiters) this.send(ws, msg);
+    entry.waiters.clear();
+  }
+
+  // Only settled entries are evictable: dropping one still in flight would let its retry
+  // run the action a second time.
+  pruneCommandLog(max = 2000) {
+    if (this.commandLog.size <= max) return;
+    for (const [key, entry] of this.commandLog) {
+      if (entry.state !== 'done') continue;
+      this.commandLog.delete(key);
+      if (this.commandLog.size <= max) return;
     }
   }
 

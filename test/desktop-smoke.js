@@ -2,12 +2,13 @@
 const { _electron: electron } = require('playwright-core');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const { execSync } = require('child_process');
+const { localShell } = require('../packages/runtime/executors');
 function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.log('  ✓ ' + m); }
 (async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-desktop-'));
   const project = path.join(tmp, 'proj'); fs.mkdirSync(project);
   fs.writeFileSync(path.join(project, 'a.txt'), 'a\n');
-  execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: '/bin/bash' });
+  execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: localShell().bin });
   const port = 7800 + Math.floor(Math.random() * 100);
   const app = await electron.launch({
     args: ['apps/desktop/main.js', '--user-data-dir=' + path.join(tmp, 'ud'), '--no-sandbox'],

@@ -1,19 +1,29 @@
 'use strict';
 // Backend that delegates a turn to the real OpenAI Codex CLI (`codex exec --json`)
 // and translates its JSONL thread events into harness protocol events. Requires the
-// `codex` binary on PATH and Codex auth on this machine. Approvals cannot be routed
-// (codex exec is non-interactive), so the sandbox policy is passed as a flag instead.
-const { spawn, execFileSync } = require('child_process');
+// `codex` binary (see codex-probe.js for how it is found) and Codex auth on this
+// machine. Approvals cannot be routed - `codex exec` enforces its own sandbox and never
+// asks the caller - so the sandbox policy is passed as a flag instead; see
+// docs/proofs/codex-shared-control.md for the app-server alternative.
+const { spawn } = require('child_process');
 const { Events, ItemTypes, ItemStatus } = require('../protocol');
+const { resolveCodex } = require('./codex-probe');
+
+// A steer that lands after `codex exec` has already been handed the prompt cannot be
+// injected into that process, so it is delivered as an immediate resumed turn on the same
+// Codex session. Bounded so a chatty thread cannot extend one turn indefinitely.
+const MAX_STEER_FOLLOWUPS = 4;
+const STDERR_KEEP = 4000;
 
 function available(bin = 'codex') {
-  try { execFileSync('which', [bin], { stdio: 'ignore' }); return true; } catch { return false; }
+  return resolveCodex(bin).ok;
 }
 
 function sandboxFlags(sandboxPolicy) {
   if (sandboxPolicy === 'read-only') return ['--sandbox', 'read-only'];
   if (sandboxPolicy === 'danger-full-access') return ['--dangerously-bypass-approvals-and-sandbox'];
-  return ['--full-auto'];
+  // `--full-auto` is deprecated and absent from `codex exec --help` in every proved build.
+  return ['--sandbox', 'workspace-write'];
 }
 
 // Map one `codex exec --json` line into zero or more harness events.
@@ -65,21 +75,47 @@ function mapStatus(s) {
   return { in_progress: ItemStatus.IN_PROGRESS, completed: ItemStatus.COMPLETED, failed: ItemStatus.FAILED, declined: ItemStatus.DECLINED }[s] || ItemStatus.COMPLETED;
 }
 
-class CodexExecBackend {
-  constructor({ bin = 'codex' } = {}) { this.id = 'codex-cli'; this.label = 'Codex CLI'; this.bin = bin; }
-  capabilities() { return { toolCalls: true, reasoning: 'summary', images: false }; }
-  async listModels() { return ['gpt-5.1-codex-max', 'gpt-5.1-codex', 'gpt-5.1-codex-mini']; }
+// Argument order follows `codex exec [resume [OPTIONS] [SESSION_ID]] [PROMPT]`.
+function buildArgs({ prompt, cwd, sandboxPolicy, model, sessionId }) {
+  // `codex exec resume` takes a much smaller option set than `codex exec`: no --cd and no
+  // --sandbox, because the working root and sandbox policy come from the recorded session.
+  // Passing them is a hard parse error, so resume relies on the child's cwd instead.
+  if (sessionId) {
+    const flags = ['--json', '--skip-git-repo-check'];
+    if (model) flags.push('-m', model);
+    if (sandboxPolicy === 'danger-full-access') flags.push('--dangerously-bypass-approvals-and-sandbox');
+    return ['exec', 'resume', ...flags, sessionId, prompt];
+  }
+  const flags = ['--json', '--skip-git-repo-check', '-C', cwd, ...sandboxFlags(sandboxPolicy)];
+  if (model) flags.push('-m', model);
+  return ['exec', ...flags, prompt];
+}
 
-  async run(session) {
-    const prompt = session.input.filter((i) => i.type === 'text').map((i) => i.text).join('\n');
-    const state = { cwd: session.cwd, started: new Set(), outputSeen: new Map(), usage: null, error: null, sessionId: session.thread.codexSessionId || null };
-    const args = ['exec', '--json', '--skip-git-repo-check', '-C', session.cwd, ...sandboxFlags(session.settings.sandboxPolicy)];
-    if (session.model) args.push('-m', session.model);
-    if (state.sessionId) args.splice(1, 0, 'resume', state.sessionId);
-    args.push(prompt);
-    await new Promise((resolve) => {
-      const child = spawn(this.bin, args, { cwd: session.cwd, env: process.env });
+class CodexExecBackend {
+  constructor({ bin = 'codex', onRaw = null } = {}) {
+    this.id = 'codex-cli';
+    this.label = 'Codex CLI';
+    this.bin = bin;
+    this.onRaw = onRaw;          // (line, ev) - the provider's own acknowledgment, for proofs
+    this.resolved = resolveCodex(bin);
+  }
+  capabilities() { return { toolCalls: true, reasoning: 'summary', images: false, steer: 'nextProviderTurn', approvals: false }; }
+  async listModels() { return ['gpt-5.5', 'gpt-5.4-mini']; }
+
+  // One `codex exec` process. Resolves with the state it accumulated.
+  runOnce(session, state, prompt) {
+    const args = buildArgs({
+      prompt, cwd: session.cwd, sandboxPolicy: session.settings.sandboxPolicy,
+      model: session.model, sessionId: state.sessionId
+    });
+    return new Promise((resolve) => {
+      const child = spawn(this.resolved.bin, [...this.resolved.prefix, ...args], {
+        cwd: session.cwd, env: process.env,
+        // Codex reads a piped stdin as extra prompt input and waits on it, so give it none.
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
       session.child = child;
+      state.spawned.push({ pid: child.pid, args });
       let buf = '';
       child.stdout.on('data', (d) => {
         buf += d.toString();
@@ -87,18 +123,50 @@ class CodexExecBackend {
         for (const line of lines) {
           if (!line.trim()) continue;
           let ev; try { ev = JSON.parse(line); } catch { continue; }
+          if (this.onRaw) { try { this.onRaw(line, ev, session); } catch {} }
           for (const e of translate(ev, state)) session.emit(e.method, e);
         }
       });
-      child.stderr.on('data', () => {});
-      child.on('close', () => resolve());
-      child.on('error', (err) => { state.error = String(err); resolve(); });
+      // stderr carries the failures that never reach the JSONL stream (bad flag, missing
+      // auth, killed sandbox). Swallowing it turned every one of those into a silent pass.
+      child.stderr.on('data', (d) => { state.stderr = (state.stderr + d.toString()).slice(-STDERR_KEEP); });
+      child.on('close', (code) => { state.exitCode = code; resolve(); });
+      child.on('error', (err) => { state.error = String(err); state.exitCode = -1; resolve(); });
     });
+  }
+
+  async run(session) {
+    const prompt = session.input.filter((i) => i.type === 'text').map((i) => i.text).join('\n');
+    const state = {
+      cwd: session.cwd, started: new Set(), outputSeen: new Map(), usage: null, error: null,
+      stderr: '', exitCode: null, spawned: [], sessionId: session.thread.codexSessionId || null
+    };
+    session.providerSpawns = state.spawned;   // live, so an interrupt can be checked mid-turn
+    await this.runOnce(session, state, prompt);
+
+    // Steers that arrived while Codex was working: deliver them for real, on the same
+    // Codex session, rather than reporting a delivery the provider never saw.
+    for (let i = 0; i < MAX_STEER_FOLLOWUPS && session.steerQueue.length && !session.cancelled && !state.error; i++) {
+      const text = session.steerQueue.splice(0)
+        .map((s) => s.input.filter((x) => x.type === 'text').map((x) => x.text).join('\n'))
+        .filter(Boolean).join('\n');
+      if (!text) break;
+      if (!state.sessionId) break;  // nothing to resume onto; the steer stays in the log
+      state.started = new Set(); state.outputSeen = new Map();
+      await this.runOnce(session, state, text);
+    }
+
     session.child = null;
     if (state.sessionId) session.thread.codexSessionId = state.sessionId;
     if (state.usage) { session.usage.input += state.usage.input; session.usage.output += state.usage.output; }
+    session.providerSessionId = state.sessionId;
+    session.providerSpawns = state.spawned;
     if (state.error) throw new Error(state.error);
+    // A non-zero exit with no error event means Codex rejected the invocation itself.
+    if (!session.cancelled && state.exitCode) {
+      throw new Error('codex exec exited ' + state.exitCode + (state.stderr ? ': ' + state.stderr.trim().split('\n').slice(-3).join(' ') : ''));
+    }
   }
 }
 
-module.exports = { CodexExecBackend, translate, available, sandboxFlags };
+module.exports = { CodexExecBackend, translate, available, sandboxFlags, buildArgs, MAX_STEER_FOLLOWUPS };
