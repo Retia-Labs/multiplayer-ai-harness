@@ -1,0 +1,116 @@
+{
+  "testedCommit": "b3873b89411fd5df8a97df86281021fae8a6a3ad",
+  "workflow": "https://github.com/Retia-Labs/multiplayer-ai-harness/actions/runs/34039737143",
+  "platforms": {
+    "win32": {
+      "ranAt": "2026-09-06T14:39:33.155Z",
+      "platform": "win32",
+      "protection": {
+        "available": true,
+        "packaged": true,
+        "platform": "win32",
+        "electron": "44.2.0",
+        "node": "24.20.0"
+      },
+      "sdk": "18.8.0",
+      "results": [
+        {
+          "name": "browser, desktop and runtime require explicit matching fingerprint confirmation",
+          "status": "pass"
+        },
+        {
+          "name": "encrypted IndexedDB identities and verified peers survive browser and OS-protected desktop restarts",
+          "status": "pass"
+        },
+        {
+          "name": "a malicious directory substituting a valid key for the exact endpoint identity is refused",
+          "status": "pass"
+        },
+        {
+          "name": "authenticated sender, tamper, plaintext, stale-turn and replay checks survive execution-host restart",
+          "status": "pass"
+        },
+        {
+          "name": "real HTTP relay and sqlite hold encrypted tasks/backups; verified devices outside the explicit project membership receive no task key",
+          "status": "pass"
+        },
+        {
+          "name": "offline host blocks controls until fresh authenticated membership is applied and acknowledged; rotation excludes removed device",
+          "status": "pass"
+        },
+        {
+          "name": "clean browser restores selected history with customer material alone, not other projects, future keys, identity trust or obsolete grants",
+          "status": "pass"
+        },
+        {
+          "name": "relay memory, sqlite/WAL and content-free logs pass plaintext/key canary scans; plaintext envelopes are refused",
+          "status": "pass"
+        },
+        {
+          "name": "wrong browser unlock key fails closed",
+          "status": "pass"
+        },
+        {
+          "name": "corrupt OS-wrapped desktop key fails closed without replacing the endpoint identity",
+          "status": "pass"
+        }
+      ],
+      "qualifiedReview": "required before production security claims; not simulated by this test"
+    },
+    "darwin": {
+      "ranAt": "2026-09-06T14:38:07.871Z",
+      "platform": "darwin",
+      "protection": {
+        "available": true,
+        "packaged": true,
+        "platform": "darwin",
+        "electron": "44.2.0",
+        "node": "24.20.0"
+      },
+      "sdk": "18.8.0",
+      "results": [
+        {
+          "name": "browser, desktop and runtime require explicit matching fingerprint confirmation",
+          "status": "pass"
+        },
+        {
+          "name": "encrypted IndexedDB identities and verified peers survive browser and OS-protected desktop restarts",
+          "status": "pass"
+        },
+        {
+          "name": "a malicious directory substituting a valid key for the exact endpoint identity is refused",
+          "status": "pass"
+        },
+        {
+          "name": "authenticated sender, tamper, plaintext, stale-turn and replay checks survive execution-host restart",
+          "status": "pass"
+        },
+        {
+          "name": "real HTTP relay and sqlite hold encrypted tasks/backups; verified devices outside the explicit project membership receive no task key",
+          "status": "pass"
+        },
+        {
+          "name": "offline host blocks controls until fresh authenticated membership is applied and acknowledged; rotation excludes removed device",
+          "status": "pass"
+        },
+        {
+          "name": "clean browser restores selected history with customer material alone, not other projects, future keys, identity trust or obsolete grants",
+          "status": "pass"
+        },
+        {
+          "name": "relay memory, sqlite/WAL and content-free logs pass plaintext/key canary scans; plaintext envelopes are refused",
+          "status": "pass"
+        },
+        {
+          "name": "wrong browser unlock key fails closed",
+          "status": "pass"
+        },
+        {
+          "name": "corrupt OS-wrapped desktop key fails closed without replacing the endpoint identity",
+          "status": "pass"
+        }
+      ],
+      "qualifiedReview": "required before production security claims; not simulated by this test"
+    }
+  }
+}
