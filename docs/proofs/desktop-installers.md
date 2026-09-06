@@ -104,10 +104,48 @@ Artifacts from `npm run dist:win`:
 
 | File | Arch |
 | --- | --- |
-| `Plexus-0.1.0-win-x64.exe` | x64 NSIS |
-| `Plexus-0.1.0-win-arm64.exe` | arm64 NSIS |
-| `Plexus-0.1.0-win.exe` | combined NSIS |
+| `Plexus-0.1.0-win-x64-setup.exe` | x64 NSIS installer |
+| `Plexus-0.1.0-win-x64-portable.exe` | x64 portable |
+| `Plexus-0.1.0-win-arm64-setup.exe` | arm64 NSIS installer |
 | `latest.yml`, `*.blockmap` | update metadata |
+
+**A target-name collision hid the installer.** `artifactName` did not distinguish target
+type, so nsis and portable both wrote `Plexus-0.1.0-win-x64.exe` and the second overwrote
+the first - every "installer" produced by the first build was actually the portable binary,
+which is why installing it did nothing. Each target names its own artifact now. This was
+found by trying to install the thing rather than by trusting that a file with the right
+name was the right file.
+
+### Installation evidence (Windows x64)
+
+```
+Plexus-0.1.0-win-x64-setup.exe /S /D=<dir>     installer exit code: 0
+installed Plexus.exe: True
+```
+
+Launched from the installed location with `PATH` reduced to `C:\WINDOWS\system32;C:\WINDOWS`:
+
+```
+node on PATH: False
+--- started ... electron 44.2.0 · node 24.20.0 · packaged=true ---
+[boot] hub ready — Local team service running
+[runtime] registered runtime rt_18900f468622dfec (tkala@Kalai-Laptop) with hub
+[boot] runtime ready — This machine is available to the team
+```
+
+`/api/health` reports `{"ok":true,"runtimes":1,"clients":2}`. The bundled uninstaller then
+removes the install directory and its Start Menu shortcut cleanly (exit code 0).
+
+### Failure path
+
+Pointed at a team service that is not running, the app does not quit silently:
+
+```
+[boot] hub failed — Could not reach the team service at http://127.0.0.1:7999
+                    (fetch failed). Check the address and your network.
+```
+
+The window stays up with that message, **Try again** and **Open data folder**.
 
 ## Readiness and actionable failures
 
@@ -157,9 +195,21 @@ The window, the installer and the startup screen all use the Plexus identity: `b
 is the 1024px app-icon master from the brand kit, and the boot screen uses the brand palette
 and Outfit, loaded from the same bundled font files the web UI uses.
 
+## Acceptance status
+
+| Criterion | Status |
+| --- | --- |
+| 1 - install and launch on clean macOS and Windows; no system Node, terminal or source-tree dependency | **Partial.** The dependency half is proved on Windows, including from an installed copy with no Node on PATH. Neither platform has been exercised on a *clean* machine, and macOS not at all. |
+| 2 - readiness, actionable failures, remote hub still registers the local host | **Met.** Both paths tested. |
+| 3 - packaged resources, platform paths, project selection, recorded targets and prerequisites | **Partial.** All but project selection, which is a native folder dialog and has not been driven in a packaged build. |
+| 4 - reproducible artifacts, installation evidence, signing provisioning identified | **Met for Windows.** Artifacts reproduce from `npm run dist:win`, install, launch and uninstall; provisioning is written up. No macOS artifact. |
+
 ## Not done
 
 - **No macOS artifact.** Requires a Mac; recorded above rather than faked.
-- **No clean-machine install test.** Installing on a fresh Windows VM and a fresh Mac is
-  the remaining acceptance evidence, and it needs machines this environment does not have.
+- **No clean-machine install test.** This machine is a developer box. Installing here shows
+  the installer works; it does not show it works on a machine that has never had the
+  toolchain. That needs a fresh Windows VM and a fresh Mac.
+- **Project selection untested when packaged.** The folder picker is a native dialog; it
+  needs either a person or an Electron-driving test harness that does not exist yet.
 - **No auto-update.** Out of scope for an internal slice and gated on the hosting decision.
