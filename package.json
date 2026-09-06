@@ -14,7 +14,8 @@
     "test:unit": "node test/unit.js",
     "test:e2e": "node test/e2e-multiplayer.js",
     "smoke": "node test/smoke.js",
-    "test:desktop": "xvfb-run -a node test/desktop-smoke.js"
+    "test:desktop": "xvfb-run -a node test/desktop-smoke.js",
+    "test:e2ee": "node test/e2ee-spike.js"
   },
   "license": "MIT",
   "devDependencies": {
@@ -22,6 +23,7 @@
     "playwright-core": "^1.49.0"
   },
   "dependencies": {
+    "@matrix-org/matrix-sdk-crypto-wasm": "^18.8.0",
     "ws": "^8.21.3"
   }
 }
