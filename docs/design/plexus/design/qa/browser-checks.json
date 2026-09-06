@@ -1,0 +1,77 @@
+{
+  "screens": [
+    {
+      "screen": "review",
+      "heading": "Review the retry change",
+      "height": 1058,
+      "scrollWidth": 1487,
+      "width": 1487,
+      "rendered": true
+    },
+    {
+      "screen": "workspace",
+      "heading": "A little more in sync.",
+      "height": 1058,
+      "scrollWidth": 1487,
+      "width": 1487,
+      "rendered": true
+    },
+    {
+      "screen": "catchup",
+      "heading": "Pick up the context.",
+      "height": 1058,
+      "scrollWidth": 1487,
+      "width": 1487,
+      "rendered": true
+    },
+    {
+      "screen": "activity",
+      "heading": "Build in the same direction.",
+      "height": 1058,
+      "scrollWidth": 1487,
+      "width": 1487,
+      "rendered": true
+    },
+    {
+      "screen": "inbox",
+      "heading": "A second pair of eyes.",
+      "height": 1058,
+      "scrollWidth": 1487,
+      "width": 1487,
+      "rendered": true
+    },
+    {
+      "screen": "approval",
+      "heading": "A decision before the next step.",
+      "height": 1058,
+      "scrollWidth": 1487,
+      "width": 1487,
+      "rendered": true
+    },
+    {
+      "screen": "setup",
+      "heading": "Make room for a teammate.",
+      "height": 1058,
+      "scrollWidth": 1487,
+      "width": 1487,
+      "rendered": true
+    },
+    {
+      "screen": "access",
+      "heading": "Shared work. Clear boundaries.",
+      "height": 1058,
+      "scrollWidth": 1487,
+      "width": 1487,
+      "rendered": true
+    },
+    {
+      "screen": "templates",
+      "heading": "A shared language for shared work.",
+      "height": 1058,
+      "scrollWidth": 1487,
+      "width": 1487,
+      "rendered": true
+    }
+  ],
+  "console": []
+}
