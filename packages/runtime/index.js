@@ -134,6 +134,7 @@ class Runtime {
       log: this.log
     });
     this.hub.on('welcome', (msg) => {
+      if (process.send) process.send({ type: 'runtime.ready', runtimeId: this.id, paired: !!msg.paired });
       if (msg.paired) {
         this.clearPairingChallenge();
         this.log(`registered runtime ${this.id} (${this.name}) with hub`);

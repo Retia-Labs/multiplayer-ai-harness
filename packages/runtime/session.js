@@ -428,7 +428,12 @@ class TurnSession {
       const fname = (text.match(/([\w./-]+\.(?:md|txt|js|ts|py|json|html|css|sh))/i) || [])[1] || 'NOTES.md';
       const { item } = await this.writeFile(fname, `# Created by the Plexus demo agent\n\nYou asked:\n> ${text}\n\nWritten through the same write_file → policy → fileChange pipeline a real model uses.\n`);
       this.updatePlan([{ step: 'Inspect the workspace', status: 'completed' }, { step: 'Create the requested file', status: 'completed' }, { step: 'Verify the result', status: 'inProgress' }]);
-      await this.execCommand(`ls -la ${fname.split('/')[0]}`);
+      if (item.status !== ItemStatus.COMPLETED) {
+        await this.streamText(ItemTypes.AGENT_MESSAGE, `The write to **${fname}** was **${item.status}**.` + note);
+        return;
+      }
+      const verification = await this.readFile(fname);
+      if (verification.item.status !== ItemStatus.COMPLETED) throw new Error('Could not verify the created file: ' + verification.result);
       this.updatePlan([{ step: 'Inspect the workspace', status: 'completed' }, { step: 'Create the requested file', status: 'completed' }, { step: 'Verify the result', status: 'completed' }]);
       await this.streamText(ItemTypes.AGENT_MESSAGE, `Created **${fname}** (${item.status}). Open **Changes** to review, revert, or commit it.` + note);
       return;
