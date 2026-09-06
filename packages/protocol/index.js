@@ -1,4 +1,5 @@
 'use strict';
+const crypto = require('crypto');
 // Plexus protocol — an independent JavaScript implementation modeled on the shape
 // of OpenAI Codex's app-server protocol (thread → turn → item, item/* notifications,
 // approval requests with accept/decline decisions) so that tools speaking Codex's
@@ -75,7 +76,7 @@ const TeamOps = {
   TEAM_CREATE: 'team/create',           // { name } → { team, membership }
   TEAM_LIST: 'team/list',               // {} → { teams }
   TEAM_MEMBERS: 'team/members',         // { teamId } → { members }
-  INVITE_CREATE: 'team/invite',         // { teamId, role?, ttlMs? } → { code, expiresAt } (owner only)
+  INVITE_CREATE: 'team/invite',         // { teamId, inviteeUserId, role?, ttlMs? } → { code, invitee, expiresAt } (owner only)
   INVITE_ACCEPT: 'team/invite/accept',  // { code } → { team, membership }
   INVITE_REVOKE: 'team/invite/revoke',  // { code } → { ok }
   MEMBER_REMOVE: 'team/member/remove',  // { teamId, userId } → { ok } (owner only)
@@ -101,10 +102,20 @@ const Errors = {
   UNKNOWN_RUNTIME: 'unknown_runtime',
   FOREIGN_RUNTIME: 'foreign_runtime',                 // that runtime belongs to another team
   RUNTIME_UNPAIRED: 'runtime_unpaired',               // host has not been paired to a team yet
+  RUNTIME_AUTHENTICATION: 'runtime_authentication_failed', // paired host did not prove its persisted identity
+  FOREIGN_THREAD: 'foreign_thread',                   // thread belongs to another team or runtime
   INVITE_INVALID: 'invitation_invalid',
   INVITE_EXPIRED: 'invitation_expired',
   INVITE_USED: 'invitation_already_accepted',
   INVITE_REVOKED: 'invitation_revoked',
+  INVITE_RECIPIENT_MISMATCH: 'invitation_recipient_mismatch', // invite belongs to a different account
+  ALREADY_MEMBER: 'already_a_member',               // invitations cannot replace an existing role
+  UNKNOWN_USER: 'unknown_user',
+  COMMAND_IN_PROGRESS: 'command_already_in_progress',
+  COMMAND_ID_CONFLICT: 'command_id_conflict',        // same id was reused for a different action
+  COMMAND_OUTCOME_UNKNOWN: 'command_outcome_unknown',// host restarted after accepting the action
+  PROVIDER_NOT_ISOLATED: 'provider_not_isolated',    // CLI provider lacks proven project confinement
+  PROJECT_OPERATION_UNAVAILABLE: 'project_operation_unavailable',
   PAIRING_INVALID: 'pairing_code_invalid',
   PAIRING_EXPIRED: 'pairing_code_expired',
   PROJECT_NOT_AUTHORIZED: 'project_not_authorized',   // path the host operator never shared
@@ -120,6 +131,16 @@ const Roles = { OWNER: 'owner', MEMBER: 'member' };
 // Until endpoint enrollment exists, every membership is honestly marked pending.
 const EnrollmentState = { PENDING: 'pending', ENROLLED: 'enrolled' };
 
+// Short enough to read from a host's local screen, with ambiguous characters removed.
+// The host process is the authority that displays it; this shared helper only keeps the
+// desktop shell and standalone runtime on the same format and source of randomness.
+function createPairingCode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  for (const byte of crypto.randomBytes(8)) out += alphabet[byte % alphabet.length];
+  return `${out.slice(0, 4)}-${out.slice(4, 8)}`;
+}
+
 // ---- Hub transport envelopes (client ↔ hub, runtime ↔ hub) ----
 // client→hub:   hello, threads.list, runtimes.list, users.list, thread.subscribe{threadId, afterSeq},
 //               thread.unsubscribe, command{id, threadId|runtimeId, command}
@@ -129,4 +150,4 @@ const EnrollmentState = { PENDING: 'pending', ENROLLED: 'enrolled' };
 //               presence{threadId, viewers}, thread.updated{thread}, thread.deleted, command.result, error
 // hub→runtime:  welcome, command{id, threadId, by, command}
 
-module.exports = { Events, ItemTypes, ItemStatus, TurnStatus, ApprovalPolicy, SandboxPolicy, ApprovalDecision, ThreadStatus, Commands, TeamOps, Errors, Roles, EnrollmentState };
+module.exports = { Events, ItemTypes, ItemStatus, TurnStatus, ApprovalPolicy, SandboxPolicy, ApprovalDecision, ThreadStatus, Commands, TeamOps, Errors, Roles, EnrollmentState, createPairingCode };

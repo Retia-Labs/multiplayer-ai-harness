@@ -11,6 +11,7 @@ class RuntimeStore {
       CREATE TABLE IF NOT EXISTS kv      (k TEXT PRIMARY KEY, v TEXT);
       CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, json TEXT, updated_at INTEGER);
       CREATE TABLE IF NOT EXISTS items   (thread_id TEXT, ord INTEGER, json TEXT, PRIMARY KEY (thread_id, ord));
+      CREATE TABLE IF NOT EXISTS commands (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, state TEXT NOT NULL, reply_json TEXT, updated_at INTEGER);
     `);
     this.s = {
       getKv: this.db.prepare('SELECT v FROM kv WHERE k = ?'),
@@ -22,7 +23,10 @@ class RuntimeStore {
       deleteItems: this.db.prepare('DELETE FROM items WHERE thread_id = ?'),
       nextOrd: this.db.prepare('SELECT COALESCE(MAX(ord), 0) + 1 AS n FROM items WHERE thread_id = ?'),
       insertItem: this.db.prepare('INSERT INTO items (thread_id, ord, json) VALUES (?, ?, ?)'),
-      listItems: this.db.prepare('SELECT json FROM items WHERE thread_id = ? ORDER BY ord ASC')
+      listItems: this.db.prepare('SELECT json FROM items WHERE thread_id = ? ORDER BY ord ASC'),
+      getCommand: this.db.prepare('SELECT fingerprint, state, reply_json FROM commands WHERE id = ?'),
+      claimCommand: this.db.prepare("INSERT OR IGNORE INTO commands (id, fingerprint, state, updated_at) VALUES (?, ?, 'pending', ?)"),
+      completeCommand: this.db.prepare("UPDATE commands SET state = 'completed', reply_json = ?, updated_at = ? WHERE id = ? AND fingerprint = ?")
     };
   }
   getKv(k, fallback = null) { const r = this.s.getKv.get(k); return r ? JSON.parse(r.v) : fallback; }
@@ -33,6 +37,12 @@ class RuntimeStore {
   deleteThread(id) { this.s.deleteItems.run(id); this.s.deleteThread.run(id); }
   appendItem(threadId, item) { this.s.insertItem.run(threadId, this.s.nextOrd.get(threadId).n, JSON.stringify(item)); }
   listItems(threadId) { return this.s.listItems.all(threadId).map((r) => JSON.parse(r.json)); }
+  getCommand(id) {
+    const r = this.s.getCommand.get(id);
+    return r ? { fingerprint: r.fingerprint, state: r.state, reply: r.reply_json ? JSON.parse(r.reply_json) : null } : null;
+  }
+  claimCommand(id, fingerprint) { return this.s.claimCommand.run(id, fingerprint, Date.now()).changes === 1; }
+  completeCommand(id, fingerprint, reply) { this.s.completeCommand.run(JSON.stringify(reply), Date.now(), id, fingerprint); }
   close() { this.db.close(); }
 }
 

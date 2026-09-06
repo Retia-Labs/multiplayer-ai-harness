@@ -14,12 +14,12 @@
     threadView: $('#thread-view'), messages: $('#messages'), working: $('#working'), workingLabel: $('#working-label'), stop: $('#btn-stop'), composerHostThread: $('#composer-host-thread'),
     composer: $('#composer'), input: $('#input'), send: $('#btn-send'), providerSelect: $('#provider-select'), modelSelect: $('#model-select'), effortSelect: $('#effort-select'), presetSelect: $('#preset-select'),
     diffView: $('#diff-view'), diffSummary: $('#diff-summary'), diffFileList: $('#diff-file-list'), diffPane: $('#diff-pane'), commitMsg: $('#commit-msg'), commitBtn: $('#btn-commit'), copyPatchBtn: $('#btn-copy-patch'), closeDiff: $('#btn-close-diff'),
-    teamGate: $('#team-gate'), teamGateWho: $('#team-gate-who'), teamName: $('#team-name'),
+    teamGate: $('#team-gate'), teamGateWho: $('#team-gate-who'), teamGateAccountId: $('#team-gate-account-id'), copyGateAccountId: $('#btn-copy-gate-account-id'), teamName: $('#team-name'),
     createTeam: $('#btn-create-team'), joinCode: $('#join-code'), joinTeam: $('#btn-join-team'),
     gateError: $('#gate-error'), enrollment: $('#enrollment-badge'),
-    inviteBtn: $('#btn-invite'), inviteRow: $('#invite-row'), inviteCode: $('#invite-code'), inviteExpiry: $('#invite-expiry'),
+    inviteBtn: $('#btn-invite'), inviteeUserId: $('#invitee-user-id'), inviteRow: $('#invite-row'), inviteCode: $('#invite-code'), inviteExpiry: $('#invite-expiry'), teamAdminNotice: $('#team-admin-notice'), teamMembers: $('#team-members'),
     pairCode: $('#pair-code'), pairBtn: $('#btn-pair-host'),
-    settingsModal: $('#settings-modal'), closeSettings: $('#btn-close-settings'), settingTheme: $('#setting-theme'), settingNotifications: $('#setting-notifications'), settingsConn: $('#settings-conn'), logout: $('#btn-logout'),
+    settingsModal: $('#settings-modal'), closeSettings: $('#btn-close-settings'), settingTheme: $('#setting-theme'), settingNotifications: $('#setting-notifications'), settingsAccountId: $('#settings-account-id'), copyAccountId: $('#btn-copy-account-id'), settingsConn: $('#settings-conn'), logout: $('#btn-logout'),
     toasts: $('#toasts')
   };
 
@@ -32,17 +32,29 @@
     owner_role_required: 'Only the team owner can do that.',
     unknown_team: 'That team does not exist.',
     unknown_thread: 'That thread does not exist.',
+    unknown_runtime: 'That execution host does not exist.',
     foreign_runtime: 'That execution host belongs to another team.',
     runtime_unpaired: 'That execution host is not paired with a team yet.',
+    runtime_authentication_failed: 'That execution host could not prove its saved identity. Pair it again from the host.',
+    foreign_thread: 'That thread belongs to a different team or execution host.',
     invitation_invalid: 'That invitation code is not valid.',
     invitation_expired: 'That invitation has expired. Ask for a new one.',
     invitation_already_accepted: 'That invitation has already been used.',
     invitation_revoked: 'That invitation was revoked.',
+    invitation_recipient_mismatch: 'That invitation was addressed to a different account.',
+    already_a_member: 'That account is already a member of this team.',
+    unknown_user: 'No account has that ID. Ask your teammate to copy it from Settings.',
     pairing_code_invalid: 'That pairing code is not valid. Check the code shown on the machine.',
     pairing_code_expired: 'That pairing code expired. Restart the host to get a new one.',
     project_not_authorized: 'That folder has not been shared on this host.',
     project_add_is_host_local: 'A folder has to be shared on the machine itself, not from here.',
-    policy_escalation_refused: 'That host does not allow this much access.'
+    provider_not_isolated: 'That provider cannot guarantee project-only execution on this host.',
+    project_operation_unavailable: 'That project action is unavailable because the host cannot verify its project boundary.',
+    policy_escalation_refused: 'That host does not allow this much access.',
+    not_a_delegated_approver: 'You have not been delegated approval authority for this team.',
+    command_already_in_progress: 'That action is already running.',
+    command_id_conflict: 'That action ID was already used for a different command.',
+    command_outcome_unknown: 'The host restarted after accepting that action, so its outcome is unknown.'
   };
   const state = {
     ws: null, me: null, teams: [], teamId: null, membership: null, connected: false,
@@ -51,11 +63,13 @@
     nodes: new Map(),     // itemId -> refs
     plans: new Map(),     // turnId -> plan card
     approvals: new Map(), // requestId -> card wrap
+    approvers: new Set(), // user ids with delegated action-approval authority
     viewers: [],
     users: [],
     activity: { threads: [], overlaps: [] },
     pending: new Map(),   // command id -> {resolve,reject}
     diffOpen: false, diffFiles: [], diffSel: 0,
+    localRuntimeId: null,
     prefs: loadPrefs()
   };
 
@@ -99,6 +113,13 @@
     el.app.classList.add('hidden');
     el.teamGate.classList.remove('hidden');
     el.teamGateWho.textContent = state.me ? `Signed in as ${state.me.name}` : '';
+    el.teamGateAccountId.value = state.me ? state.me.id : '';
+  }
+
+  async function copyAccountId(input) {
+    if (!input.value) return;
+    try { await navigator.clipboard.writeText(input.value); toast('Account ID copied.'); }
+    catch { input.select(); toast('Account ID selected. Copy it from the field.'); }
   }
 
   // On the desktop the host is this very machine, so offer its code rather than making
@@ -106,15 +127,23 @@
   async function offerLocalHost() {
     try {
       if (!window.harnessDesktop || !window.harnessDesktop.pairingCode) return;
-      const code = await window.harnessDesktop.pairingCode();
+      const [code, runtimeId] = await Promise.all([
+        window.harnessDesktop.pairingCode(),
+        window.harnessDesktop.runtimeId ? window.harnessDesktop.runtimeId() : null
+      ]);
+      state.localRuntimeId = runtimeId || null;
       if (code && !el.pairCode.value) {
         el.pairCode.value = code;
         el.pairCode.title = 'The code for this machine, shown by the desktop app.';
       }
+      updateAddProjectAvailability();
     } catch {}
   }
 
   function enterTeam() {
+    state.approvers = new Set();
+    state.users = [];
+    renderMembers();
     el.teamGate.classList.add('hidden');
     el.app.classList.remove('hidden');
     const team = state.teams.find((t) => t.id === state.teamId);
@@ -123,6 +152,7 @@
     el.me.append(avatar(state.me, 'sm'), document.createTextNode(state.me.name + ' · ' + (team ? team.name : 'team')));
     renderEnrollment();
     offerLocalHost();
+    send({ type: 'team/approver/list', teamId: state.teamId });
     send({ type: 'threads.list' }); send({ type: 'runtimes.list' }); send({ type: 'users.list' }); send({ type: 'workspace.activity' });
     if (state.subscribedId) send({ type: 'thread.subscribe', threadId: state.subscribedId, afterSeq: state.lastSeq || 0 });
   }
@@ -138,9 +168,42 @@
 
   function showInvite(invitation) {
     const mins = Math.round((invitation.expiresAt - Date.now()) / 60000);
+    const targetName = invitation.targetName || invitation.inviteeName || (invitation.invitee && invitation.invitee.name) || (invitation.target && invitation.target.name);
     el.inviteCode.value = invitation.code;
-    el.inviteExpiry.textContent = `Expires in ${mins >= 60 ? Math.round(mins / 60) + ' h' : mins + ' min'}. One use.`;
+    el.inviteeUserId.value = '';
+    el.inviteExpiry.textContent = (targetName ? `For ${targetName} · ` : '') + `expires in ${mins >= 60 ? Math.round(mins / 60) + ' h' : mins + ' min'}. One use.`;
     el.inviteRow.classList.remove('hidden');
+  }
+
+  function renderMembers() {
+    el.teamMembers.innerHTML = '';
+    const owner = state.membership && state.membership.role === 'owner';
+    el.inviteeUserId.disabled = !owner;
+    el.inviteBtn.disabled = !owner;
+    el.pairCode.disabled = !owner;
+    el.pairBtn.disabled = !owner;
+    el.teamAdminNotice.classList.toggle('hidden', !!owner);
+    for (const member of state.users) {
+      const row = document.createElement('div');
+      row.className = 'team-admin-row';
+      row.dataset.memberId = member.userId;
+      const name = document.createElement('span');
+      name.textContent = member.name + (state.me && member.userId === state.me.id ? ' (you)' : '');
+      const role = document.createElement('span');
+      role.className = 'small';
+      role.textContent = member.role + ' · ' + (member.enrollment === 'enrolled' ? 'endpoint enrolled' : 'endpoint access pending');
+      row.append(avatar(member, 'sm'), name, role);
+      if (owner && member.role !== 'owner') {
+        const remove = document.createElement('button');
+        remove.className = 'mini-btn danger';
+        remove.dataset.action = 'remove-member';
+        remove.dataset.userId = member.userId;
+        remove.textContent = 'Remove';
+        remove.setAttribute('aria-label', 'Remove ' + member.name + ' from the team');
+        row.appendChild(remove);
+      }
+      el.teamMembers.appendChild(row);
+    }
   }
 
   // ================= connection =================
@@ -186,6 +249,7 @@
       case 'team':
         state.teamId = m.team.id;
         state.membership = m.membership;
+        state.approvers = new Set();
         if (!state.teams.some((t) => t.id === m.team.id)) state.teams.push({ ...m.team, role: m.membership.role });
         enterTeam();
         break;
@@ -199,7 +263,7 @@
         break;
       case 'removed':
         toast('You were removed from this team.');
-        state.teamId = null; state.threads = new Map(); renderThreadList();
+        state.teamId = null; state.membership = null; state.approvers = new Set(); state.users = []; state.threads = new Map(); renderMembers(); renderThreadList();
         showTeamGate();
         break;
       case 'threads':
@@ -209,9 +273,16 @@
       case 'runtimes':
         state.runtimes = m.runtimes;
         renderRuntimes();
+        if (window.harnessDesktop && !state.localRuntimeId) offerLocalHost();
+        break;
+      case 'approvers':
+        if (m.teamId !== state.teamId) break;
+        state.approvers = new Set((m.approvers || []).map((a) => a.userId));
+        renderAttention();
+        refreshApprovalActions();
         break;
       case 'thread.updated': onThreadUpdated(m.thread); break;
-      case 'users': state.users = m.users; if (!el.assignModal.classList.contains('hidden')) fillAssignUsers(); break;
+      case 'users': state.users = m.users; renderMembers(); if (!el.assignModal.classList.contains('hidden')) fillAssignUsers(); break;
       case 'workspace.activity': {
         const prevOverlaps = state.activity.overlaps.map((o) => o.projectKey + '::' + o.path);
         state.activity = { threads: m.threads || [], overlaps: m.overlaps || [] };
@@ -252,6 +323,12 @@
       case 'ok': break;
       case 'error': {
         const text = FRIENDLY[m.code] || m.message;
+        const pending = m.ref && state.pending.get(m.ref);
+        if (pending) {
+          state.pending.delete(m.ref);
+          pending.reject(new Error(text || m.code || 'command failed'));
+          break;
+        }
         if (!el.teamGate.classList.contains('hidden')) {
           el.gateError.textContent = text;
           el.gateError.classList.remove('hidden');
@@ -286,6 +363,18 @@
   // ================= fleet =================
   function selectedRuntime() { return state.runtimes.find((r) => r.id === el.fleetRuntime.value) || state.runtimes.find((r) => r.online) || state.runtimes[0]; }
 
+  function updateAddProjectAvailability() {
+    const runtime = selectedRuntime();
+    const desktop = !!window.harnessDesktop;
+    const local = !!(desktop && state.localRuntimeId && runtime && runtime.online && runtime.id === state.localRuntimeId);
+    el.addProject.classList.toggle('hidden', !(runtime && runtime.online));
+    el.addProject.disabled = !local;
+    if (local) el.addProject.title = 'Share a folder with this local execution host';
+    else if (!desktop) el.addProject.title = 'Open Plexus on the desktop that owns this execution host to share a folder';
+    else if (!state.localRuntimeId) el.addProject.title = 'The local execution host is still starting';
+    else el.addProject.title = 'Select this desktop’s local execution host to share a folder';
+  }
+
   function renderRuntimes() {
     const prev = el.fleetRuntime.value;
     el.fleetRuntime.innerHTML = '';
@@ -297,7 +386,7 @@
     const online = state.runtimes.find((r) => r.id === prev && r.online) || state.runtimes.find((r) => r.online);
     if (online) el.fleetRuntime.value = online.id;
     renderProjects(); renderProviderPicker();
-    el.addProject.classList.toggle('hidden', !online);
+    updateAddProjectAvailability();
 
     el.runtimeCards.innerHTML = '';
     if (!state.runtimes.length) { el.runtimeCards.innerHTML = '<div class="attention-empty">No runtimes yet. Start one: <code>node packages/runtime --hub ' + esc(HUB_URL) + ' --name you --project /path/to/repo</code></div>'; }
@@ -332,6 +421,33 @@
     for (const p of providers) { const o = document.createElement('option'); o.value = p.id; o.textContent = p.label + (p.configured ? '' : ' (no key)'); o.disabled = !p.configured; el.providerSelect.appendChild(o); }
     el.providerSelect.value = providers.some((p) => p.id === want && p.configured) ? want : (providers.find((p) => p.configured) || providers[0]).id;
     renderModelPicker(providers, thread);
+    renderPresetPicker(r, thread);
+  }
+
+  function renderPresetPicker(runtime, thread) {
+    const labels = { 'read-only': 'Read Only', 'agent-untrusted': 'Agent (ask for everything)', agent: 'Agent', 'full-access': 'Workspace Auto' };
+    const advertised = runtime && Array.isArray(runtime.presets) ? runtime.presets : [];
+    const settingsPreset = thread && thread.settings && (thread.settings.preset || presetFor(thread.settings));
+    const want = advertised.includes(settingsPreset)
+      ? settingsPreset
+      : advertised.includes(runtime && runtime.defaultPreset)
+        ? runtime.defaultPreset
+        : advertised[0];
+    el.presetSelect.innerHTML = '';
+    for (const preset of advertised) {
+      const option = document.createElement('option');
+      option.value = preset;
+      option.textContent = labels[preset] || preset;
+      el.presetSelect.appendChild(option);
+    }
+    if (!advertised.length) {
+      const option = document.createElement('option');
+      option.value = '';
+      option.textContent = 'No access preset available';
+      el.presetSelect.appendChild(option);
+    }
+    el.presetSelect.disabled = !advertised.length;
+    if (want) el.presetSelect.value = want;
   }
 
   function renderModelPicker(providers, thread) {
@@ -347,18 +463,42 @@
     el.attentionList.innerHTML = '';
     if (!items.length) { el.attentionList.innerHTML = '<div class="attention-empty">Nothing waiting on a human right now.</div>'; return; }
     for (const t of items) {
+      const supported = supportedApprovalDecisions(t.pendingApproval || {});
       const row = document.createElement('div'); row.className = 'attention-item';
       const main = document.createElement('div'); main.className = 'ai-main';
       main.innerHTML = '<div class="ai-title">' + esc(t.name) + '</div><div class="ai-cmd mono">' + esc((t.pendingApproval && (t.pendingApproval.command || (t.pendingApproval.changes || []).map((c) => c.path).join(', '))) || '') + '</div>';
-      const approve = document.createElement('button'); approve.className = 'mini-btn primary'; approve.textContent = 'Approve';
-      approve.addEventListener('click', () => command(t.id, { method: 'approval/resolve', requestId: t.pendingApproval.requestId, decision: 'accept' }).catch((e) => toast('⚠ ' + esc(e.message))));
-      const decline = document.createElement('button'); decline.className = 'mini-btn danger'; decline.textContent = 'Decline';
-      decline.addEventListener('click', () => command(t.id, { method: 'approval/resolve', requestId: t.pendingApproval.requestId, decision: 'decline' }).catch((e) => toast('⚠ ' + esc(e.message))));
       const open = document.createElement('button'); open.className = 'mini-btn'; open.textContent = 'Open';
       open.addEventListener('click', () => selectThread(t.id));
-      row.append(main, approve, decline, open);
+      row.appendChild(main);
+      if (canApprove()) {
+        if (supported.has('accept')) {
+          const approve = document.createElement('button'); approve.className = 'mini-btn primary'; approve.textContent = 'Approve';
+          approve.addEventListener('click', () => command(t.id, { method: 'approval/resolve', requestId: t.pendingApproval.requestId, decision: 'accept' }).catch((e) => toast('⚠ ' + esc(e.message))));
+          row.appendChild(approve);
+        }
+        if (supported.has('decline')) {
+          const decline = document.createElement('button'); decline.className = 'mini-btn danger'; decline.textContent = 'Decline';
+          decline.addEventListener('click', () => command(t.id, { method: 'approval/resolve', requestId: t.pendingApproval.requestId, decision: 'decline' }).catch((e) => toast('⚠ ' + esc(e.message))));
+          row.appendChild(decline);
+        }
+        if (!supported.has('accept') && !supported.has('decline')) {
+          const unavailable = document.createElement('span'); unavailable.className = 'small'; unavailable.textContent = 'Open to review available decisions';
+          row.appendChild(unavailable);
+        }
+      } else {
+        const unavailable = document.createElement('span'); unavailable.className = 'small'; unavailable.textContent = 'Delegated approval required';
+        row.appendChild(unavailable);
+      }
+      row.appendChild(open);
       el.attentionList.appendChild(row);
     }
+  }
+
+  function canApprove() { return !!(state.me && state.approvers.has(state.me.id)); }
+
+  function supportedApprovalDecisions(request) {
+    const offered = Array.isArray(request.availableDecisions) ? request.availableDecisions : [];
+    return new Set(offered.filter((decision) => ['accept', 'decline', 'cancel'].includes(decision)));
   }
 
   function renderActivity() {
@@ -412,7 +552,6 @@
     if (state.activeThread && state.activeThread.settings) {
       const s = state.activeThread.settings;
       if (s.effort) el.effortSelect.value = s.effort;
-      el.presetSelect.value = presetFor(s);
     }
     send({ type: 'thread.subscribe', threadId: id });
     updateTopbar(); renderThreadList();
@@ -420,8 +559,8 @@
   }
 
   function presetFor(s) {
+    if (s.approvalPolicy === 'never') return 'full-access';
     if (s.sandboxPolicy === 'read-only') return 'read-only';
-    if (s.sandboxPolicy === 'danger-full-access') return 'full-access';
     if (s.approvalPolicy === 'untrusted') return 'agent-untrusted';
     return 'agent';
   }
@@ -622,27 +761,73 @@
     const wrap = msgWrap('approval-wrap');
     const card = document.createElement('div'); card.className = 'approval-card' + (ev.collision ? ' collision' : '');
     const isFile = ev.method === 'item/fileChange/requestApproval';
+    const thread = state.activeThread || {};
+    const requester = ev.by || thread.lastTurnBy || thread.createdBy;
+    const requestedAt = ev.ts ? new Date(ev.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'time unavailable';
+    const workspace = String(ev.cwd || thread.workDir || thread.cwd || '').split(/[\\/]/).filter(Boolean).pop() || 'unknown workspace';
+    const runtime = state.runtimes.find((candidate) => candidate.id === thread.runtimeId);
+    const host = thread.runtimeName || (runtime && runtime.name) || 'unknown host';
+    const provider = (thread.settings && thread.settings.provider) || 'unknown provider';
     card.innerHTML = '<div class="approval-title">' + (ev.collision ? 'Collision — another agent changed this file' : isFile ? 'Agent wants to write outside the workspace' : 'Agent wants to run a command') + '</div>' +
+      '<div class="approval-reason approval-requester">Requested by ' + esc((requester && requester.name) || 'unknown requester') + ' at ' + esc(requestedAt) + '</div>' +
       (ev.reason ? '<div class="approval-reason">' + esc(ev.reason) + '</div>' : '');
+    const scope = document.createElement('div');
+    scope.className = 'approval-reason approval-scope';
+    scope.textContent = 'Scope · workspace ' + workspace + ' · host ' + host + ' · provider ' + provider;
+    card.appendChild(scope);
     if (ev.collision) { const c = document.createElement('div'); c.className = 'approval-collision'; c.append(avatar(ev.collision.by || { name: '?' }, 'sm'), document.createTextNode('Open “' + ev.collision.name + '” to coordinate, or approve to overwrite.')); card.appendChild(c); }
     const cmd = document.createElement('div'); cmd.className = 'approval-cmd mono';
     cmd.textContent = isFile ? (ev.changes || []).map((c) => c.kind + ' ' + c.path).join('\n') : '$ ' + ev.command;
+    const evidence = document.createElement('details'); evidence.className = 'small approval-evidence';
+    const evidenceSummary = document.createElement('summary'); evidenceSummary.textContent = 'Inspect request evidence';
+    const evidenceBody = document.createElement('div'); evidenceBody.className = 'mono small';
+    evidenceBody.textContent = ['request ' + ev.requestId, ev.turnId ? 'turn ' + ev.turnId : '', ev.itemId ? 'item ' + ev.itemId : ''].filter(Boolean).join(' · ');
+    evidence.append(evidenceSummary, evidenceBody);
     const actions = document.createElement('div'); actions.className = 'approval-actions';
-    const mk = (label, decision, cls) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; b.dataset.decision = decision; b.addEventListener('click', () => command(state.activeThreadId, { method: 'approval/resolve', requestId: ev.requestId, decision }).catch((e) => toast('⚠ ' + esc(e.message)))); return b; };
-    actions.append(mk('Approve', 'accept', 'approve'), mk('Approve for session', 'acceptForSession', 'secondary'), mk('Decline', 'decline', 'secondary'), mk('Cancel turn', 'cancel', 'secondary'));
-    card.append(cmd, actions); wrap.appendChild(card);
+    card.append(cmd, evidence, actions); wrap.appendChild(card);
+    wrap._approvalEvent = ev;
     state.approvals.set(ev.requestId, wrap);
+    fillApprovalActions(actions, ev);
+  }
+
+  function fillApprovalActions(actions, ev) {
+    actions.innerHTML = '';
+    if (!canApprove()) {
+      const unavailable = document.createElement('span'); unavailable.className = 'small';
+      unavailable.textContent = 'You can review this request, but a teammate with delegated approval authority must decide it.';
+      actions.appendChild(unavailable);
+      return;
+    }
+    const supported = supportedApprovalDecisions(ev);
+    const mk = (label, decision, cls) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; b.dataset.decision = decision; b.addEventListener('click', () => command(state.activeThreadId, { method: 'approval/resolve', requestId: ev.requestId, decision }).catch((e) => toast('⚠ ' + esc(e.message)))); return b; };
+    if (supported.has('accept')) actions.appendChild(mk('Approve', 'accept', 'approve'));
+    if (supported.has('decline')) actions.appendChild(mk('Decline', 'decline', 'secondary'));
+    if (supported.has('cancel')) actions.appendChild(mk('Cancel turn', 'cancel', 'secondary'));
+    if (!actions.children.length) {
+      const unavailable = document.createElement('span'); unavailable.className = 'small'; unavailable.textContent = 'This host did not offer a supported decision for this request.';
+      actions.appendChild(unavailable);
+    }
+  }
+
+  function refreshApprovalActions() {
+    for (const wrap of state.approvals.values()) {
+      const actions = wrap.querySelector('.approval-actions');
+      if (actions && wrap._approvalEvent) fillApprovalActions(actions, wrap._approvalEvent);
+    }
   }
 
   function resolveApprovalCard(ev) {
     const wrap = state.approvals.get(ev.requestId);
     state.approvals.delete(ev.requestId);
-    const chip = document.createElement('div');
-    chip.className = 'msg';
     const inner = document.createElement('span'); inner.className = 'resolved-chip' + (ev.decision === 'accept' || ev.decision === 'acceptForSession' ? '' : ' decline');
-    inner.append(avatar(ev.by || { name: '?' }, 'sm'), document.createTextNode((ev.by ? ev.by.name : 'someone') + ' ' + ({ accept: 'approved', acceptForSession: 'approved for the session', decline: 'declined', cancel: 'cancelled the turn' }[ev.decision] || ev.decision)));
-    chip.appendChild(inner);
-    if (wrap) wrap.replaceWith(chip); else el.messages.appendChild(chip);
+    const resolvedAt = ev.ts ? new Date(ev.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'time unavailable';
+    inner.append(avatar(ev.by || { name: '?' }, 'sm'), document.createTextNode((ev.by ? ev.by.name : 'someone') + ' ' + ({ accept: 'approved', acceptForSession: 'approved for the session', decline: 'declined', cancel: 'cancelled the turn' }[ev.decision] || ev.decision) + ' · resolved at ' + resolvedAt));
+    if (wrap) {
+      const actions = wrap.querySelector('.approval-actions');
+      if (actions) { actions.innerHTML = ''; actions.appendChild(inner); }
+    } else {
+      const chip = document.createElement('div'); chip.className = 'msg'; chip.appendChild(inner); el.messages.appendChild(chip);
+    }
   }
 
   // ================= sending =================
@@ -729,7 +914,7 @@
   function fillAssignUsers() {
     const cur = el.assignUser.value;
     el.assignUser.innerHTML = '';
-    for (const u of state.users) { const o = document.createElement('option'); o.value = u.id; o.textContent = u.name + (state.me && u.id === state.me.id ? ' (me)' : ''); el.assignUser.appendChild(o); }
+    for (const u of state.users) { const o = document.createElement('option'); o.value = u.userId; o.textContent = u.name + (state.me && u.userId === state.me.id ? ' (me)' : ''); el.assignUser.appendChild(o); }
     const want = cur || (state.activeThread && state.activeThread.assignee && state.activeThread.assignee.userId);
     if (want && [...el.assignUser.options].some((o) => o.value === want)) el.assignUser.value = want;
   }
@@ -744,7 +929,7 @@
     el.newThread.addEventListener('click', showFleet);
     el.navFleet.addEventListener('click', showFleet);
     el.threadSearch.addEventListener('input', renderThreadList);
-    el.fleetRuntime.addEventListener('change', () => { renderProjects(); renderProviderPicker(); });
+    el.fleetRuntime.addEventListener('change', () => { renderProjects(); renderProviderPicker(); updateAddProjectAvailability(); });
     el.providerSelect.addEventListener('change', () => {
       const r = state.activeThread ? state.runtimes.find((x) => x.id === state.activeThread.runtimeId) : selectedRuntime();
       renderModelPicker((r && r.providers) || []);
@@ -752,11 +937,15 @@
     });
     el.addProject.addEventListener('click', async () => {
       const r = selectedRuntime(); if (!r) return;
-      let dir = null;
-      if (window.harnessDesktop && window.harnessDesktop.pickFolder) dir = await window.harnessDesktop.pickFolder();
-      else dir = prompt('Absolute path of a folder on runtime "' + r.name + '":');
-      if (!dir) return;
-      try { await command(null, { method: 'project/add', dir }, r.id); toast('Project registered'); } catch (e) { toast('⚠ ' + esc(e.message)); }
+      if (!window.harnessDesktop || !window.harnessDesktop.pickFolder || r.id !== state.localRuntimeId) {
+        toast('⚠ Select this desktop’s local execution host to share a folder.');
+        return;
+      }
+      try {
+        const result = await window.harnessDesktop.pickFolder(r.id);
+        if (result && result.changed) toast('Project registered on the local execution host.');
+        else if (result && !result.canceled) toast('That project is already registered on the local execution host.');
+      } catch (e) { toast('⚠ ' + esc(e.message)); }
     });
     document.querySelectorAll('.suggestion').forEach((b) => b.addEventListener('click', () => { el.input.value = b.dataset.prompt; autosize(); sendMessage(); }));
     el.send.addEventListener('click', sendMessage);
@@ -772,8 +961,8 @@
     el.closeAssign.addEventListener('click', () => el.assignModal.classList.add('hidden'));
     el.assignModal.addEventListener('click', (e) => { if (e.target === el.assignModal) el.assignModal.classList.add('hidden'); });
     el.doAssign.addEventListener('click', async () => {
-      const u = state.users.find((x) => x.id === el.assignUser.value); if (!u) return;
-      try { await command(state.activeThreadId, { method: 'thread/assign', assignee: { userId: u.id, name: u.name, color: u.color }, note: el.assignNote.value.trim() }); el.assignModal.classList.add('hidden'); toast('Handed off to <b>' + esc(u.name) + '</b>'); } catch (e) { toast('⚠ ' + esc(e.message)); }
+      const u = state.users.find((x) => x.userId === el.assignUser.value); if (!u) return;
+      try { await command(state.activeThreadId, { method: 'thread/assign', assignee: { userId: u.userId, name: u.name, color: u.color }, note: el.assignNote.value.trim() }); el.assignModal.classList.add('hidden'); toast('Handed off to <b>' + esc(u.name) + '</b>'); } catch (e) { toast('⚠ ' + esc(e.message)); }
     });
     el.unassign.addEventListener('click', async () => {
       try { await command(state.activeThreadId, { method: 'thread/assign', assignee: null }); el.assignModal.classList.add('hidden'); } catch (e) { toast('⚠ ' + esc(e.message)); }
@@ -812,7 +1001,18 @@
       el.gateError.classList.add('hidden');
       send({ type: 'team/invite/accept', code });
     });
-    el.inviteBtn.addEventListener('click', () => send({ type: 'team/invite', teamId: state.teamId }));
+    el.inviteBtn.addEventListener('click', () => {
+      const inviteeUserId = el.inviteeUserId.value.trim();
+      if (!inviteeUserId) return toast('Enter your teammate’s account ID.');
+      send({ type: 'team/invite', teamId: state.teamId, inviteeUserId });
+    });
+    el.teamMembers.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-action="remove-member"]');
+      if (!button) return;
+      const member = state.users.find((user) => user.userId === button.dataset.userId);
+      if (!member || !confirm('Remove ' + member.name + ' from this team?')) return;
+      send({ type: 'team/member/remove', teamId: state.teamId, userId: member.userId });
+    });
     el.inviteCode.addEventListener('focus', () => el.inviteCode.select());
     el.pairBtn.addEventListener('click', () => {
       const code = el.pairCode.value.trim();
@@ -822,10 +1022,13 @@
     });
     el.settingsBtn.addEventListener('click', () => {
       el.settingTheme.value = state.prefs.theme || 'dark'; el.settingNotifications.checked = state.prefs.notifications !== false;
+      el.settingsAccountId.value = state.me ? state.me.id : '';
       const team = state.teams.find((t) => t.id === state.teamId);
       el.settingsConn.textContent = HUB_URL + ' · ' + (team ? team.name + ' (' + (state.membership ? state.membership.role : 'member') + ')' : 'no team') + ' · ' + (state.me ? state.me.name : '');
       el.settingsModal.classList.remove('hidden');
     });
+    el.copyGateAccountId.addEventListener('click', () => copyAccountId(el.teamGateAccountId));
+    el.copyAccountId.addEventListener('click', () => copyAccountId(el.settingsAccountId));
     el.closeSettings.addEventListener('click', () => el.settingsModal.classList.add('hidden'));
     el.settingsModal.addEventListener('click', (e) => { if (e.target === el.settingsModal) el.settingsModal.classList.add('hidden'); });
     el.settingTheme.addEventListener('change', () => { state.prefs.theme = el.settingTheme.value; savePrefs(); applyTheme(); });

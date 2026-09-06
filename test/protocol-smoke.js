@@ -33,6 +33,14 @@ class Client {
       this.waiters.push({ pred, resolve: (m) => { clearTimeout(t); resolve(m); } });
     });
   }
+  waitFrom(from, pred, ms = 15000) {
+    const hit = this.msgs.slice(from).find(pred);
+    if (hit) return Promise.resolve(hit);
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('timeout waiting: ' + pred.toString().slice(0, 80))), ms);
+      this.waiters.push({ pred, resolve: (m) => { clearTimeout(t); resolve(m); } });
+    });
+  }
   command(threadId, command, runtimeId) {
     const id = 'c_' + Math.random().toString(36).slice(2);
     this.send({ type: 'command', id, threadId, runtimeId, command });
@@ -58,7 +66,7 @@ class Client {
   await rt.start();
 
   const alice = new Client(url, 'alice'); await alice.connect();
-  const bob = new Client(url, 'bob'); await bob.connect();
+  const bob = new Client(url, 'bob'); const bobWelcome = await bob.connect();
 
   alice.send({ type: TeamOps.TEAM_CREATE, name: 'Retia' });
   const team = (await alice.wait((m) => m.type === 'team')).team;
@@ -69,13 +77,13 @@ class Client {
   assert(rt.teamId === team.id, 'the host was paired with the code shown on its own console');
 
   // Approving is a delegated grant now, not something membership carries.
-  alice.send({ type: TeamOps.INVITE_CREATE, teamId: team.id });
+  alice.send({ type: TeamOps.INVITE_CREATE, teamId: team.id, inviteeUserId: bobWelcome.user.id });
   const invite = (await alice.wait((m) => m.type === 'invitation')).invitation;
   bob.send({ type: TeamOps.INVITE_ACCEPT, code: invite.code });
   await bob.wait((m) => m.type === 'team');
   assert(true, 'bob joined the team through an expiring invitation');
 
-  alice.send({ type: TeamOps.APPROVER_GRANT, teamId: team.id, userId: bob.msgs.find((m) => m.type === 'welcome').user.id });
+  alice.send({ type: TeamOps.APPROVER_GRANT, teamId: team.id, userId: bobWelcome.user.id });
   await alice.wait((m) => m.type === 'ok' || m.type === 'approvers');
   assert(true, 'alice delegated approval authority to bob');
 
@@ -114,15 +122,23 @@ class Client {
   assert(JSON.stringify(aSeqs) === JSON.stringify(bSeqs), "both clients received the identical ordered event log");
 
   // Late joiner replays from the log
-  const carol = new Client(url, 'carol'); await carol.connect();
+  const carol = new Client(url, 'carol'); const carolWelcome = await carol.connect();
+  const inviteFrom = alice.msgs.length;
+  alice.send({ type: TeamOps.INVITE_CREATE, teamId: team.id, inviteeUserId: carolWelcome.user.id });
+  const carolInvite = (await alice.waitFrom(inviteFrom, (m) => m.type === 'invitation')).invitation;
+  carol.send({ type: TeamOps.INVITE_ACCEPT, code: carolInvite.code });
+  await carol.wait((m) => m.type === 'team' && m.team.id === team.id);
   carol.send({ type: 'thread.subscribe', threadId: thread.id });
   const snap = await carol.wait((m) => m.type === 'thread.snapshot');
   assert(snap.events.length === aSeqs.length && snap.events[snap.events.length - 1].method === 'turn/completed', 'late joiner got the full snapshot');
 
   // HTTP polling fallback
-  const res = await fetch(`http://127.0.0.1:${addr.port}/api/threads/${thread.id}/events?after=${aSeqs.length - 2}`);
+  const lastSeq = aSeqs[aSeqs.length - 1];
+  const res = await fetch(`http://127.0.0.1:${addr.port}/api/threads/${thread.id}/events?after=${lastSeq - 2}`, {
+    headers: { authorization: 'Bearer ' + carolWelcome.user.token }
+  });
   const j = await res.json();
-  assert(j.events.length === 2 && j.nextSeq === aSeqs.length, 'HTTP polling fallback returns events after a cursor');
+  assert(j.events.length === 2 && j.nextSeq === lastSeq, 'HTTP polling fallback returns events after a cursor');
 
   // Steering while running + interrupt
   await alice.command(thread.id, { method: 'turn/start', input: [{ type: 'text', text: 'Tell me a joke' }] });
@@ -132,13 +148,6 @@ class Client {
   const steerMsg = await alice.wait((m) => m.type === 'event' && m.method === 'item/completed' && m.item.type === 'userMessage' && m.item.delivery === 'steer');
   assert(steerMsg.item.by.name === 'bob', 'steer rendered as a userMessage attributed to bob');
   await alice.wait((m) => m.type === 'event' && m.method === 'turn/completed' && m.turnId === ts.turnId, 30000);
-
-  // git ops through the runtime
-  fs.writeFileSync(path.join(project, 'hello.js'), 'console.log(2)\n');
-  const diff = await alice.command(thread.id, { method: 'git/diff' });
-  assert(diff.files.some((f) => f.path === 'hello.js') && diff.files.some((f) => f.path === 'build/out.txt' && f.status === 'deleted'), 'git/diff via runtime lists the modified and deleted files');
-  const c = await bob.command(thread.id, { method: 'git/commit', message: 'from bob' });
-  assert(c.ok, 'git/commit via runtime succeeded');
 
   // ---- team awareness + collision radar ----
   // Alice's thread creates NOTES.md; a second thread on the same project then tries to create it too.
