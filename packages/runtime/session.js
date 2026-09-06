@@ -87,7 +87,8 @@ class TurnSession {
     let error;
     try {
       if (this.provider.id === 'demo') await this.runDemo();
-      else if (this.provider.id === 'codex-cli') await this.provider.run(this);
+      // A backend that brings its own run() drives the whole turn (both CLI adapters do).
+      else if (typeof this.provider.run === 'function') await this.provider.run(this);
       else await this.runModel();
       if (this.cancelled) status = TurnStatus.INTERRUPTED;
     } catch (err) {

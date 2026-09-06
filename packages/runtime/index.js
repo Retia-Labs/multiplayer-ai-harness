@@ -11,6 +11,7 @@ const { RuntimeStore } = require('./store');
 const { TurnSession } = require('./session');
 const { createProvider, DEFAULT_MODELS } = require('./providers');
 const { CodexExecBackend, available: codexAvailable } = require('./codex-exec');
+const { CodexAppServerBackend } = require('./codex-app-server');
 const { ClaudeCodeBackend, available: claudeAvailable } = require('./claude-code');
 const { createExecutor, CrabboxExecutor } = require('./executors');
 const { PRESETS } = require('./policy');
@@ -48,7 +49,8 @@ class Runtime {
       list.push({ id, label: { openai: 'OpenAI', anthropic: 'Anthropic', openrouter: 'OpenRouter' }[id], configured: !!(cfg && cfg.apiKey), models: DEFAULT_MODELS[id] || [] });
     }
     list.push({ id: 'ollama', label: 'Ollama / local', configured: true, models: DEFAULT_MODELS.ollama });
-    list.push({ id: 'codex-cli', label: 'Codex CLI (codex exec)', configured: codexAvailable(), models: ['gpt-5.1-codex-max', 'gpt-5.1-codex', 'gpt-5.1-codex-mini'] });
+    list.push({ id: 'codex-cli', label: 'Codex CLI (codex exec)', configured: codexAvailable(), models: ['gpt-5.5', 'gpt-5.4-mini'] });
+    list.push({ id: 'codex-app-server', label: 'Codex CLI (app-server, routes approvals)', configured: codexAvailable(), models: ['gpt-5.5', 'gpt-5.4-mini'] });
     list.push({ id: 'claude-code', label: 'Claude Code CLI (your subscription)', configured: claudeAvailable(), models: ['default', 'sonnet', 'opus', 'haiku'] });
     return list;
   }
@@ -58,6 +60,8 @@ class Runtime {
     // providerTap sees the provider's own event lines. The acceptance harness records
     // those instead of trusting the harness's own rendering of a turn.
     if (id === 'codex-cli') return new CodexExecBackend({ onRaw: this.providerTap });
+    // The app-server path is the one that can ask a human before running something.
+    if (id === 'codex-app-server') return new CodexAppServerBackend({ onRaw: this.providerTap });
     if (id === 'claude-code') return new ClaudeCodeBackend();
     const cfg = this.providerConfig[id] || {};
     if ((id === 'openai' || id === 'anthropic' || id === 'openrouter') && !cfg.apiKey) throw new Error(`No API key configured for ${id} on runtime ${this.name}`);
