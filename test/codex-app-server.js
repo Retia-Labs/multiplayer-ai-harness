@@ -196,3 +196,12 @@ test('production provider gate remains closed for both CLI adapters', () => {
     assert.throws(() => Runtime.prototype.provider.call({}, id), /project-confined reads and writes are proven/);
   }
 });
+
+test('a host without Codex still has reportable platform metadata and a concrete blocker', () => {
+  const { probe } = require('../packages/runtime/codex-probe');
+  const result = probe({ bin: 'plexus-intentionally-missing-codex-executable' });
+  assert.equal(result.platform.os, process.platform);
+  assert.equal(result.platform.node, process.version);
+  assert.equal(result.auth, null);
+  assert.equal(result.blockers[0].id, 'codex-not-found');
+});

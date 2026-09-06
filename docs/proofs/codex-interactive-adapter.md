@@ -42,14 +42,18 @@ hard-coded model entitlement list have been removed from this adapter.
 
 ## Evidence
 
-`npm run test:codex:app-server` runs 18 deterministic tests, including a real Node
+`npm run test:codex:app-server` runs 19 deterministic tests, including a real Node
 subprocess that exits with an outstanding RPC. Tests cover handshake/schema,
 early completion, mismatched identity, failed/interrupted turns, startup and turn
 timeouts, cancellation, bounded approval decisions, invalid input, split UTF-8,
 malformed/oversized frames, sanitized errors, pending approval cleanup and the
-unchanged production isolation gate. They use a simulated provider and spend no
+unchanged production isolation gate and missing-CLI host metadata. They use a simulated provider and spend no
 provider quota. `npm test` includes this suite; Linux/Windows CI runs it with the
-existing control-plane and encrypted-task regression checks.
+existing control-plane and encrypted-task regression checks. On hosts without
+Codex, the provider prerequisites are explicitly blocked while the control
+checks still execute; report generation no longer dereferences missing provider
+authentication/capability metadata. The absent-CLI control run was also tested
+locally (7 control checks passed, 3 provider prerequisites blocked, 0 failed).
 
 The locally installed Codex **0.153.0** also passed a real initialization-only
 check through the new transport. No provider task was started. Its generated
