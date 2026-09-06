@@ -56,6 +56,7 @@ function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.
   await win.waitForSelector('.edit-card', { timeout: 20000 });
   assert(fs.existsSync(path.join(project, 'NOTES.md')), 'agent wrote a file through the desktop-spawned runtime');
   await win.waitForFunction(() => document.querySelector('#working').classList.contains('hidden'), null, { timeout: 30000 });
+  assert(!(await win.textContent('body')).includes('project_not_authorized'), 'created file verification uses a supported workspace operation');
   const evidenceDir = path.join(__dirname, '..', '.artifacts', 'desktop-bootstrap');
   fs.mkdirSync(evidenceDir, { recursive: true });
   await win.screenshot({ path: path.join(evidenceDir, process.env.DESKTOP_EXECUTABLE ? 'packaged-workspace.png' : 'workspace.png') });
