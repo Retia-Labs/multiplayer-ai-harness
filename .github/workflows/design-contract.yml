@@ -1,0 +1,23 @@
+name: Design reference integrity
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  design-contract:
+    name: Design reference integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # These checks use only Node built-ins and do not install or run prototype dependencies.
+      - name: Check canonical references and exported copies
+        run: npm run check:design
+      - name: Test checker failure cases
+        run: npm run test:design

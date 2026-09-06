@@ -154,6 +154,10 @@ phone, both watch the diff land live"* — is what this repo demonstrates.
 
 ## Implementation planning
 
+The accepted **Plexus Review together** design lives in this repository at [docs/design/plexus](docs/design/plexus/README.md): nine interactive reference screens, six reusable template contracts, tokens, assets, and desktop/mobile captures. Start UI tasks with the [agent development workflow](docs/design/plexus/AGENT-DEVELOPMENT.md), linked from root `AGENTS.md` and `CLAUDE.md`. The preview is isolated from the production shared renderer; adding these references does not migrate the app to React.
+
+Run `npm run check:design` to verify the reference pack and instruction links, and `npm run test:design` for the checker regression tests. The Design reference integrity workflow runs both in CI. These checks cover reference integrity; production visual regression and required review settings still need to be established as the design is adopted.
+
 The [planning index](docs/planning/README.md) links the current implementation spec, team issues,
 accepted decisions, and supporting research. Start with [spec issue #1](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1)
 and the [team issue breakdown](docs/planning/team-issue-breakdown.md). The spec describes the work
