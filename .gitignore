@@ -5,3 +5,6 @@ dist/
 .harness-hub.sqlite*
 *.sqlite-wal
 *.sqlite-shm
+
+.artifacts/
+.worktrees/

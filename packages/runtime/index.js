@@ -84,6 +84,7 @@ class Runtime {
     if (!PRESETS[maxPreset]) throw new Error('unknown max preset: ' + maxPreset);
     this.maxPreset = maxPreset;
     this.hub = null;
+    this.providerTap = null;   // (line, ev, session) - raw provider acknowledgments, for proofs
     this.activity = { threads: [], overlaps: [] }; // team awareness snapshot pushed by the hub
   }
 
@@ -102,7 +103,7 @@ class Runtime {
 
   provider(id) {
     if (id === 'demo') return { id: 'demo' };
-    if (id === 'codex-cli' || id === 'claude-code') {
+    if (id === 'codex-cli' || id === 'codex-app-server' || id === 'claude-code') {
       throw new Error(Errors.PROVIDER_NOT_ISOLATED + ': this CLI adapter is hidden until project-confined reads and writes are proven');
     }
     const cfg = this.providerConfig[id] || {};
@@ -268,8 +269,8 @@ class Runtime {
         const s = this.sessions.get(threadId);
         if (!s || !s.running) throw new Error('no active turn to steer');
         if (cmd.expectedTurnId && cmd.expectedTurnId !== s.turnId) throw new Error('expectedTurnId does not match the active turn');
-        s.steer(cmd.input, by);
-        return { turnId: s.turnId };
+        const delivery = s.steer(cmd.input, by);
+        return { turnId: s.turnId, delivery };
       }
       case Commands.TURN_INTERRUPT: {
         const s = this.sessions.get(threadId);

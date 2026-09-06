@@ -10,6 +10,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execSync } = require('child_process');
+const { localShell } = require('../packages/runtime/executors');
 
 function assert(cond, msg) {
   if (!cond) throw new Error('ASSERT FAILED: ' + msg);
@@ -25,7 +26,7 @@ function assert(cond, msg) {
   fs.writeFileSync(path.join(project, 'hello.js'), 'console.log("hello");\n');
   fs.writeFileSync(path.join(project, 'README.md'), '# Scratch project\n');
   execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', {
-    cwd: project, shell: '/bin/bash'
+    cwd: project, shell: localShell().bin
   });
   // A working-tree change so the diff panel has something to show.
   fs.appendFileSync(path.join(project, 'hello.js'), 'console.log("changed");\n');

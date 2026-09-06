@@ -6,6 +6,7 @@
 //    and streams output back. Crabbox deliberately owns only remote execution and
 //    evidence — the harness keeps the agent loop, credentials and decisions.
 const { spawn, execFileSync } = require('child_process');
+const fs = require('fs');
 
 const MAX_OUTPUT = 20000;
 
@@ -35,6 +36,23 @@ function runProcess(bin, args, { cwd, env, onOutput, timeoutMs = 120000, onChild
   });
 }
 
+// Windows has no /bin/bash, so resolve a real shell rather than failing every
+// command with ENOENT. Git for Windows ships bash; cmd.exe is the last resort.
+function localShell() {
+  if (process.platform !== 'win32') return { bin: '/bin/bash', pre: ['-c'] };
+  // Forward slashes, so a stray \b in a Windows path cannot become a backspace.
+  const candidates = [
+    process.env.HARNESS_SHELL,
+    'C:/Program Files/Git/bin/bash.exe',
+    'C:/Program Files (x86)/Git/bin/bash.exe',
+    process.env.ProgramFiles && process.env.ProgramFiles.replace(/\\/g, '/') + '/Git/bin/bash.exe'
+  ];
+  for (const bin of candidates) {
+    if (bin && fs.existsSync(bin)) return { bin, pre: ['-c'] };
+  }
+  return { bin: process.env.COMSPEC || 'cmd.exe', pre: ['/d', '/s', '/c'] };
+}
+
 class LocalExecutor {
   get id() { return 'local'; }
   describe() { return { id: 'local', label: 'Structured workspace tools', shell: false }; }
@@ -50,7 +68,9 @@ class CrabboxExecutor {
   }
   get id() { return 'crabbox'; }
   static available(bin = 'crabbox') {
-    try { execFileSync('which', [bin], { stdio: 'ignore' }); return true; } catch { return false; }
+    // `which` is not a Windows command; `where.exe` is.
+    const finder = process.platform === 'win32' ? 'where.exe' : 'which';
+    try { execFileSync(finder, [bin], { stdio: 'ignore' }); return true; } catch { return false; }
   }
   describe() { return { id: 'crabbox', label: 'Crabbox remote runner', available: CrabboxExecutor.available(this.bin) }; }
   run(command, opts) {
@@ -66,4 +86,4 @@ function createExecutor(spec) {
   throw new Error('unknown executor: ' + JSON.stringify(spec));
 }
 
-module.exports = { LocalExecutor, CrabboxExecutor, createExecutor, runProcess };
+module.exports = { LocalExecutor, CrabboxExecutor, createExecutor, runProcess, localShell };
