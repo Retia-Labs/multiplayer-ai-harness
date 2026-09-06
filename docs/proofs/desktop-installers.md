@@ -127,6 +127,10 @@ and which of the four is the artifact to distribute is an open decision, not a f
 record can settle. This table previously listed three files and a `latest.yml`; the rebuild
 produced no `latest.yml` at all.
 
+The hashes name these exact files. They are not a claim of a deterministic build -
+electron-builder stamps build time into its output, so the same tree built again hashes
+differently. Reproducible here means the command reproduces the artifact set, not the bytes.
+
 **A target-name collision hid the installer.** `artifactName` did not distinguish target
 type, so nsis and portable both wrote `Plexus-0.1.0-win-x64.exe` and the second overwrote
 the first - every "installer" produced by the first build was actually the portable binary,
