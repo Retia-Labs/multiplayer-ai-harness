@@ -37,10 +37,18 @@ team — read from the database, never from the request.
 **Invitations are single-use and expire.** Redemption distinguishes *invalid*, *expired*,
 *already accepted* and *revoked*, because those are four different security facts.
 
-**Roles are administration only.** `owner` can invite, remove and pair. That is deliberately
-*not* decryption access and *not* action-approval authority — those are separate grants that
-issues #3 and #11 own. The membership row carries no such field, and the test asserts its
-absence rather than trusting the comment.
+**Roles are administration only, and that is enforced.** `owner` can invite, remove and pair.
+It grants **no** approval authority: resolving an approval requires a separate delegated
+grant, checked at the hub before routing and again on the execution host, which is the
+machine actually taking the risk. Even the team owner cannot approve until somebody delegates
+it — including to themselves.
+
+An earlier version of this document claimed this criterion was met because the membership row
+carried no `approver` field. That was wrong: the shape of a row is not enforcement, and
+`approval/resolve` was in fact reachable by any member. It is now a separate table, a separate
+grant, and two checks.
+
+Decryption access remains out of scope here and belongs to issue #3.
 
 ## Pairing an execution host
 
@@ -97,9 +105,11 @@ same authorization: a bearer token (or `?token=`), then a membership check.
 - **No encryption.** Every membership is marked `enrollment: pending` and the UI says
   "Encryption pending" next to the signed-in user. The hub still stores thread content in
   the clear; issue #3 owns that, and this slice deliberately does not pretend otherwise.
-- **No delegated approvers.** Any member of a team can currently resolve an approval on a
-  thread they can see. Separating approval authority from membership is issue #11; the data
-  model keeps them apart so that work does not have to unpick a conflated role.
+- **Delegated approval is enforced but minimal.** A grant exists, is checked at the hub and
+  re-checked on the execution host, and can be revoked. What is *not* here is the richer
+  delegation flow issue #11 owns: scoping a grant to one thread or one action, expiry, and
+  the UI for handing it over. The host's check also still trusts the hub's assertion; making
+  that independent of an untrusted relay is issue #3's territory.
 - **No seats or billing.** "Paid seat" appears in the criterion only to say it grants
   nothing by itself, which is true here because seats do not exist.
 - **Tokens are bearer tokens in local storage.** Good enough for a local-first prototype,

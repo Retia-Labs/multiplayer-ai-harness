@@ -222,6 +222,9 @@ class Runtime {
         return {};
       }
       case Commands.APPROVAL_RESOLVE: {
+        // Second check, on the machine that will actually run the command. The hub says who
+        // it thinks is allowed; the host is the one taking the risk, so it says no too.
+        if (!by || !by.approver) throw new Error(Errors.NOT_APPROVER + ': this teammate has not been delegated approval authority');
         const s = this.sessions.get(threadId);
         if (!s || !s.resolveApproval(cmd.requestId, cmd.decision, by)) throw new Error('no such pending approval');
         return {};

@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const { HubStore, uid } = require('./store');
-const { TeamOps, Errors, Roles } = require('../protocol');
+const { TeamOps, Errors, Roles, Commands } = require('../protocol');
 
 // Authorization failures carry a code so a caller can tell them apart. `fail` is used for
 // every boundary in this file; a bare `throw new Error(...)` would collapse them back into
@@ -192,6 +192,22 @@ class Hub {
         this.broadcastTeam(msg.teamId, { type: 'users', users: this.store.listMembers(msg.teamId) });
         return this.send(ws, { type: 'ok', ref: msg.id });
       }
+      case TeamOps.APPROVER_GRANT: {
+        this.requireOwner(ctx, msg.teamId);
+        if (!this.store.membership(msg.teamId, msg.userId)) throw fail(Errors.NOT_A_MEMBER, 'that person is not in this team');
+        this.store.grantApprover(msg.teamId, msg.userId, ctx.user.id);
+        this.broadcastTeam(msg.teamId, { type: 'approvers', teamId: msg.teamId, approvers: this.store.listApprovers(msg.teamId) });
+        return this.send(ws, { type: 'ok', ref: msg.id });
+      }
+      case TeamOps.APPROVER_REVOKE: {
+        this.requireOwner(ctx, msg.teamId);
+        this.store.revokeApprover(msg.teamId, msg.userId);
+        this.broadcastTeam(msg.teamId, { type: 'approvers', teamId: msg.teamId, approvers: this.store.listApprovers(msg.teamId) });
+        return this.send(ws, { type: 'ok', ref: msg.id });
+      }
+      case TeamOps.APPROVER_LIST:
+        this.requireMember(ctx, msg.teamId);
+        return this.send(ws, { type: 'approvers', teamId: msg.teamId, approvers: this.store.listApprovers(msg.teamId), ref: msg.id });
       case TeamOps.RUNTIME_PAIR: return this.pairRuntime(ws, ctx, msg);
       case TeamOps.RUNTIME_UNPAIR: {
         const pairing = this.store.runtimePairing(msg.runtimeId);
@@ -409,9 +425,16 @@ class Hub {
     const pairing = this.store.runtimePairing(runtimeId);
     if (!pairing) throw fail(Errors.RUNTIME_UNPAIRED);
     if (!this.store.membership(pairing.teamId, ctx.user.id)) throw fail(Errors.FOREIGN_RUNTIME);
+    // Being in the team lets you watch and steer. Letting an agent actually run a risky
+    // action is a separate grant, and it is checked here rather than assumed from role.
+    const isApproval = cmd.method === Commands.APPROVAL_RESOLVE;
+    if (isApproval && !this.store.isApprover(pairing.teamId, ctx.user.id)) throw fail(Errors.NOT_APPROVER);
     const id = msg.id || uid('cmd');
     this.pendingCommands.set(id, ws);
-    const ok = this.routeToRuntime(runtimeId, { type: 'command', id, threadId: msg.threadId || null, by: this.who(ctx), command: cmd });
+    // The execution host is told whether the hub considered this caller an approver, so it
+    // can refuse on its own account rather than trusting the routing alone.
+    const by = { ...this.who(ctx), approver: this.store.isApprover(pairing.teamId, ctx.user.id) };
+    const ok = this.routeToRuntime(runtimeId, { type: 'command', id, threadId: msg.threadId || null, by, command: cmd });
     if (!ok) {
       this.pendingCommands.delete(id);
       this.send(ws, { type: 'command.result', id, ok: false, error: 'runtime offline' });

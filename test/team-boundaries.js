@@ -233,6 +233,33 @@ async function http(url, opts = {}) {
     'the membership row must not carry decryption or approval grants');
   ok('an owner row grants no decryption and no approval authority', 'role is administration only');
 
+  // The criterion says administration alone grants no approval authority. That has to be
+  // enforced, not merely reflected in the shape of a row.
+  await refused('a member cannot resolve an approval', Errors.NOT_APPROVER,
+    () => bob.command(thread.id, { method: Commands.APPROVAL_RESOLVE, requestId: 'req_x', decision: 'accept' }));
+  await refused('the team owner cannot either, until delegated', Errors.NOT_APPROVER,
+    () => alice.command(thread.id, { method: Commands.APPROVAL_RESOLVE, requestId: 'req_x', decision: 'accept' }));
+  await refused('a member cannot grant themselves approval authority', Errors.OWNER_REQUIRED,
+    () => bob.op({ type: TeamOps.APPROVER_GRANT, teamId, userId: bob.me.id }, 'ok'));
+
+  await alice.op({ type: TeamOps.APPROVER_GRANT, teamId, userId: bob.me.id }, 'ok');
+  const approvers = (await alice.op({ type: TeamOps.APPROVER_LIST, teamId }, 'approvers')).approvers;
+  assert.equal(approvers.length, 1);
+  assert.equal(approvers[0].userId, bob.me.id);
+  ok('an owner delegates approval authority explicitly', `${approvers[0].name} granted by alice`);
+
+  // Now the grant is what carries him past the gate - his membership is unchanged.
+  await refused('a delegated approver reaches the host and is judged there', 'no such pending approval',
+    () => bob.command(thread.id, { method: Commands.APPROVAL_RESOLVE, requestId: 'req_x', decision: 'accept' }));
+
+  const memberRows = (await alice.op({ type: TeamOps.TEAM_MEMBERS, teamId }, 'users')).users;
+  assert.ok(memberRows.every((m) => !('approver' in m)), 'the membership row must not carry approval authority');
+  ok('approval authority lives apart from membership', 'separate grant, separate table');
+
+  await alice.op({ type: TeamOps.APPROVER_REVOKE, teamId, userId: bob.me.id }, 'ok');
+  await refused('revoking the grant ends approval authority', Errors.NOT_APPROVER,
+    () => bob.command(thread.id, { method: Commands.APPROVAL_RESOLVE, requestId: 'req_x', decision: 'accept' }));
+
   // Removal ends access immediately.
   await alice.op({ type: TeamOps.MEMBER_REMOVE, teamId, userId: bob.me.id }, 'ok');
   await refused('a removed member loses team access at once', Errors.NOT_A_MEMBER,

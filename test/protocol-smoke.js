@@ -68,11 +68,16 @@ class Client {
   await alice.wait((m) => m.type === 'runtime.paired');
   assert(rt.teamId === team.id, 'the host was paired with the code shown on its own console');
 
+  // Approving is a delegated grant now, not something membership carries.
   alice.send({ type: TeamOps.INVITE_CREATE, teamId: team.id });
   const invite = (await alice.wait((m) => m.type === 'invitation')).invitation;
   bob.send({ type: TeamOps.INVITE_ACCEPT, code: invite.code });
   await bob.wait((m) => m.type === 'team');
   assert(true, 'bob joined the team through an expiring invitation');
+
+  alice.send({ type: TeamOps.APPROVER_GRANT, teamId: team.id, userId: bob.msgs.find((m) => m.type === 'welcome').user.id });
+  await alice.wait((m) => m.type === 'ok' || m.type === 'approvers');
+  assert(true, 'alice delegated approval authority to bob');
 
   alice.send({ type: 'runtimes.list' });
   const rl = await alice.wait((m) => m.type === 'runtimes' && m.runtimes.some((r) => r.online));

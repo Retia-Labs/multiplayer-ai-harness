@@ -22,6 +22,9 @@ class HubStore {
       CREATE TABLE IF NOT EXISTS invitations (code TEXT PRIMARY KEY, team_id TEXT, role TEXT, created_by TEXT, created_at INTEGER, expires_at INTEGER, accepted_by TEXT, accepted_at INTEGER, revoked_at INTEGER);
       -- Which team a paired execution host belongs to, and who consented to the pairing.
       CREATE TABLE IF NOT EXISTS pairings    (runtime_id TEXT PRIMARY KEY, team_id TEXT, paired_by TEXT, paired_at INTEGER);
+      -- Deliberately its own table rather than a column on memberships: approval authority
+      -- is a separate grant, and storing it beside the role would invite conflating them.
+      CREATE TABLE IF NOT EXISTS approvers   (team_id TEXT, user_id TEXT, granted_by TEXT, granted_at INTEGER, PRIMARY KEY (team_id, user_id));
       CREATE TABLE IF NOT EXISTS runtimes (id TEXT PRIMARY KEY, org_id TEXT, json TEXT, last_seen INTEGER);
       CREATE TABLE IF NOT EXISTS threads  (id TEXT PRIMARY KEY, org_id TEXT, runtime_id TEXT, json TEXT, updated_at INTEGER);
       CREATE TABLE IF NOT EXISTS events   (thread_id TEXT, seq INTEGER, ts INTEGER, json TEXT, PRIMARY KEY (thread_id, seq));
@@ -56,7 +59,11 @@ class HubStore {
       revokeInvite: this.db.prepare('UPDATE invitations SET revoked_at = ? WHERE code = ?'),
       insertPairing: this.db.prepare('INSERT INTO pairings (runtime_id, team_id, paired_by, paired_at) VALUES (?, ?, ?, ?) ON CONFLICT(runtime_id) DO UPDATE SET team_id = excluded.team_id, paired_by = excluded.paired_by, paired_at = excluded.paired_at'),
       getPairing: this.db.prepare('SELECT * FROM pairings WHERE runtime_id = ?'),
-      deletePairing: this.db.prepare('DELETE FROM pairings WHERE runtime_id = ?')
+      deletePairing: this.db.prepare('DELETE FROM pairings WHERE runtime_id = ?'),
+      grantApprover: this.db.prepare('INSERT INTO approvers (team_id, user_id, granted_by, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT(team_id, user_id) DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at'),
+      getApprover: this.db.prepare('SELECT * FROM approvers WHERE team_id = ? AND user_id = ?'),
+      listApprovers: this.db.prepare('SELECT a.user_id, a.granted_by, a.granted_at, u.name FROM approvers a JOIN users u ON u.id = a.user_id WHERE a.team_id = ?'),
+      revokeApprover: this.db.prepare('DELETE FROM approvers WHERE team_id = ? AND user_id = ?')
     };
   }
 
@@ -128,6 +135,19 @@ class HubStore {
 
   getInvitation(code) { return this._stmts.getInvite.get(code) || null; }
   revokeInvitation(code) { this._stmts.revokeInvite.run(Date.now(), code); return { ok: true }; }
+
+  // ---- delegated approval authority ----
+  // Never granted implicitly. Creating a team, owning it, or holding a seat gives none of
+  // this; somebody has to hand it over deliberately.
+  grantApprover(teamId, userId, grantedBy) {
+    this._stmts.grantApprover.run(teamId, userId, grantedBy, Date.now());
+    return { teamId, userId, grantedBy };
+  }
+  isApprover(teamId, userId) { return !!this._stmts.getApprover.get(teamId, userId); }
+  listApprovers(teamId) {
+    return this._stmts.listApprovers.all(teamId).map((r) => ({ userId: r.user_id, name: r.name, grantedBy: r.granted_by, grantedAt: r.granted_at }));
+  }
+  revokeApprover(teamId, userId) { this._stmts.revokeApprover.run(teamId, userId); return { ok: true }; }
 
   // ---- runtime pairing ----
   pairRuntime(runtimeId, teamId, byUserId) {

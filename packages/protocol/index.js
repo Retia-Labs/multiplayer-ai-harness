@@ -80,7 +80,12 @@ const TeamOps = {
   INVITE_REVOKE: 'team/invite/revoke',  // { code } → { ok }
   MEMBER_REMOVE: 'team/member/remove',  // { teamId, userId } → { ok } (owner only)
   RUNTIME_PAIR: 'runtime/pair',         // { teamId, code } → { runtime } (code is shown on the host)
-  RUNTIME_UNPAIR: 'runtime/unpair'      // { runtimeId } → { ok } (owner only)
+  RUNTIME_UNPAIR: 'runtime/unpair',     // { runtimeId } → { ok } (owner only)
+  // Approval authority is granted separately from membership, on purpose: being in a team
+  // is not the same as being allowed to let an agent run something on someone's machine.
+  APPROVER_GRANT: 'team/approver/grant',   // { teamId, userId } → { ok } (owner only)
+  APPROVER_REVOKE: 'team/approver/revoke', // { teamId, userId } → { ok } (owner only)
+  APPROVER_LIST: 'team/approver/list'      // { teamId } → { approvers }
 };
 
 // ---- Error codes ----
