@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const { HubStore, uid } = require('./store');
+const { EncryptedTasks } = require('./encrypted-tasks');
 const { TeamOps, Errors, Roles, Commands } = require('../protocol');
 
 // Authorization failures carry a code so a caller can tell them apart. `fail` is used for
@@ -21,11 +22,12 @@ function fail(code, detail) {
 
 const PAIRING_TTL_MS = 10 * 60 * 1000;   // a pairing code is short-lived on purpose
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 
 class Hub {
   constructor({ dbFile = ':memory:', staticDir = null, log = () => {} } = {}) {
     this.store = new HubStore(dbFile);
+    this.encryptedTasks = new EncryptedTasks(this.store);
     this.staticDir = staticDir;
     this.log = log;
     this.clients = new Map();   // ws -> { user, role, runtimeId?, subs:Set<threadId> }
@@ -65,12 +67,16 @@ class Hub {
 
   handleHttp(req, res) {
     const url = new URL(req.url, 'http://x');
+    if (url.pathname === '/api/encrypted-tasks' || url.pathname.startsWith('/api/encrypted-tasks/')) {
+      return this.encryptedTasks.handle(req, res, url);
+    }
     if (url.pathname === '/api/health') {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: true, runtimes: this.runtimes.size, clients: this.clients.size }));
     }
     const evm = url.pathname.match(/^\/api\/threads\/([^/]+)\/events$/);
     if (evm) {
+      if (evm[1].startsWith('et_')) return this.httpError(res, 409, 'encrypted_route_required');
       // This is the seq-cursor fallback for the live socket, so it carries exactly the
       // same content and needs exactly the same authorization.
       const user = this.httpAccount(req, url);
@@ -455,6 +461,7 @@ class Hub {
 
   // The team that owns a thread, checked against the caller rather than trusted from them.
   requireThread(ctx, threadId) {
+    if (String(threadId || '').startsWith('et_')) throw fail('encrypted_route_required');
     const t = this.store.getThread(threadId);
     if (!t) throw fail(Errors.UNKNOWN_THREAD);
     this.requireMember(ctx, t.orgId);
@@ -513,6 +520,7 @@ class Hub {
 
   // ---- commands: human -> owning runtime ----
   onCommand(ws, ctx, msg) {
+    if (String(msg.threadId || '').startsWith('et_')) throw fail('encrypted_route_required');
     const cmd = msg.command || {};
     let runtimeId = msg.runtimeId;
     let thread = null;
@@ -527,6 +535,7 @@ class Hub {
     if (!pairing) throw fail(Errors.RUNTIME_UNPAIRED);
     if (thread && thread.orgId !== pairing.teamId) throw fail(Errors.FOREIGN_RUNTIME, 'the thread host is paired to a different team');
     if (!this.store.membership(pairing.teamId, ctx.user.id)) throw fail(Errors.FOREIGN_RUNTIME);
+    if (this.store.getRuntime(runtimeId)?.taskProtocol === 'encrypted-v1') throw fail('encrypted_route_required');
     // Being in the team lets you watch and steer. Letting an agent actually run a risky
     // action is a separate grant, and it is checked here rather than assumed from role.
     const isApproval = cmd.method === Commands.APPROVAL_RESOLVE;
@@ -590,6 +599,7 @@ class Hub {
 
   // ---- runtime writes ----
   onThreadUpsert(ws, ctx, msg) {
+    if (String(msg.thread?.id || '').startsWith('et_')) throw fail('encrypted_route_required');
     if (ctx.role !== 'runtime') throw fail(Errors.UNAUTHENTICATED, 'runtime only');
     if (!ctx.teamId) throw fail(Errors.RUNTIME_UNPAIRED);
     if (this.runtimes.get(ctx.runtimeId) !== ws) throw fail(Errors.RUNTIME_AUTHENTICATION);
@@ -606,6 +616,7 @@ class Hub {
   }
 
   onAppend(ws, ctx, msg) {
+    if (String(msg.threadId || '').startsWith('et_')) throw fail('encrypted_route_required');
     if (ctx.role !== 'runtime') throw fail(Errors.UNAUTHENTICATED, 'runtime only');
     if (!ctx.teamId) throw fail(Errors.RUNTIME_UNPAIRED);
     if (this.runtimes.get(ctx.runtimeId) !== ws) throw fail(Errors.RUNTIME_AUTHENTICATION);

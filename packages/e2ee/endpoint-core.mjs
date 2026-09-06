@@ -218,6 +218,24 @@ class Endpoint {
     return JSON.parse(decrypted.event);
   }
 
+  // Task replay trusts an explicitly confirmed device, not merely a relay's sender
+  // field or an imported session's claimed keys. Cross-signing an entire account is
+  // not required for the device-fingerprint enrollment used by this adapter.
+  async decryptVerifiedTask(roomId, event, expected) {
+    if (!expected || event?.type !== 'm.room.encrypted' || event.room_id !== roomId) throw new Error('task_integrity_failed');
+    const decrypted = await this.machine.decryptRoomEvent(JSON.stringify(event), new sdk.RoomId(roomId),
+      new sdk.DecryptionSettings(sdk.TrustRequirement.Untrusted));
+    const shield = decrypted.shieldState(true);
+    const allowedShield = shield.color === sdk.ShieldColor.None ||
+      shield.code === sdk.ShieldStateCode.UnverifiedIdentity || shield.code === sdk.ShieldStateCode.UnsignedDevice;
+    if (!allowedShield || decrypted.sender.toString() !== expected.user ||
+        decrypted.senderDevice?.toString() !== expected.device || decrypted.senderCurve25519Key !== expected.curve25519 ||
+        decrypted.senderClaimedEd25519Key !== expected.ed25519 || !await this.isEndpointVerified(expected.user, expected.device)) {
+      throw new Error('task_sender_unverified');
+    }
+    return JSON.parse(decrypted.event);
+  }
+
   // Throw the current group session away. The next share creates a new one, so anyone left
   // out of that share cannot read anything sent afterwards - which is the difference
   // between a relay declining to deliver and a device actually being unable to read.

@@ -1,0 +1,40 @@
+name: Encrypted task replay
+on:
+  pull_request:
+    paths:
+      - 'packages/**'
+      - 'test/encrypted-task*.js'
+      - 'test/fixtures/encrypted-task*'
+      - 'package*.json'
+      - '.github/workflows/encrypted-task.yml'
+permissions:
+  contents: read
+jobs:
+  encrypted-task:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - if: runner.os == 'Linux'
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - if: runner.os == 'Windows'
+        run: node node_modules/playwright-core/cli.js install chromium
+      - run: npm run test:encrypted-task
+      - run: npm run test:protocol
+      - run: npm run test:unit
+      - run: npm run test:team
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: encrypted-task-${{ matrix.os }}
+          path: .artifacts/encrypted-task/*.json
+          if-no-files-found: warn
