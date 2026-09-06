@@ -22,7 +22,7 @@ function available(bin = 'codex') {
 function sandboxFlags(sandboxPolicy) {
   if (sandboxPolicy === 'read-only') return ['--sandbox', 'read-only'];
   if (sandboxPolicy === 'danger-full-access') return ['--dangerously-bypass-approvals-and-sandbox'];
-  // `--full-auto` is deprecated in 0.142.x and absent from `codex exec --help`.
+  // `--full-auto` is deprecated and absent from `codex exec --help` in every proved build.
   return ['--sandbox', 'workspace-write'];
 }
 

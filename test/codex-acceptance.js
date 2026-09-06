@@ -357,15 +357,18 @@ async function providerLane({ lane, alice, bob, rt, project, env, model, taps, d
     };
   });
 
-  await check(C1, tag('approval-during-codex-work'), async () => ({
-    status: 'blocked',
-    detail: '`codex exec` runs its own commands inside its own sandbox and emits no approval request, so no teammate decision is possible for those commands',
-    evidence: {
-      provedInstead: 'the harness-owned tool path does route a bounded approval to a second human (see approval-gated-side-effect)',
-      alternative: '`codex app-server` carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (experimental in 0.142.x)',
-      interimControl: 'run the Codex adapter with sandbox read-only so Codex cannot write or reach the network without the harness'
-    }
-  }));
+  await check(C1, tag('approval-during-codex-work'), async () => {
+    // The probe owns the wording of this gap; restating it here only lets the two drift.
+    const gap = probeMod.probe().blockers.find((b) => b.id === 'exec-approvals-not-routable');
+    return {
+      status: 'blocked',
+      detail: gap.detail,
+      evidence: {
+        provedInstead: 'the harness-owned tool path does route a bounded approval to a second human (see approval-gated-side-effect)',
+        alternative: gap.alternative
+      }
+    };
+  });
 
   await check(C3, tag('auth-mode-exercised'), async () => {
     const auth = probeMod.authStatus(probeMod.resolveCodex(), env);
@@ -424,8 +427,8 @@ function laneEnv(lane, probe, tmp) {
   await check(C4, 'version-pinned', async () => ({
     status: probe.versionMatchesTested ? 'pass' : 'info',
     detail: probe.versionMatchesTested
-      ? `running the pinned, tested Codex ${probe.tested.version}`
-      : `running Codex ${probe.version}; this adapter was proved against ${probe.tested.version}`,
+      ? `running Codex ${probe.version}, one of the builds this adapter is proved against (${probe.tested.versions.join(', ')})`
+      : `running Codex ${probe.version}; this adapter has been proved against ${probe.tested.versions.join(', ')}`,
     evidence: { tested: probe.tested, found: probe.version }
   }));
   await check(C4, 'platform-prerequisites', async () => ({
@@ -551,7 +554,7 @@ function writeMatrix({ probe, lanes, taps }) {
     '[`codex-acceptance-provider.jsonl`](codex-acceptance-provider.jsonl).',
     '',
     `- Host: ${probe.platform.os}/${probe.platform.arch}, Node ${probe.platform.node}`,
-    `- Codex CLI: **${probe.version}** (tested against ${probe.tested.version}), resolved as ${probe.resolved.kind}`,
+    `- Codex CLI: **${probe.version}** (proved against ${probe.tested.versions.join(', ')}), resolved as ${probe.resolved.kind}`,
     `- Auth mode: **${probe.auth.mode}**`,
     `- Lanes: ${Object.entries(lanes).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`,
     `- Provider event lines captured: ${taps.length}`,

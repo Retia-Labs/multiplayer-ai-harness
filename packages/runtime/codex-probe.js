@@ -12,9 +12,14 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-// The CLI this adapter has actually been proved against. `probe()` reports drift rather
-// than failing: a newer CLI usually works, but the event vocabulary is not contractual.
-const TESTED = { version: '0.142.1', events: 'codex exec --json (thread/turn/item JSONL)' };
+// The CLI builds this adapter has actually been proved against, oldest first. `probe()`
+// reports drift rather than failing: a newer CLI usually works, but the event vocabulary is
+// not contractual, so anything outside this list is unproven rather than unsupported.
+const TESTED = {
+  versions: ['0.142.1', '0.153.4'],
+  get newest() { return this.versions[this.versions.length - 1]; },
+  events: 'codex exec --json (thread/turn/item JSONL)'
+};
 
 // `codex exec` flags this adapter depends on, and why.
 const REQUIRED_FLAGS = {
@@ -59,15 +64,31 @@ function vendoredBinary(shimPaths) {
 
 // -> { ok, bin, prefix, kind, path }; the command to run is [bin, ...prefix, ...args].
 function resolveCodex(bin = process.env.CODEX_BIN || 'codex') {
-  if (bin !== 'codex' && fs.existsSync(bin)) return { ok: true, kind: 'explicit', bin, prefix: [], path: bin };
+  if (bin !== 'codex' && fs.existsSync(bin)) return { ok: true, kind: 'explicit', bin, prefix: [], path: bin, hits: [bin] };
   const hits = lookupPaths(bin);
-  if (!hits.length) return { ok: false, kind: 'missing', reason: bin + ' is not on PATH', path: null };
+  if (!hits.length) return { ok: false, kind: 'missing', reason: bin + ' is not on PATH', path: null, hits: [] };
   const native = hits.find((p) => (process.platform === 'win32' ? /\.exe$/i.test(p) : !/\.(cmd|ps1)$/i.test(p)));
-  if (native) return { ok: true, kind: 'native', bin: native, prefix: [], path: native };
+  if (native) return { ok: true, kind: 'native', bin: native, prefix: [], path: native, hits };
   const vendored = vendoredBinary(hits);
-  if (vendored) return { ok: true, kind: 'vendored', bin: vendored, prefix: [], path: vendored };
+  if (vendored) return { ok: true, kind: 'vendored', bin: vendored, prefix: [], path: vendored, hits };
   const shim = hits.find((p) => /\.cmd$/i.test(p)) || hits[0];
-  return { ok: true, kind: 'cmd-shim', bin: process.env.COMSPEC || 'cmd.exe', prefix: ['/d', '/s', '/c', shim], path: shim };
+  return { ok: true, kind: 'cmd-shim', bin: process.env.COMSPEC || 'cmd.exe', prefix: ['/d', '/s', '/c', shim], path: shim, hits };
+}
+
+// A machine can carry several global npm prefixes (nvm switches, an old install left on
+// PATH). PATH order then decides which Codex runs, and an upgrade can appear to do nothing
+// because the newer binary is shadowed by an older one earlier on PATH.
+function shadowedInstalls(resolved) {
+  const seen = [];
+  for (const hit of resolved.hits || []) {
+    const dir = path.dirname(hit);
+    const cand = vendoredBinary([hit]) || (/\.exe$/i.test(hit) ? hit : null);
+    if (!cand || seen.some((s) => s.binary === cand)) continue;
+    const v = version({ bin: cand, prefix: [] });
+    seen.push({ prefix: dir, binary: cand, version: v });
+  }
+  const versions = [...new Set(seen.map((s) => s.version).filter(Boolean))];
+  return { installs: seen, conflicting: versions.length > 1, versions };
 }
 
 function runCodex(resolved, args, { timeout = 20000 } = {}) {
@@ -139,8 +160,8 @@ function execCapabilities(resolved) {
     resumeAccepts: { cd: resumeHelp.includes('--cd'), sandbox: resumeHelp.includes('--sandbox'), model: resumeHelp.includes('--model'), json: resumeHelp.includes('--json') },
     ephemeral: has('--ephemeral'),
     outputLastMessage: has('--output-last-message'),
-    // Present in older builds, dropped from `exec --help` in 0.142.x with a runtime
-    // deprecation warning. The adapter must not depend on it.
+    // Present in older builds, dropped from `exec --help` with a runtime deprecation
+    // warning. The adapter must not depend on it.
     fullAuto: has('--full-auto'),
     // `codex exec` applies its own sandbox and never asks the caller: approval requests
     // exist only on the app-server protocol.
@@ -166,14 +187,24 @@ function probe({ bin } = {}) {
   const auth = authStatus(resolved);
   const models = entitledModels();
   const capabilities = execCapabilities(resolved);
+  const shadowing = shadowedInstalls(resolved);
   const blockers = [];
+
+  if (shadowing.conflicting) {
+    const newest = shadowing.installs.slice().sort((a, b) => String(b.version).localeCompare(String(a.version), undefined, { numeric: true }))[0];
+    blockers.push({
+      id: 'shadowed-install',
+      detail: 'PATH carries ' + shadowing.versions.join(' and ') + ' of the Codex CLI from different npm prefixes; the first one wins, so `codex update` can appear to do nothing.',
+      alternative: 'Remove the stale prefix from PATH, or set CODEX_BIN=' + (newest ? newest.binary : '<newest codex binary>') + ' so the runtime pins the intended build.'
+    });
+  }
 
   for (const [flag, why] of Object.entries(REQUIRED_FLAGS)) {
     if (!capabilities.flags[flag]) {
       blockers.push({
         id: 'missing-flag:' + flag,
         detail: 'codex exec ' + flag + " is not in this build's help (needed to " + why + ').',
-        alternative: 'Pin Codex ' + TESTED.version + ', which supports it.'
+        alternative: 'Pin Codex ' + TESTED.newest + ', which supports it.'
       });
     }
   }
@@ -194,20 +225,20 @@ function probe({ bin } = {}) {
   blockers.push({
     id: 'exec-approvals-not-routable',
     detail: '`codex exec` enforces its own sandbox and never emits an approval request, so a teammate cannot approve a command Codex itself runs.',
-    alternative: 'Drive Codex through `codex app-server`, whose protocol carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (experimental in 0.142.x). Until then run --sandbox read-only so nothing escapes without the harness.'
+    alternative: 'Drive Codex through `codex app-server`, whose protocol carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (still experimental as of 0.153.4). Until then run --sandbox read-only so nothing escapes without the harness.'
   });
 
   return {
     resolved: { kind: resolved.kind, path: resolved.path, bin: resolved.bin, prefix: resolved.prefix },
     version: found,
     tested: TESTED,
-    versionMatchesTested: found === TESTED.version,
+    versionMatchesTested: TESTED.versions.includes(found),
     platform: { os: process.platform, arch: process.arch, node: process.version, release: os.release() },
-    auth, models, capabilities, blockers
+    auth, models, capabilities, shadowing, blockers
   };
 }
 
 module.exports = {
-  resolveCodex, probe, authStatus, entitledModels, execCapabilities, version,
+  resolveCodex, probe, shadowedInstalls, authStatus, entitledModels, execCapabilities, version,
   runCodex, tryRunCodex, codexHome, TESTED, REQUIRED_FLAGS
 };

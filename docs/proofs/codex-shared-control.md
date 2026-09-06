@@ -47,14 +47,25 @@ concrete thing an operator must do, or the supported alternative to use instead.
 
 | | |
 | --- | --- |
-| Codex CLI | **0.142.1** (`codex-cli 0.142.1`) |
+| Codex CLI | **0.142.1** and **0.153.4** — the whole matrix was re-run on both |
 | Event vocabulary | `codex exec --json` — `thread.started`, `turn.started/completed/failed`, `item.started/updated/completed`, `error` |
 | Proved on | Windows 11 (10.0.26200) x64, Node v24.20.0 |
-| Auth used | ChatGPT subscription login (`codex login status` → *Logged in using ChatGPT*) |
+| Auth used | ChatGPT subscription login (`codex login status` → *Logged in using ChatGPT*), and an API key in an isolated `CODEX_HOME` |
 
-`probe()` reports version drift rather than failing on it: a newer CLI usually works, but
-the JSONL event vocabulary is not a contract and a translator built on it must be re-proved
-per version.
+The contract below held **unchanged across that eleven-minor-version jump**: the same four
+`codex exec` flags, the same reduced `resume` option set, the same absent `--full-auto`, and
+the same JSONL event vocabulary. That is evidence the adapter is not pinned to one lucky
+build — but it is not a guarantee. `probe()` reports any version outside the proved list as
+drift rather than failing on it, because the JSONL event vocabulary is not a contract and a
+translator built on it must be re-proved per release.
+
+**A machine can carry more than one Codex, and the older one can win.** This host had two
+global npm prefixes — a leftover `%APPDATA%/npm` and nvm4w's `C:/nvm4w/nodejs`. `npm
+install -g` correctly wrote 0.153.4 into the latter, but the former came first on PATH, so
+`codex update` reported success while every invocation kept running 0.142.1. The probe now
+resolves each PATH hit to its own binary, compares versions, and raises a `shadowed-install`
+blocker naming the exact `CODEX_BIN` that pins the intended build. A runtime that did not
+check this would report the wrong version in its own proof.
 
 **Windows is the constraining platform, and it needed real fixes:**
 
@@ -86,8 +97,8 @@ codex exec resume --json --skip-git-repo-check [-m <model>] <session-id> <prompt
 
 Three constraints found the hard way, each now covered by a test:
 
-1. **`--full-auto` is deprecated** and absent from `codex exec --help` in 0.142.x. The
-   adapter sends `--sandbox workspace-write` instead.
+1. **`--full-auto` is deprecated** and absent from `codex exec --help` in both proved
+   builds. The adapter sends `--sandbox workspace-write` instead.
 2. **`codex exec resume` takes a much smaller option set** than `codex exec` — it has no
    `--cd` and no `--sandbox`, because the working root and sandbox policy come from the
    recorded session. Passing either is a hard parse error that fails the whole turn. Resume
@@ -183,7 +194,7 @@ that mechanism is proved — but it does not cover commands Codex executes inter
 *Concrete alternative:* drive Codex through **`codex app-server`**, whose protocol carries
 `CommandExecutionRequestApproval`, `FileChangeRequestApproval` and `ApplyPatchApproval`, with
 `accept | acceptForSession | decline | cancel` decisions — the same vocabulary
-`packages/protocol/index.js` already speaks. It is marked experimental in 0.142.x, so
+`packages/protocol/index.js` already speaks. It is still marked experimental in 0.153.4, so
 adopting it is a scoped decision for the production adapter, not a drop-in.
 
 *Interim control:* run the Codex adapter with `--sandbox read-only`, so Codex cannot write

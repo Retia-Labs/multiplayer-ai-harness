@@ -1,6 +1,6 @@
 {
   "issue": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/2",
-  "ranAt": "2026-09-05T18:19:49.581Z",
+  "ranAt": "2026-09-06T01:04:29.276Z",
   "host": {
     "os": "win32",
     "arch": "x64",
@@ -8,15 +8,19 @@
     "release": "10.0.26200"
   },
   "codex": {
-    "version": "0.142.1",
+    "version": "0.153.4",
     "tested": {
-      "version": "0.142.1",
+      "versions": [
+        "0.142.1",
+        "0.153.4"
+      ],
+      "newest": "0.153.4",
       "events": "codex exec --json (thread/turn/item JSONL)"
     },
     "resolution": {
-      "kind": "vendored",
-      "path": "C:\\Users\\tkala\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
-      "bin": "C:\\Users\\tkala\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+      "kind": "explicit",
+      "path": "C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+      "bin": "C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
       "prefix": []
     },
     "auth": {
@@ -27,17 +31,12 @@
     },
     "models": {
       "models": [
-        "gpt-6-astra",
-        "gpt-reserve",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-5.4-mini",
         "codex-auto-review"
       ],
-      "cachedForClient": "0.153.0",
-      "fetchedAt": "2026-09-05T18:18:55.754452200Z"
+      "cachedForClient": "0.142.1",
+      "fetchedAt": "2026-09-06T01:02:51.908249600Z"
     },
     "capabilities": {
       "flags": {
@@ -68,13 +67,13 @@
   "blockers": [
     {
       "id": "model-cache-drift",
-      "detail": "The account's model list was cached for Codex 0.153.0, but this host runs 0.142.1; the service rejects models this build cannot describe.",
-      "alternative": "Upgrade the CLI to 0.153.0, or pin a model this build can run with --model."
+      "detail": "The account's model list was cached for Codex 0.142.1, but this host runs 0.153.4; the service rejects models this build cannot describe.",
+      "alternative": "Upgrade the CLI to 0.142.1, or pin a model this build can run with --model."
     },
     {
       "id": "exec-approvals-not-routable",
       "detail": "`codex exec` enforces its own sandbox and never emits an approval request, so a teammate cannot approve a command Codex itself runs.",
-      "alternative": "Drive Codex through `codex app-server`, whose protocol carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (experimental in 0.142.x). Until then run --sandbox read-only so nothing escapes without the harness."
+      "alternative": "Drive Codex through `codex app-server`, whose protocol carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (still experimental as of 0.153.4). Until then run --sandbox read-only so nothing escapes without the harness."
     }
   ],
   "providerAcknowledgments": 23,
@@ -83,11 +82,11 @@
       "criterion": "AC4 version & prerequisites",
       "id": "codex-resolvable",
       "status": "pass",
-      "detail": "resolved the Codex binary as vendored at C:\\Users\\tkala\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+      "detail": "resolved the Codex binary as explicit at C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
       "evidence": {
-        "kind": "vendored",
-        "path": "C:\\Users\\tkala\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
-        "bin": "C:\\Users\\tkala\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+        "kind": "explicit",
+        "path": "C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
+        "bin": "C:/nvm4w/nodejs/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe",
         "prefix": []
       }
     },
@@ -95,13 +94,17 @@
       "criterion": "AC4 version & prerequisites",
       "id": "version-pinned",
       "status": "pass",
-      "detail": "running the pinned, tested Codex 0.142.1",
+      "detail": "running Codex 0.153.4, one of the builds this adapter is proved against (0.142.1, 0.153.4)",
       "evidence": {
         "tested": {
-          "version": "0.142.1",
+          "versions": [
+            "0.142.1",
+            "0.153.4"
+          ],
+          "newest": "0.153.4",
           "events": "codex exec --json (thread/turn/item JSONL)"
         },
-        "found": "0.142.1"
+        "found": "0.153.4"
       }
     },
     {
@@ -137,13 +140,13 @@
       "evidence": [
         {
           "id": "model-cache-drift",
-          "detail": "The account's model list was cached for Codex 0.153.0, but this host runs 0.142.1; the service rejects models this build cannot describe.",
-          "alternative": "Upgrade the CLI to 0.153.0, or pin a model this build can run with --model."
+          "detail": "The account's model list was cached for Codex 0.142.1, but this host runs 0.153.4; the service rejects models this build cannot describe.",
+          "alternative": "Upgrade the CLI to 0.142.1, or pin a model this build can run with --model."
         },
         {
           "id": "exec-approvals-not-routable",
           "detail": "`codex exec` enforces its own sandbox and never emits an approval request, so a teammate cannot approve a command Codex itself runs.",
-          "alternative": "Drive Codex through `codex app-server`, whose protocol carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (experimental in 0.142.x). Until then run --sandbox read-only so nothing escapes without the harness."
+          "alternative": "Drive Codex through `codex app-server`, whose protocol carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (still experimental as of 0.153.4). Until then run --sandbox read-only so nothing escapes without the harness."
         }
       ]
     },
@@ -158,11 +161,6 @@
         "codexHome": "C:\\Users\\tkala\\.codex",
         "openaiApiKeyPresentInEnv": true,
         "entitledModels": [
-          "gpt-6-astra",
-          "gpt-reserve",
-          "gpt-5.6-sol",
-          "gpt-5.6-terra",
-          "gpt-5.6-luna",
           "gpt-5.5",
           "gpt-5.4-mini",
           "codex-auto-review"
@@ -179,7 +177,7 @@
       "detail": "client-generated command ids are unique and echoed back on the result",
       "evidence": {
         "sampled": 50,
-        "exampleId": "cmd_802h2p85xgc",
+        "exampleId": "cmd_55g2mdlt8an",
         "ok": true
       }
     },
@@ -189,9 +187,9 @@
       "status": "pass",
       "detail": "the same command identity sent twice ran once and replayed the original result",
       "evidence": {
-        "commandId": "cmd_retry_1788632350813",
+        "commandId": "cmd_retry_1788656628819",
         "threadsCreated": 1,
-        "threadId": "thr_5a5d80751a659c8b",
+        "threadId": "thr_ad243e98582fdda4",
         "duplicateFlag": true
       }
     },
@@ -201,7 +199,7 @@
       "status": "pass",
       "detail": "a steer carrying a stale expectedTurnId is refused: expectedTurnId does not match the active turn",
       "evidence": {
-        "activeTurnId": "turn_fca30752d317",
+        "activeTurnId": "turn_0681dd2d7f8b",
         "sentExpectedTurnId": "turn_stale_000",
         "error": "expectedTurnId does not match the active turn"
       }
@@ -212,7 +210,7 @@
       "status": "pass",
       "detail": "bob's steer landed inside alice's turn, attributed, with delivery=inline",
       "evidence": {
-        "turnId": "turn_fca30752d317",
+        "turnId": "turn_0681dd2d7f8b",
         "delivery": "inline",
         "attributedTo": "bob",
         "seq": 19
@@ -224,7 +222,7 @@
       "status": "pass",
       "detail": "two humans resolved the same approval at once; exactly one outcome was authoritative (accept by bob)",
       "evidence": {
-        "requestId": "req_a0213a5546aa",
+        "requestId": "req_c3b40261ce0a",
         "accepted": 1,
         "decision": "accept",
         "by": "bob",
@@ -268,9 +266,9 @@
       "criterion": "AC1 shared control",
       "id": "real-turn-start[subscription]",
       "status": "pass",
-      "detail": "codex acknowledged thread 01a072cb-c799-7893-b00a-367de0ca5723 and completed the turn (completed)",
+      "detail": "codex acknowledged thread 01a0743e-39de-77b1-853d-15265f96b485 and completed the turn (completed)",
       "evidence": {
-        "providerThreadId": "01a072cb-c799-7893-b00a-367de0ca5723",
+        "providerThreadId": "01a0743e-39de-77b1-853d-15265f96b485",
         "turnStatus": "completed",
         "providerEventTypes": [
           "thread.started",
@@ -281,8 +279,8 @@
         ],
         "providerRanACommand": true,
         "usage": {
-          "input": 45119,
-          "output": 272
+          "input": 45025,
+          "output": 293
         }
       }
     },
@@ -300,26 +298,26 @@
       "criterion": "AC1 shared control",
       "id": "steer-reaches-provider[subscription]",
       "status": "pass",
-      "detail": "the steer reached Codex as a resumed turn on session 01a072cb-c799-7893-b00a-367de0ca5723 (delivery=nextProviderTurn, provider echoed BETA: true)",
+      "detail": "the steer reached Codex as a resumed turn on session 01a0743e-39de-77b1-853d-15265f96b485 (delivery=nextProviderTurn, provider echoed BETA: true)",
       "evidence": {
         "delivery": "nextProviderTurn",
         "providerThreadStarts": [
-          "01a072cb-c799-7893-b00a-367de0ca5723",
-          "01a072cb-c799-7893-b00a-367de0ca5723"
+          "01a0743e-39de-77b1-853d-15265f96b485",
+          "01a0743e-39de-77b1-853d-15265f96b485"
         ],
         "echoedBeta": true,
-        "providerText": "I’m going to print `sample.txt` from the workspace now, then I’ll პასუხ with the exact requested token.\nREADY\nBETA"
+        "providerText": "I’ll print `sample.txt` from the current workspace, then return exactly `READY`.\nREADY\nBETA"
       }
     },
     {
       "criterion": "AC1 shared control",
       "id": "provider-resume[subscription]",
       "status": "pass",
-      "detail": "a second turn explicitly resumed Codex session 01a072cb-c799-7893-b00a-367de0ca5723 instead of starting a new one",
+      "detail": "a second turn explicitly resumed Codex session 01a0743e-39de-77b1-853d-15265f96b485 instead of starting a new one",
       "evidence": {
-        "codexSessionId": "01a072cb-c799-7893-b00a-367de0ca5723",
+        "codexSessionId": "01a0743e-39de-77b1-853d-15265f96b485",
         "secondTurnThreadIds": [
-          "01a072cb-c799-7893-b00a-367de0ca5723"
+          "01a0743e-39de-77b1-853d-15265f96b485"
         ],
         "secondTurnStatus": "completed",
         "handleLeftRuntime": false
@@ -334,7 +332,7 @@
         "interruptedBy": "bob",
         "turnStatus": "interrupted",
         "providerPids": [
-          25456
+          24788
         ],
         "survivingPids": []
       }
@@ -367,9 +365,9 @@
       "criterion": "AC1 shared control",
       "id": "real-turn-start[api]",
       "status": "pass",
-      "detail": "codex acknowledged thread 01a072cc-31b4-74b1-8f26-bf4cbc892a12 and completed the turn (completed)",
+      "detail": "codex acknowledged thread 01a0743e-afb0-72d2-accd-74dce272d6cf and completed the turn (completed)",
       "evidence": {
-        "providerThreadId": "01a072cc-31b4-74b1-8f26-bf4cbc892a12",
+        "providerThreadId": "01a0743e-afb0-72d2-accd-74dce272d6cf",
         "turnStatus": "completed",
         "providerEventTypes": [
           "thread.started",
@@ -380,8 +378,8 @@
         ],
         "providerRanACommand": true,
         "usage": {
-          "input": 27560,
-          "output": 67
+          "input": 27530,
+          "output": 65
         }
       }
     },
@@ -412,7 +410,7 @@
       "evidence": {
         "lane": "api",
         "authMode": "apikey",
-        "codexHome": "C:\\Users\\tkala\\AppData\\Local\\Temp\\codex-acceptance-AQY9pB\\codex-home-api",
+        "codexHome": "C:\\Users\\tkala\\AppData\\Local\\Temp\\codex-acceptance-sWSD81\\codex-home-api",
         "usageOwner": "the OpenAI API account behind OPENAI_API_KEY (billed per token, separate from any subscription)",
         "model": "the CLI default for this account"
       }
