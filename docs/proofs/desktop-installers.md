@@ -43,8 +43,14 @@ anywhere on it - the hub starts, the execution host registers, and `/api/health`
 | Platform | Targets | Arch | Built here |
 | --- | --- | --- | --- |
 | Windows 10/11 | `nsis` installer, `portable` | x64, arm64 (nsis); x64 (portable) | yes |
-| macOS 11+ | `dmg`, `zip` | arm64, x64 | **no - needs a Mac** |
+| macOS 13+ (Ventura) | `dmg`, `zip` | arm64, x64 | **no - needs a Mac** |
 | Linux | `AppImage` | x64 | not exercised |
+
+macOS 13 is Electron 44's floor, not a preference. `Electron.app/Contents/Info.plist` in
+`electron-v44.2.0-darwin-arm64.zip` and `-x64.zip` declares `LSMinimumSystemVersion 13.0`,
+and `build.mac` sets no `minimumSystemVersion`, so the packaged app inherits it. This row
+read `macOS 11+` until it was corrected: 11.0 is what Electron 33 declared, and the number
+did not follow the upgrade (Electron 43 declares 12.0, 44 declares 13.0).
 
 **Prerequisites for a user:** none beyond the OS. No Node, no terminal, no checkout. The
 runtime shells out to a system shell only when an *agent* runs a command, and to `codex` or
