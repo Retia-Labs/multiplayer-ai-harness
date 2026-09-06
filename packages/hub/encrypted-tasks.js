@@ -2,8 +2,8 @@
 const { TASK_ID, PROJECT_ID, VERSION, canonical, exact, validRequest, validRecord, matrixUser, integer } = require('../protocol/encrypted-task.mjs');
 const problem = (code, status=400) => Object.assign(new Error(code), {code,status});
 class EncryptedTasks {
-  constructor(store) {
-    this.store=store; this.db=store.db;
+  constructor(store,enrollment) {
+    this.store=store; this.db=store.db; this.enrollment=enrollment;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS encrypted_tasks(id TEXT PRIMARY KEY, team_id TEXT NOT NULL, runtime_id TEXT NOT NULL, project_id TEXT NOT NULL, creator_id TEXT NOT NULL, version INTEGER NOT NULL, request TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS encrypted_task_events(task_id TEXT NOT NULL, seq INTEGER NOT NULL, event_id TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(task_id,seq), UNIQUE(task_id,event_id));
@@ -31,6 +31,8 @@ class EncryptedTasks {
       return {task:existing,duplicate:true};
     }
     this.db.prepare('INSERT INTO encrypted_tasks VALUES (?,?,?,?,?,?,?)').run(value.id,value.teamId,value.runtimeId,value.projectId,user.id,VERSION,canonical(value.request));
+    // Creating a task in a project is what makes its creator that project's owner.
+    this.enrollment.ownProject(value.teamId,value.projectId,user.id);
     return {task,duplicate:false};
   }
   append(task,record) {
@@ -64,7 +66,12 @@ class EncryptedTasks {
   authorize(principal,task) {
     if (principal.runtimeId) {
       if (principal.runtimeId!==task.runtimeId || principal.teamId!==task.teamId) throw problem('foreign_runtime',403);
-    } else if (!this.store.membership(task.teamId,principal.user.id)) throw problem('not_a_member',403);
+    } else {
+      if (!this.store.membership(task.teamId,principal.user.id)) throw problem('not_a_member',403);
+      // Team membership gets an account into the team, not into a project's ciphertext.
+      // A task id copied out of a private link stops here.
+      if (!this.enrollment.participant(task.teamId,task.projectId,principal.user.id)) throw problem('not_a_project_participant',403);
+    }
   }
   async handle(req,res,url) {
     const reply=(status,value)=>{res.writeHead(status,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(value));};
@@ -76,7 +83,9 @@ class EncryptedTasks {
         if (principal.runtimeId ? teamId!==principal.teamId : !this.store.membership(teamId,principal.user.id)) throw problem('not_a_member',403);
         const rows=principal.runtimeId ? this.db.prepare('SELECT id FROM encrypted_tasks WHERE team_id=? AND runtime_id=?').all(teamId,principal.runtimeId) :
           this.db.prepare('SELECT id FROM encrypted_tasks WHERE team_id=?').all(teamId);
-        return reply(200,{tasks:rows.map(({id})=>this.get(id))});
+        const tasks=rows.map(({id})=>this.get(id)).filter((task)=>principal.runtimeId ||
+          this.enrollment.participant(teamId,task.projectId,principal.user.id));
+        return reply(200,{tasks});
       }
       let body;
       if (req.method==='POST') {

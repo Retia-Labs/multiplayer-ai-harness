@@ -9,7 +9,7 @@
     "runtime": "node packages/runtime/index.js",
     "desktop": "electron apps/desktop/main.js",
     "codex-clone": "electron src/main/main.js",
-    "test": "npm run test:protocol && npm run test:unit && npm run test:team && npm run test:codex && npm run test:e2e && npm run test:encrypted-task",
+    "test": "npm run test:protocol && npm run test:unit && npm run test:team && npm run test:codex && npm run test:e2e && npm run test:encrypted-task && npm run test:teammate-enrollment",
     "test:protocol": "node test/protocol-smoke.js",
     "test:unit": "node test/unit.js",
     "test:e2e": "node test/e2e-multiplayer.js",
@@ -32,7 +32,10 @@
     "test:e2ee:platform": "node scripts/e2ee-platform-proof.js",
     "test:encrypted-task:node": "node test/encrypted-task.js",
     "test:encrypted-task:browser": "node test/encrypted-task-browser.js",
-    "test:encrypted-task": "npm run test:encrypted-task:node && npm run test:encrypted-task:browser"
+    "test:encrypted-task": "npm run test:encrypted-task:node && npm run test:encrypted-task:browser",
+    "test:teammate-enrollment:node": "node test/teammate-enrollment.js",
+    "test:teammate-enrollment:browser": "node test/teammate-enrollment-browser.js",
+    "test:teammate-enrollment": "npm run test:teammate-enrollment:node && npm run test:teammate-enrollment:browser"
   },
   "license": "MIT",
   "devDependencies": {

@@ -12,8 +12,10 @@ The real hub now provides `/api/encrypted-tasks` and
 A verified endpoint encrypts an objective to a pinned execution-host device with Olm.
 A paired host validates the authenticated creator, task routing and its own local
 opaque-project-to-workspace mapping. It then produces a versioned Megolm event log.
-Only that paired runtime credential can append. Team members may retrieve ciphertext;
-membership is not cryptographic enrollment.
+Only that paired runtime credential can append. Team membership is not cryptographic
+enrollment, and since [#8](teammate-enrollment.md) it is no longer retrieval either:
+fetching a task's ciphertext requires a project grant, and a team member without one is
+refused at the relay.
 
 The host opts into `encryptedTasksOnly: true` (or CLI `--encrypted-tasks-only` /
 `runtime.json` configuration). Its fleet descriptor exposes `taskProtocol: encrypted-v1`
@@ -58,8 +60,10 @@ application ordering/integrity framing authenticated by the SDK's Megolm encrypt
 not an application cryptographic primitive. Readers check the confirmed writer's
 user/device/fingerprints and SDK provenance. Account cross-signing warnings can be
 resolved by the explicit device pin; unknown, mismatched or unauthenticated imported
-session provenance cannot. Recovery/imported-history authentication remains subject
-to the #3/#8 review and enrollment contracts.
+session provenance cannot. Imported-session authentication is settled by
+[#8's enrolment contract](teammate-enrollment.md): an imported session is readable only for
+the session ids delivered by a handoff the receiving endpoint opened itself, sealed by a
+fingerprint it had already confirmed. #3's review gate still applies.
 
 ## Replay and retry behavior
 
