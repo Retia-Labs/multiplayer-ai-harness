@@ -130,6 +130,9 @@ class KeyDirectory {
       deviceKeys: [...this.deviceKeys].map(([u, d]) => [u, [...d]]),
       oneTimeKeys: [...this.oneTimeKeys].map(([u, d]) => [u, [...d]]),
       mailboxes: [...this.mailboxes],
+      crossSigning: [...(this.crossSigning || new Map())],
+      signatures: this.signatures || [],
+      revoked: [...this.revoked],
       audit: this.audit
     });
   }
