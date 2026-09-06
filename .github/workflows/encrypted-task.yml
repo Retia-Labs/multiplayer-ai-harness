@@ -24,7 +24,10 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - if: runner.os == 'Linux'
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - if: runner.os == 'Windows'
+        run: node node_modules/playwright-core/cli.js install chromium
       - run: npm run test:encrypted-task
       - run: npm run test:protocol
       - run: npm run test:unit

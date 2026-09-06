@@ -91,7 +91,7 @@ recovery and provider execution resumption are not simulated.
 ## Reproduce
 
 Use Node 24 or newer and `npm ci`. Install a browser with
-`node node_modules/playwright-core/cli.js install --with-deps chromium`,
+`node node_modules/playwright-core/cli.js install chromium` (add `--with-deps` on Linux),
 or set `CHROMIUM_PATH` to a local Chromium-family executable.
 
 - `npm run test:encrypted-task:node`: real hub/runtime pairing, all fixture content,
