@@ -42,6 +42,7 @@ Customer-facing descriptions must state these boundaries.
 | Old membership snapshot replay/rollback | Random reconnect challenge, persisted monotonic epoch, superseded-challenge refusal | Compromised pinned owner remains authoritative; succession/quorum outside scope |
 | Removed device receives later ciphertext | Rotate and share only to remaining endpoints | Old keys/plaintext remain; application rotation is not MLS post-compromise security |
 | Stolen/modified recovery backup | SDK authenticated export with customer-only random secret; scope enforcement | Losing all recovery methods loses history; no operator override |
+| Recovery material used on later same-session messages | Exported session keys can decrypt those messages; the test explicitly demonstrates this | Recovery scope is per project/session, not per backup timestamp; rotate and exclude the device to block subsequent sessions |
 | Backup rollback/deletion | Cannot expand history or restore identity/grants | Can hide recent history; backup freshness/availability not proved |
 | Stolen/corrupt local store | Encrypted IndexedDB, OS-wrapped desktop key, fail-closed unlock | Same-account malware, OS compromise or malicious browser code can decrypt |
 | Relay memory/database/log scan | Endpoint-only plaintext; scan directory, mailboxes, logs, SQLite/WAL for canaries | Metadata remains; scans are not exhaustive information-flow analysis |

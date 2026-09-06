@@ -24,3 +24,30 @@ Reports contain no recovery secret or test plaintext.
 This is isolated from the production hub. Browser coverage is Chromium, not Safari or
 Firefox. Packaged checks use unsigned unpacked apps; installer distribution, notarization
 and update signing remain release gates.
+
+## PR #35 author-assisted review (Codex, 2026-09-06)
+
+Reviewed `d78d16d2b5b491eea3fb48a655f21d11436da23c` and the follow-up changes for
+endpoint trust, project key recipients, authenticated sender binding, durable grant
+consumption, membership/receipt races, recovery scope, desktop IPC/storage, relay
+isolation and consistency between the evidence and threat model. This is an AI-assisted
+code review of the author's work, not independent qualified cryptographic review.
+
+Findings addressed before merge:
+
+- The test launched Electron with `--no-sandbox`, so the original packaged reports
+  did not establish the claimed sandbox configuration. Removed that override; the test
+  now checks sandbox enabled, context isolation enabled, Node integration disabled and
+  absence of the override. Electron documents the flag's effect in its
+  [sandbox guide](https://www.electronjs.org/docs/latest/tutorial/sandbox).
+- The tamper probe changed the export's format/version byte. It now changes encrypted
+  payload bytes while preserving the header/version, exercising integrity rejection.
+- Recovery scope needed an explicit temporal boundary. Added a test and documentation
+  showing that recovered keys read later messages in the same session while still
+  excluding rotated sessions and other projects.
+
+The historical platform JSON above is retained unchanged. The follow-up revision must
+pass packaged Windows/macOS CI before merge; its exact commit and CI disposition are
+recorded in the PR review. No production crypto integration or UI change is introduced.
+Independent qualified review remains tracked by issue #3 rather than being represented
+as completed by this author-assisted review.

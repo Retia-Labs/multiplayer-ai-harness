@@ -47,6 +47,12 @@ alone. Wrong keys, modified backups and unexpected project scopes fail closed. R
 does not restore identity, trust, delegation, host state or consumed grants. The older
 backup-key import probe is not the history recovery proof.
 
+Recovery scope is a set of project sessions, not a time-bounded snapshot. An exported
+Megolm session key also decrypts later messages in that same session. Only rotation and
+exclusion from subsequent key shares establish the tested future-content boundary.
+The complete test explicitly checks both same-session readability and post-rotation
+exclusion, consistent with the [Megolm ratchet specification](https://spec.matrix.org/v1.17/olm-megolm/megolm/).
+
 Browser IndexedDB uses `StoreHandle.openWithKey` with a customer-held 32-byte unlock key
 supplied in memory, never persisted by the proof in localStorage. Desktop IndexedDB uses a
 random key wrapped by Electron `safeStorage` (Windows DPAPI/macOS Keychain). Its custom

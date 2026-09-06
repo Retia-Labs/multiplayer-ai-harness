@@ -47,7 +47,7 @@ async function desktopEndpoint(config) {
   desktop = await electron.launch({ cwd: root,
     executablePath: process.env.E2EE_DESKTOP_EXECUTABLE || undefined,
     args: [...(process.env.E2EE_DESKTOP_EXECUTABLE ? [] : ['packages/e2ee/desktop-proof-main.js']),
-      '--user-data-dir=' + path.join(temp, 'desktop'), '--no-sandbox'], env
+      '--user-data-dir=' + path.join(temp, 'desktop')], env
   });
   const page = await desktop.firstWindow();
   await page.waitForFunction(() => globalThis.e2eeProof);
@@ -87,9 +87,18 @@ async function stopDesktop(driver) { await driver.call('close'); await desktop.c
   await stopDesktop(owner); owner = await desktopEndpoint(configs.owner);
   assert.deepEqual(owner.identity, originalOwner);
   assert.equal(await owner.call('isEndpointVerified', alice.identity.user, alice.identity.device), true);
-  const protection = await desktop.evaluate(({ safeStorage, app }) => ({ available: safeStorage.isEncryptionAvailable(),
-    packaged: app.isPackaged, platform: process.platform, electron: process.versions.electron, node: process.versions.node }));
+  const protection = await desktop.evaluate(({ safeStorage, app, BrowserWindow }) => {
+    const preferences = BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences();
+    return { available: safeStorage.isEncryptionAvailable(), packaged: app.isPackaged,
+      platform: process.platform, electron: process.versions.electron, node: process.versions.node,
+      sandbox: preferences.sandbox, contextIsolation: preferences.contextIsolation,
+      nodeIntegration: preferences.nodeIntegration, noSandboxSwitch: app.commandLine.hasSwitch('no-sandbox') };
+  });
   assert.equal(protection.available, true);
+  assert.equal(protection.sandbox, true);
+  assert.equal(protection.contextIsolation, true);
+  assert.equal(protection.nodeIntegration, false);
+  assert.equal(protection.noSandboxSwitch, false);
   if (process.env.E2EE_DESKTOP_EXECUTABLE) assert.equal(protection.packaged, true);
   const wrappedKey = fs.readFileSync(path.join(temp, 'desktop', 'crypto-store-key'));
   assert.ok(wrappedKey.length > 32);
@@ -184,6 +193,7 @@ async function stopDesktop(driver) { await driver.call('close'); await desktop.c
   assert.equal((await alice.call('decryptTask', room, history)).content.text, secret);
   const backup = await alice.call('exportHistory', [room], recoveryKey);
   await alice.transport('backup', 'customer-history', backup);
+  const afterBackup = await owner.call('encryptTask', room, 'plexus.task', { text: 'same-session-after-backup-' + secret });
   ok('real HTTP relay and sqlite hold encrypted tasks/backups; verified devices outside the explicit project membership receive no task key');
 
   // A removed device keeps old plaintext but cannot obtain the newly rotated session,
@@ -221,13 +231,19 @@ async function stopDesktop(driver) { await driver.call('close'); await desktop.c
   const stored = await clean.transport('restore', 'customer-history');
   await rejects(() => clean.call('decryptTask', room, history));
   await rejects(() => clean.call('importHistory', stored.ciphertext, 'wrong-customer-key', [room]));
-  const backupLines = stored.ciphertext.split('\n');
-  backupLines[1] = (backupLines[1][0] === 'A' ? 'B' : 'A') + backupLines[1].slice(1);
+  const backupLines = stored.ciphertext.trim().split(/\r?\n/);
+  // Mutate the encrypted payload, preserving the container header and version.
+  const encoded = backupLines.slice(1, -1).join('');
+  const backupBytes = Buffer.from(encoded, 'base64');
+  assert.ok(backupBytes.length > 128);
+  backupBytes[Math.floor(backupBytes.length / 2)] ^= 1;
+  backupLines.splice(1, backupLines.length - 2, backupBytes.toString('base64'));
   await rejects(() => clean.call('importHistory', backupLines.join('\n'), recoveryKey, [room]));
   await rejects(() => clean.call('importHistory', stored.ciphertext, recoveryKey, [privateRoom]), /recovery_scope_mismatch/);
   const imported = await clean.call('importHistory', stored.ciphertext, recoveryKey, [room]);
   assert.ok(imported.imported > 0);
   assert.equal((await clean.call('decryptTask', room, history)).content.text, secret);
+  assert.equal((await clean.call('decryptTask', room, afterBackup)).content.text, 'same-session-after-backup-' + secret);
   await rejects(() => clean.call('decryptTask', privateRoom, privateHistory));
   await rejects(() => clean.call('decryptTask', room, future));
   await rejects(() => clean.call('sealControl', host.user, host.device, grant), /endpoint_unverified/);
