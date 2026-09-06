@@ -20,6 +20,33 @@ class KeyDirectory {
     return map.get(user);
   }
 
+  // Cross-signing public keys and the signatures endpoints publish about each other.
+  uploadSigningKeys(user, body) {
+    const j = JSON.parse(body || '{}');
+    this.crossSigning = this.crossSigning || new Map();
+    this.crossSigning.set(user, j);
+    return JSON.stringify({});
+  }
+
+  uploadSignatures(body) {
+    const j = JSON.parse(body || '{}');
+    this.signatures = this.signatures || [];
+    this.signatures.push(j);
+    // Signatures are public assertions about public keys, so merge them into the directory.
+    for (const [user, devices] of Object.entries(j)) {
+      for (const [device, payload] of Object.entries(devices || {})) {
+        const held = this._dev(this.deviceKeys, user).get(device);
+        if (held && payload && payload.signatures) {
+          held.signatures = { ...(held.signatures || {}) };
+          for (const [signer, sigs] of Object.entries(payload.signatures)) {
+            held.signatures[signer] = { ...(held.signatures[signer] || {}), ...sigs };
+          }
+        }
+      }
+    }
+    return JSON.stringify({ failures: {} });
+  }
+
   upload(user, device, body) {
     const j = JSON.parse(body);
     if (j.device_keys) this._dev(this.deviceKeys, user).set(device, j.device_keys);
@@ -37,6 +64,7 @@ class KeyDirectory {
 
   query() {
     const device_keys = {};
+    const cs = this.crossSigning || new Map();
     for (const [user, devices] of this.deviceKeys) {
       device_keys[user] = {};
       for (const [device, keys] of devices) {
@@ -44,7 +72,13 @@ class KeyDirectory {
         device_keys[user][device] = keys;
       }
     }
-    return JSON.stringify({ device_keys, failures: {} });
+    const out = { device_keys, failures: {} };
+    for (const [user, keys] of cs) {
+      if (keys.master_key) (out.master_keys = out.master_keys || {})[user] = keys.master_key;
+      if (keys.self_signing_key) (out.self_signing_keys = out.self_signing_keys || {})[user] = keys.self_signing_key;
+      if (keys.user_signing_key) (out.user_signing_keys = out.user_signing_keys || {})[user] = keys.user_signing_key;
+    }
+    return JSON.stringify(out);
   }
 
   claim(body) {
@@ -105,6 +139,8 @@ class KeyTransport {
     if (type === 'KeysUpload') return this.directory.upload(user, device, body);
     if (type === 'KeysQuery') return this.directory.query();
     if (type === 'KeysClaim') return this.directory.claim(body);
+    if (type === 'SigningKeysUpload') return this.directory.uploadSigningKeys(user, body);
+    if (type === 'SignatureUpload') return this.directory.uploadSignatures(body);
     return '{}';
   }
 }

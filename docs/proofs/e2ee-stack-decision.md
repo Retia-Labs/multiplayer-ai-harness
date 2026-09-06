@@ -73,32 +73,25 @@ which is the worst possible failure mode for this product. The envelope is there
 inside `sealTo()` and never left to a caller. The receive path surfaces `decrypted` per
 event, so a `PlainText` or `UnableToDecrypt` event can never be mistaken for an authentic one.
 
-## What this does NOT prove
+## Where the criteria stand
 
-Stated plainly, because the ticket's remaining criteria are not met:
+The full run is `npm run test:e2ee` (18 passed, 3 blocked, 3 recorded, 0 failed), and the
+boundaries are written up in [the threat model](e2ee-threat-model.md).
 
-- **Clean-endpoint recovery.** No recovery key, no restore, no history scope. Criterion 3 is
-  untouched.
-- **Key rotation on membership change.** Revocation here stops future *delivery* through the
-  relay. It does not rotate group state, and Olm/Megolm gives no post-compromise security the
-  way MLS epochs would. A removed device cannot be made to un-know what it already held —
-  that limit is real and belongs in the threat model, not hidden behind a passing test.
-- **Replayed approvals and stale authorization.** Criterion 2 names both; only key
-  substitution and message tampering are covered so far.
-- **Desktop and browser key storage.** No Electron `safeStorage`, no IndexedDB, no packaging
-  check. Criterion 4 is untouched.
-- **The hub is not wired to this.** `KeyDirectory` is in-process. Real thread content still
-  goes through the hub in the clear, and the collision radar and thread names still depend on
-  the hub reading it — that conflict is unresolved and is a product decision, not a coding one.
-- **This is not a security review.** No audit, no qualified reviewer, no formal threat model
-  document yet.
+| Criterion | Status |
+| --- | --- |
+| 1 — relay/database/logs cannot read content or keys; document the boundaries | **Met.** Proved against a real `HubStore` sqlite file, not a variable. All three trust boundaries documented, including the inference provider. |
+| 2 — a trusted endpoint verifies a new endpoint; test substitution, tampering, replay, staleness | **Met.** Cross-signing verification, plus five refusals with distinct reasons. |
+| 3 — clean-endpoint recovery, history scope, rotation, removal, expired grants | **Partial.** Recovery, removal and grant expiry are proved. **Key rotation is not**, and that is a real gap, not a formality. |
+| 4 — storage and packaging on both desktops and browser; record versions, failures, review needs | **Partial.** Versions, failure cases and review requirements recorded. Desktop/browser storage packaging is not built and macOS cannot be exercised here. |
 
-## The threat boundary, so far
+## The gap that matters most
 
-What the relay still sees even when content is sealed: which endpoints exist and their public
-keys, who is talking to whom, envelope sizes and timing, and delivery cursors. That is
-inherent to the shape, not a defect — but it must be written down before anyone claims
-"the operator cannot read your work", and the browser code-delivery problem from
-[the feasibility research](../planning/e2ee-feasibility-research.md) still stands: an operator
-who serves the web client can serve different code. A signed desktop build separates those
-trusts; a browser tab does not.
+**No key rotation on membership change.** Revocation stops future *delivery* through the
+relay, which is access control rather than cryptography — a relay that ignores its own
+revocation list delivers anyway. A removed device still holds everything it decrypted before
+removal and its keys still open anything it can otherwise obtain.
+
+Olm to-device messaging has no post-compromise security. MLS epochs do. If "remove a device"
+has to mean what a customer will assume it means, that is the argument for revisiting
+OpenMLS, and it is worth having before the production adapter is written rather than after.

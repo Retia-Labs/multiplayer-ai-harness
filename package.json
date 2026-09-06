@@ -15,7 +15,8 @@
     "test:e2e": "node test/e2e-multiplayer.js",
     "smoke": "node test/smoke.js",
     "test:desktop": "xvfb-run -a node test/desktop-smoke.js",
-    "test:e2ee": "node test/e2ee-spike.js"
+    "test:e2ee": "node test/e2ee-acceptance.js",
+    "test:e2ee:spike": "node test/e2ee-spike.js"
   },
   "license": "MIT",
   "devDependencies": {

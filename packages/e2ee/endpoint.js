@@ -40,12 +40,30 @@ class Endpoint {
     this.machine = null;
   }
 
+  // `storeName` gives a persistent store, which this library backs with IndexedDB - so it
+  // works in a browser or an Electron renderer and NOT in Node, where it throws. Omitting
+  // it yields a memory store whose keys die with the process. See the threat model.
   static async create(opts) {
     await init();
     const ep = new Endpoint(opts);
-    ep.machine = await sdk.OlmMachine.initialize(userId(ep.user), deviceId(ep.device));
+    if (opts.storeName) {
+      const handle = await sdk.StoreHandle.open(opts.storeName, opts.storePassphrase);
+      ep.machine = await sdk.OlmMachine.initFromStore(userId(ep.user), deviceId(ep.device), handle);
+    } else {
+      ep.machine = await sdk.OlmMachine.initialize(userId(ep.user), deviceId(ep.device));
+    }
     await ep.sync();
     return ep;
+  }
+
+  static async storageSupport() {
+    await init();
+    try {
+      await sdk.StoreHandle.open('plexus-probe', 'probe');
+      return { persistent: true, backend: 'indexeddb' };
+    } catch (e) {
+      return { persistent: false, backend: 'memory', reason: String(e.message || e) };
+    }
   }
 
   // Publish our public keys and pick up everyone else's. The hub only ever handles public
@@ -60,8 +78,16 @@ class Endpoint {
     }
   }
 
+  // `updateTrackedUsers` only marks users as interesting; the key query is issued lazily
+  // off a sync we do not have. `queryKeysForUsers` forces it, which is what makes another
+  // endpoint visible right now rather than eventually.
   async track(users) {
     await this.machine.updateTrackedUsers(users.map(userId));
+    const req = this.machine.queryKeysForUsers(users.map(userId));
+    if (req) {
+      const response = await this.transport.send('KeysQuery', { user: this.user, device: this.device, body: req.body, id: req.id });
+      await this.machine.markRequestAsSent(req.id, sdk.RequestType.KeysQuery, response);
+    }
     await this.sync();
   }
 
@@ -119,6 +145,70 @@ class Endpoint {
       });
     }
     return out;
+  }
+
+  // ---- endpoint identity and verification ----
+
+  // Establish this account's cross-signing identity. The keys it publishes are public;
+  // the private halves stay in this machine's store.
+  async bootstrapCrossSigning() {
+    const reqs = await this.machine.bootstrapCrossSigning(true);
+    for (const req of [reqs.uploadKeysRequest, reqs.uploadSigningKeysRequest, reqs.uploadSignatureRequest]) {
+      if (!req) continue;
+      const kind = req.constructor.name;
+      const type = REQUEST_TYPES[kind] || (kind.includes('SigningKeys') ? 'SigningKeysUpload' : null);
+      if (!type) continue;
+      await this.transport.send(type, { user: this.user, device: this.device, body: req.body, id: req.id });
+      if (sdk.RequestType[type] !== undefined && req.id) {
+        try { await this.machine.markRequestAsSent(req.id, sdk.RequestType[type], '{}'); } catch {}
+      }
+    }
+    await this.sync();
+    return this.machine.crossSigningStatus();
+  }
+
+  // An already-trusted endpoint vouching for another one. This is the step that stops a
+  // relay-supplied key from being accepted just because the relay served it.
+  async verifyEndpoint(user, device) {
+    const target = await this.getDevice(user, device);
+    if (!target) throw new Error('unknown endpoint ' + user + '/' + device);
+    const req = await target.verify();
+    if (req) {
+      await this.transport.send('SignatureUpload', { user: this.user, device: this.device, body: req.body, id: req.id });
+    }
+    // The signature only counts once we have read it back off the directory: trust comes
+    // from the published signature, not from having sent one.
+    await this.track([user]);
+    return true;
+  }
+
+  async isEndpointVerified(user, device) {
+    const target = await this.getDevice(user, device);
+    return !!(target && target.isVerified());
+  }
+
+  // ---- customer-held recovery ----
+
+  // The customer holds this key. The relay stores only material encrypted to it, so a
+  // clean endpoint can be restored without the operator holding any secret.
+  async enableRecovery(version = '1') {
+    const key = sdk.BackupDecryptionKey.createRandomKey();
+    await this.machine.enableBackupV1(key.megolmV1PublicKey.publicKeyBase64, version);
+    await this.machine.saveBackupDecryptionKey(key, version);
+    return { recoveryKey: key.toBase64(), version };
+  }
+
+  async recoveryKeyOnThisEndpoint() {
+    const keys = await this.machine.getBackupKeys();
+    return keys && keys.decryptionKeyBase64 ? keys.decryptionKeyBase64 : null;
+  }
+
+  // Restore on a clean endpoint using only the customer's key.
+  async restoreRecovery(recoveryKeyBase64, version = '1') {
+    const key = sdk.BackupDecryptionKey.fromBase64(recoveryKeyBase64);
+    await this.machine.saveBackupDecryptionKey(key, version);
+    const keys = await this.machine.getBackupKeys();
+    return !!(keys && keys.decryptionKeyBase64);
   }
 
   identity() {
