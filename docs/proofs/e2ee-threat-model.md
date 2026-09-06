@@ -1,137 +1,82 @@
-# Threat model: end-to-end encrypted collaboration content
+# Threat model: encrypted endpoint experiment
 
-Required by [issue #3](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/3),
-criterion 1, and by [ADR 0003](../adr/0003-end-to-end-encrypted-collaboration-content.md).
+Scope: isolated `packages/e2ee/` experiment for [issue #3](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/3)
+and [ADR 0003](../adr/0003-end-to-end-encrypted-collaboration-content.md).
+The production hub still processes cleartext. This is not a completed security audit;
+qualified review is pending.
 
-This describes the experiment in `packages/e2ee/`, proved by `npm run test:e2ee`. It is not
-a security audit and no qualified reviewer has read it.
+## Assets and trust boundaries
 
-## What is being protected, and from whom
+Protected from the experiment relay/operator/database/log reader: task text, selected
+history, control payloads, device private keys, store unlock keys and recovery secrets.
+The operator can withhold, replay, reorder or replace traffic and directory entries.
+It sees endpoint/account IDs, public keys, recipients, opaque project/backup IDs,
+algorithm/session IDs, sizes, timing and sequence numbers. Never use customer text,
+project names or file paths as routing identifiers.
 
-**Protected:** task content — prompts, transcripts, tool arguments and results, diffs,
-approval text, and the control messages that steer an agent.
+Trusted: confirmed endpoints, the host's locally pinned membership authority, customer
+recovery material, endpoint OS/browser, SDK and code delivery. Relay login credentials
+authorize routing/backup access, not endpoint trust. The test provisions accounts directly;
+production account recovery is outside scope.
 
-**From:** the synchronisation service (the hub), its database, its logs, and anyone with
-access to them. That includes us.
+Browser scripts come from the relay origin. A malicious publisher or XSS can steal keys
+or decrypt while unlocked; encrypted storage does not defeat same-origin code. Desktop
+loads bundled assets through a custom secure origin, but still trusts publisher/update
+delivery. CI packages are unsigned/unnotarized test artifacts, not release evidence.
 
-**Not from:** the endpoints themselves, the execution host, or the inference provider. Those
-are covered below, and the distinction matters more than the encryption does.
+The execution host reads tasks/files. The selected inference provider receives the
+prompts, tool output and content the agent sends under that provider's terms. Collaboration
+encryption does not hide that content from the provider or a compromised endpoint.
+Customer-facing descriptions must state these boundaries.
 
-## Three trust boundaries
+## Attacks, controls and limits
 
-### 1. The relay
+| Attack/failure | Experiment behavior | Remaining limit |
+| --- | --- | --- |
+| Valid replacement key under an existing device ID | Match both fingerprints from trusted confirmation | Confirmation channel and initial owner pin must be authentic; production verification UI is not supplied |
+| Extra device seeks project keys | Exact verified endpoint list and session rotation | All production senders must use the policy wrapper |
+| Modified/plaintext control or forged actor | Require verified SDK decrypted event and bind sender user/device/key to grant and membership | Recovered group history cannot authorize controls |
+| Replayed, expired, wrong-turn or stale-epoch approval | Validate context; transactionally persist grant/request consumption | Host disk rollback/deletion is outside scope; lost authority requires safe re-enrollment |
+| Crash after approval | Consumption commits before approval returns | Crash before execution can lose action; exactly-once execution needs a durable runtime outbox |
+| Disconnected host during removal | Refuse controls until fresh owner snapshot; owner waits for encrypted acknowledgment | Withholding on apparently live connections needs freshness policy; all affected hosts/senders must acknowledge |
+| Old membership snapshot replay/rollback | Random reconnect challenge, persisted monotonic epoch, superseded-challenge refusal | Compromised pinned owner remains authoritative; succession/quorum outside scope |
+| Removed device receives later ciphertext | Rotate and share only to remaining endpoints | Old keys/plaintext remain; application rotation is not MLS post-compromise security |
+| Stolen/modified recovery backup | SDK authenticated export with customer-only random secret; scope enforcement | Losing all recovery methods loses history; no operator override |
+| Recovery material used on later same-session messages | Exported session keys can decrypt those messages; the test explicitly demonstrates this | Recovery scope is per project/session, not per backup timestamp; rotate and exclude the device to block subsequent sessions |
+| Backup rollback/deletion | Cannot expand history or restore identity/grants | Can hide recent history; backup freshness/availability not proved |
+| Stolen/corrupt local store | Encrypted IndexedDB, OS-wrapped desktop key, fail-closed unlock | Same-account malware, OS compromise or malicious browser code can decrypt |
+| Relay memory/database/log scan | Endpoint-only plaintext; scan directory, mailboxes, logs, SQLite/WAL for canaries | Metadata remains; scans are not exhaustive information-flow analysis |
 
-The hub routes sealed envelopes and holds a directory of public keys. It is never given a
-private key and never given plaintext.
+## Storage and failure contract
 
-Proved: with a real `HubStore` sqlite file on disk, the file is searched byte-for-byte for
-the task text, the command, and a canary string. None appear, while the sealed event is
-demonstrably present. The relay's whole in-memory state is searched the same way.
+Desktop uses bundled Electron/WASM, a sandboxed isolated renderer and main-frame-only
+`safeStorage` IPC. No plaintext fallback is allowed. Unavailable protection, corrupt
+existing key files, wrong unlock keys or unsupported SDK data fail rather than silently
+creating a trusted replacement. Browser unlock material is supplied in memory; site-data
+loss creates a clean untrusted device.
 
-**Cleartext metadata the relay still needs**, and therefore still sees:
+Node crypto storage is memory-only. The complete proof reopens durable host grant and
+membership state while retaining the runtime crypto process. It does not prove persistent
+Node crypto identity across full restart. Customer history exports exclude host authority
+and current identity/trust/delegation records.
 
-| Metadata | Why it is unavoidable here |
-| --- | --- |
-| Endpoint ids and their public keys | Devices cannot establish sessions with strangers they cannot name |
-| Which endpoints exchange envelopes | Routing. The relay must know which mailbox to fill |
-| Envelope sizes and timing | Inherent to any relay that carries bytes |
-| Delivery cursors and sequence numbers | The ordering guarantee the product is built on |
-| Team and membership relationships | The hub authorises access; it cannot do that blind |
+Control protocol: `plexus.control.v1`, accepting verified decrypted events only. Algorithm
+and SDK versions accompany each result. Network errors/timeouts do not count as key
+delivery or completed revocation. The loopback HTTP relay caps requests at 1 MiB and
+provides no production tenancy, rate-limit or durable-delivery guarantees. Non-loopback
+deployment requires TLS even with encrypted content.
 
-That list is the honest limit of "the operator cannot read your work". Traffic analysis of
-who works with whom, when, and how much, remains available to the operator.
+## Production consequences and review
 
-### 2. The application code
+Server collision detection over file paths, cleartext thread titles and content search
+need redesign before production E2EE. No production route/UI now promises encryption.
+This is a protocol experiment, not a migration of those features.
 
-**A hub operator who serves the web client can serve different web client code.** Web Crypto
-does not prevent this and non-extractable keys do not either: authorised-origin code can ask
-a key to decrypt without ever extracting it. So for a browser tab, "the operator cannot read
-your content" is **not a defensible claim** — it reduces to "the operator is not currently
-choosing to".
+A named qualified reviewer must assess SDK use/authenticated attribution, key recipient
+selection, confirmation channels, recovery scope/freshness, lost-host state and identity
+succession, every-sender rotation, offline/live freshness, MLS tradeoffs, browser/OS key
+custody, package signing/update trust, and customer boundary wording.
 
-A signed, packaged desktop build separates relay trust from code-delivery trust, because the
-code arrives through a different channel with a different signer. The user still trusts the
-publisher and the update pipeline. This is why the desktop app matters to the security story
-and not only to the product one.
-
-### 3. The inference provider
-
-**Encryption ends at the execution host.** The runtime decrypts a task in order to act on
-it, and then sends whatever the agent needs — prompts, file contents, diffs, command output —
-to the selected provider: OpenAI, Anthropic, a local model, or the Codex or Claude Code CLI.
-
-The provider therefore sees task content in the clear, under whatever terms that provider's
-account carries. No property of this design changes that, and any wording that implies
-otherwise is false. E2EE here means *the collaboration service* cannot read the work. It does
-not mean nobody outside the team can.
-
-This boundary must be stated wherever the encryption is described to a customer.
-
-## What the experiment proves
-
-- Two endpoints establish sessions through a relay that holds only public keys.
-- One task and its control messages travel sealed; neither the relay's memory nor its sqlite
-  file contains the plaintext.
-- A new endpoint of the same account starts **unverified**, and becomes verified only when an
-  already-trusted endpoint signs it with the account's cross-signing identity.
-- A key the relay makes up is never verified, because verification is a signature from an
-  endpoint the account already trusts rather than a claim the relay can assert.
-- A modified control message fails closed instead of yielding altered plaintext.
-- A customer-held recovery key restores a clean endpoint with no operator secret involved.
-- A removed endpoint stops receiving content and is dropped from the directory.
-
-## What it does not protect against, stated plainly
-
-**A compromised endpoint.** Anything a device can read, an attacker on that device can read.
-Encryption is not endpoint security.
-
-**A removed device un-knowing what it held.** Removal is forward-only. Rotation means the
-device cannot read anything sent afterwards, but the old session is still in its store, so a
-device removed at 3pm keeps everything it decrypted before 3pm. No protocol retracts what has
-already been seen; this is a property of the world, not of the library.
-
-**A forgotten rotation.** Rotation happens because the application asks for it. If a
-membership change ever fails to trigger one, the removed device keeps reading and nothing
-visibly breaks. MLS makes membership change and key change the same operation, which removes
-that failure mode; with Megolm it has to be enforced by the code path and tested for. That is
-now the strongest remaining argument for revisiting OpenMLS.
-
-**Traffic analysis.** See the metadata table.
-
-**A malicious or subverted web client.** See boundary 2.
-
-**The inference provider.** See boundary 3.
-
-## Consequences for features that exist today
-
-The hub currently reads content to do useful things, and under E2EE it cannot:
-
-- **The collision radar** compares file paths across threads *on the hub*. Under encryption
-  those paths are ciphertext. It has to move to the execution hosts or the clients.
-- **Thread names** are stored and broadcast in the clear for the sidebar.
-- **Search** over threads becomes client-side or index-based.
-
-None of these are solved here. They are product decisions about what the hub is still
-allowed to know, and they should be decided before the production adapter is written rather
-than discovered during it.
-
-## Review required
-
-Before any public claim of end-to-end encryption:
-
-1. Independent review of enrollment, verification, recovery and revocation as designed here.
-2. A decision on whether Olm to-device messaging is sufficient, or whether group semantics
-   with post-compromise security (MLS) are required for device removal to mean what
-   customers will assume it means.
-3. Explicit wording for boundaries 2 and 3 in any customer-facing description.
-
-## Merge integration limits
-
-The experimental grant ledger validates thread, request, turn, user and device,
-requires explicit decryption evidence, rejects malformed timestamps/decisions,
-and rejects a second grant for an already resolved request. The caller must bind
-that evidence and approver identity to authenticated, verified crypto output;
-a payload's self-declared sender is not authority. Both replay sets are in-memory:
-production must persist them on the execution host before relying on them across
-restarts. Importing a recovery key here does not demonstrate restored history.
-The production hub remains unwired to this experiment. Issue #3 stays open.
+Record reviewer, reviewed commit, date, findings and disposition in
+[the verification record](e2ee-verification.md). Automated checks do not constitute that
+review or establish production security.

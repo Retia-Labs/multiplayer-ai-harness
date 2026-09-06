@@ -315,13 +315,13 @@ const TASK = {
   });
 
   await check('AC4', 'desktop packaging of the crypto store', async () => ({
-    status: 'blocked',
-    detail: 'Needs the store in an Electron renderer with its pickle key sealed by safeStorage, exercised on macOS and Windows. Not built, and macOS cannot be exercised on this machine.'
+    status: 'info',
+    detail: 'Separate executable coverage: npm run test:e2ee:platform packages the OS-protected Electron/IndexedDB endpoint and tests it with a real browser. See platform evidence; this primitive suite does not assert platform success.'
   }));
 
   await check('AC4', 'offline revocation acknowledgment', async () => ({
-    status: 'blocked',
-    detail: 'An execution host that cannot reach the relay cannot learn a device was removed. Deciding the tolerated window is a product decision, not a test.'
+    status: 'info',
+    detail: 'Separate executable coverage: test/e2ee-complete.js requires fresh authenticated membership on reconnect and an encrypted host acknowledgment. Disconnected hosts refuse controls; see threat model for withheld updates on a live connection.'
   }));
 
   await check('AC4', 'qualified review requirement', async () => ({
@@ -335,7 +335,9 @@ const TASK = {
   const info = results.filter((r) => r.status === 'info').length;
   console.log(`\n${pass} passed, ${blocked} blocked, ${info} recorded, ${fail} failed`);
   if (fail) { for (const f of results.filter((r) => r.status === 'fail')) console.log(`  - ${f.name}: ${f.detail}`); }
-  fs.writeFileSync(path.join(__dirname, '..', 'docs', 'proofs', 'e2ee-acceptance-result.json'),
+  const output = path.join(__dirname, '..', '.artifacts', 'e2ee-complete');
+  fs.mkdirSync(output, { recursive: true });
+  fs.writeFileSync(path.join(output, 'primitive-acceptance.json'),
     JSON.stringify({ ranAt: new Date().toISOString(), results }, null, 2));
   process.exit(fail ? 1 : 0);
 })().catch((err) => { console.error('\nFAILED:', err && err.message); console.error(err); process.exit(1); });

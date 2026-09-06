@@ -14,7 +14,7 @@
     "test:unit": "node test/unit.js",
     "test:e2e": "node test/e2e-multiplayer.js",
     "smoke": "node test/smoke.js",
-    "test:e2ee": "node test/e2ee-acceptance.js",
+    "test:e2ee": "npm run test:e2ee:acceptance && node test/e2ee-complete.js",
     "test:e2ee:spike": "node test/e2ee-spike.js",
     "test:desktop": "node test/desktop-smoke.js",
     "dist": "electron-builder --publish never",
@@ -27,7 +27,9 @@
     "test:team": "node test/team-boundaries.js",
     "check:design": "node scripts/check-design-contract.js",
     "test:design": "node --test test/design-contract.js",
-    "test:desktop-bootstrap": "node test/desktop-bootstrap.js"
+    "test:desktop-bootstrap": "node test/desktop-bootstrap.js",
+    "test:e2ee:acceptance": "node test/e2ee-acceptance.js",
+    "test:e2ee:platform": "node scripts/e2ee-platform-proof.js"
   },
   "license": "MIT",
   "devDependencies": {
