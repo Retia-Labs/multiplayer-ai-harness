@@ -15,31 +15,27 @@ const { spawn } = require('child_process');
 const { Events, ItemTypes, ItemStatus, ApprovalDecision } = require('../protocol');
 const { resolveCodex } = require('./codex-probe');
 
-const STDERR_KEEP = 4000;
+const { CodexRpc, CodexProviderError, failure, providerFailure } = require('./codex-rpc');
 
-// app-server names its sandbox as { type } in camelCase, not { mode } in kebab-case.
-function sandboxMode(policy) {
-  if (policy === 'read-only') return 'readOnly';
-  if (policy === 'danger-full-access') return 'dangerFullAccess';
-  return 'workspaceWrite';
+// thread/start uses the kebab-case sandbox enum, not turn/start's policy object.
+function sandboxMode(policy = 'read-only') {
+  if (!['read-only', 'workspace-write', 'danger-full-access'].includes(policy)) throw failure('codex_policy_invalid');
+  return policy;
 }
-
-// The harness asks for approval on risky things; `on-request` is the matching Codex policy.
-function approvalPolicy(policy) {
-  if (policy === 'never') return 'never';
-  if (policy === 'untrusted') return 'untrusted';
-  return 'on-request';
+function approvalPolicy(policy = 'on-request') {
+  if (!['never', 'untrusted', 'on-request'].includes(policy)) throw failure('codex_policy_invalid');
+  return policy;
 }
 
 function mapStatus(s) {
-  return { in_progress: ItemStatus.IN_PROGRESS, completed: ItemStatus.COMPLETED, failed: ItemStatus.FAILED, declined: ItemStatus.DECLINED }[s] || ItemStatus.COMPLETED;
+  return { inProgress: ItemStatus.IN_PROGRESS, in_progress: ItemStatus.IN_PROGRESS, completed: ItemStatus.COMPLETED, failed: ItemStatus.FAILED, declined: ItemStatus.DECLINED }[s] || ItemStatus.FAILED;
 }
 
 // Codex item -> harness item. Same idea as the exec adapter, but app-server already uses
 // camelCase and the harness's own type names for most of it.
 function mapItem(it, cwd) {
-  if (!it) return null;
-  const base = { id: 'codex_' + (it.id || Math.random().toString(36).slice(2)) };
+  if (!it || typeof it.id !== 'string' || !it.id) return null;
+  const base = { id: 'codex_' + it.id };
   switch (it.type || it.item_type) {
     case 'agentMessage': case 'agent_message':
       return { ...base, type: ItemTypes.AGENT_MESSAGE, text: it.text || '' };
@@ -50,145 +46,138 @@ function mapItem(it, cwd) {
     case 'fileChange': case 'file_change':
       return { ...base, type: ItemTypes.FILE_CHANGE, status: mapStatus(it.status), changes: (it.changes || []).map((c) => ({ path: c.path, kind: c.kind === 'delete' ? 'delete' : c.kind === 'add' ? 'add' : 'update', additions: 0, deletions: 0, lines: [] })) };
     case 'error':
-      return { ...base, type: ItemTypes.AGENT_MESSAGE, text: '⚠ ' + (it.message || 'error') };
+      return { ...base, type: ItemTypes.AGENT_MESSAGE, text: 'Codex reported an error. Check the provider on the execution host.' };
     default:
       return null;
   }
 }
 
 class CodexAppServerBackend {
-  constructor({ bin = 'codex', onRaw = null } = {}) {
+  constructor({ bin, spawnProcess = spawn, requestTimeoutMs = 30000, turnTimeoutMs = 600000 } = {}) {
     this.id = 'codex-app-server';
     this.label = 'Codex CLI (app-server)';
-    this.onRaw = onRaw;
     this.resolved = resolveCodex(bin);
+    this.spawnProcess = spawnProcess;
+    this.requestTimeoutMs = requestTimeoutMs;
+    this.turnTimeoutMs = turnTimeoutMs;
   }
-  capabilities() { return { toolCalls: true, reasoning: 'summary', images: false, steer: 'inline', approvals: true }; }
-  async listModels() { return ['gpt-5.5', 'gpt-5.4-mini']; }
+  // Steering/resume must be wired to provider acknowledgments before advertising them.
+  capabilities() { return { toolCalls: true, reasoning: 'summary', images: false, steer: 'none', approvals: true }; }
+  async listModels() { return []; } // Discover locally; never claim hard-coded account entitlements.
 
   async run(session) {
-    const prompt = session.input.filter((i) => i.type === 'text').map((i) => i.text).join('\n');
-    const state = { stderr: '', threadId: null, started: new Set(), error: null };
-    session.providerSpawns = [];
-
-    const child = spawn(this.resolved.bin, [...this.resolved.prefix, 'app-server'], {
-      cwd: session.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe']
-    });
+    if (!this.resolved.ok) throw failure('codex_unavailable');
+    const sandbox = sandboxMode(session.settings.sandboxPolicy);
+    const approvals = approvalPolicy(session.settings.approvalPolicy);
+    if (!Array.isArray(session.input) || !session.input.length || session.input.some((i) => i.type !== 'text' || typeof i.text !== 'string')) {
+      throw failure('codex_input_unsupported');
+    }
+    const prompt = session.input.map((i) => i.text).join('\n');
+    const state = { threadId: null, turnId: null, started: new Set(), completed: false, buffered: [], bytes: 0 };
+    let complete, ready;
+    const done = new Promise((resolve) => { complete = resolve; });
+    const turnReady = new Promise((resolve) => { ready = resolve; });
+    let child;
+    try {
+      child = this.spawnProcess(this.resolved.bin, [...this.resolved.prefix, 'app-server'], {
+        cwd: session.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe']
+      });
+    } catch { throw failure('codex_unavailable'); }
     session.child = child;
-    session.providerSpawns.push({ pid: child.pid, args: ['app-server'] });
-
-    let nextId = 1;
-    const pending = new Map();               // our request id -> resolve
-    const call = (method, params) => new Promise((resolve, reject) => {
-      const id = nextId++;
-      pending.set(id, { resolve, reject });
-      child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-    });
-    const reply = (id, result) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
-
-    // The approval round-trip: Codex asks, the harness routes it to whichever human is
-    // watching, and the answer goes back on the same request id. This is the capability
-    // `codex exec` does not have.
-    const onServerRequest = async (msg) => {
-      const p = msg.params || {};
-      if (msg.method === Events.COMMAND_REQUEST_APPROVAL) {
-        const decision = await session.requestApproval(Events.COMMAND_REQUEST_APPROVAL, {
-          itemId: 'codex_' + (p.itemId || ''), command: p.command || (p.commandActions || []).join(' '),
-          cwd: p.cwd || session.cwd, reason: p.reason || 'Codex is asking before running this'
-        });
-        return reply(msg.id, { decision: decision === ApprovalDecision.CANCEL ? 'decline' : decision });
-      }
-      if (msg.method === Events.FILECHANGE_REQUEST_APPROVAL) {
-        const decision = await session.requestApproval(Events.FILECHANGE_REQUEST_APPROVAL, {
-          itemId: 'codex_' + (p.itemId || ''), changes: (p.changes || []).map((c) => ({ path: c.path, kind: c.kind })),
-          reason: p.reason || 'Codex is asking before changing files'
-        });
-        return reply(msg.id, { decision: decision === ApprovalDecision.CANCEL ? 'decline' : decision });
-      }
-      // Anything else the server asks for is declined rather than guessed at.
-      return reply(msg.id, {});
-    };
+    session.providerSpawns = [{ pid: child.pid, args: ['app-server'] }];
 
     const onNotification = (msg) => {
       const p = msg.params || {};
+      if (!state.threadId || p.threadId !== state.threadId || state.completed) return;
+      if (!state.turnId) {
+        state.bytes += Buffer.byteLength(JSON.stringify(msg));
+        if (state.buffered.length >= 128 || state.bytes > 1024 * 1024) throw failure('codex_protocol_invalid');
+        state.buffered.push(msg);
+        return;
+      }
+      if ((p.turnId || p.turn?.id) !== state.turnId || (p.turn?.id && p.turn.id !== state.turnId)) return;
       switch (msg.method) {
-        case 'thread/started': state.threadId = p.threadId || state.threadId; break;
+        case Events.TURN_COMPLETED:
+          if (!p.turn || !['completed', 'failed', 'interrupted'].includes(p.turn.status)) throw failure('codex_protocol_invalid');
+          state.completed = true;
+          complete(p.turn);
+          break;
         case Events.TURN_PLAN_UPDATED:
-          session.emit(Events.TURN_PLAN_UPDATED, { explanation: p.explanation, plan: (p.plan || []).map((s) => ({ step: s.step || s.text, status: s.status || (s.completed ? 'completed' : 'pending') })) });
+          session.emit(Events.TURN_PLAN_UPDATED, { explanation: p.explanation, plan: (p.plan || []).map((s) => ({ step: s.step, status: s.status })) });
           break;
-        case Events.ITEM_STARTED: {
-          const item = mapItem(p.item, session.cwd);
-          if (item) { state.started.add(item.id); session.emit(Events.ITEM_STARTED, { item }); }
-          break;
-        }
-        case Events.ITEM_COMPLETED: {
+        case Events.ITEM_STARTED: case Events.ITEM_COMPLETED: {
           const item = mapItem(p.item, session.cwd);
           if (!item) break;
-          if (!state.started.has(item.id)) session.emit(Events.ITEM_STARTED, { item });
-          session.emit(Events.ITEM_COMPLETED, { item });
+          if (!state.started.has(item.id)) { state.started.add(item.id); session.emit(Events.ITEM_STARTED, { item }); }
+          if (msg.method === Events.ITEM_COMPLETED) session.emit(Events.ITEM_COMPLETED, { item });
           break;
         }
-        case Events.AGENT_MESSAGE_DELTA:
-          session.emit(Events.AGENT_MESSAGE_DELTA, { itemId: 'codex_' + (p.itemId || ''), delta: p.delta || '' });
-          break;
-        case Events.COMMAND_OUTPUT_DELTA:
-          session.emit(Events.COMMAND_OUTPUT_DELTA, { itemId: 'codex_' + (p.itemId || ''), delta: p.delta || p.chunk || '' });
-          break;
-        case 'error':
-          state.error = p.message || 'app-server error';
+        case Events.AGENT_MESSAGE_DELTA: case Events.COMMAND_OUTPUT_DELTA:
+          session.emit(msg.method, { itemId: 'codex_' + (p.itemId || ''), delta: p.delta || '' });
           break;
       }
     };
-
-    const done = new Promise((resolve) => {
-      let buf = '';
-      child.stdout.on('data', (d) => {
-        buf += d.toString();
-        const lines = buf.split('\n'); buf = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          let msg; try { msg = JSON.parse(line); } catch { continue; }
-          if (this.onRaw) { try { this.onRaw(line, msg, session); } catch {} }
-          if (msg.id !== undefined && msg.method) { onServerRequest(msg).catch(() => {}); continue; }
-          if (msg.id !== undefined && pending.has(msg.id)) {
-            const { resolve: r, reject } = pending.get(msg.id);
-            pending.delete(msg.id);
-            if (msg.error) reject(new Error(msg.error.message || JSON.stringify(msg.error)));
-            else r(msg.result);
-            continue;
-          }
-          if (msg.method) {
-            onNotification(msg);
-            if (msg.method === Events.TURN_COMPLETED) resolve(msg.params || {});
-            if (msg.method === 'turn/failed') { state.error = (msg.params && msg.params.error && msg.params.error.message) || 'turn failed'; resolve({}); }
-          }
-        }
-      });
-      child.stderr.on('data', (d) => { state.stderr = (state.stderr + d.toString()).slice(-STDERR_KEEP); });
-      child.on('close', () => resolve({}));
-      child.on('error', (err) => { state.error = String(err); resolve({}); });
+    const requests = new Set();
+    const rpc = new CodexRpc(child, {
+      timeoutMs: this.requestTimeoutMs,
+      onNotification,
+      onRequest: async (msg) => {
+        // The provider may ask immediately before its turn/start response arrives.
+        await turnReady;
+        if (rpc.error) return;
+        const p = msg.params || {};
+        if (!state.turnId || state.completed || p.threadId !== state.threadId || p.turnId !== state.turnId ||
+            ![Events.COMMAND_REQUEST_APPROVAL, Events.FILECHANGE_REQUEST_APPROVAL].includes(msg.method)) return rpc.refuse(msg.id);
+        if (requests.has(msg.id)) return; // One host decision per provider request identity.
+        if (requests.size >= 128) return rpc.fail('codex_request_limit');
+        requests.add(msg.id);
+        // Approvals confer only this action; session-wide accepts/permission changes
+        // and unknown server requests are never translated into success.
+        const decision = await session.requestApproval(msg.method, {
+          itemId: 'codex_' + (p.itemId || ''), command: p.command,
+          cwd: p.cwd || session.cwd, reason: p.reason,
+          ...(msg.method === Events.FILECHANGE_REQUEST_APPROVAL ? { changes: p.changes || [] } : {})
+        });
+        if (!rpc.error && !state.completed) rpc.reply(msg.id, {
+          decision: decision === ApprovalDecision.ACCEPT ? 'accept' : 'decline'
+        });
+      }
     });
-
+    let timer;
+    const onAbort = () => rpc.fail('codex_interrupted');
+    session.abort?.signal.addEventListener('abort', onAbort, { once: true });
+    if (session.abort?.signal.aborted) onAbort();
     try {
-      await call('initialize', { clientInfo: { name: 'plexus', version: '0.1.0' } });
-      const thread = await call('thread/start', {
-        cwd: session.cwd,
-        approvalPolicy: approvalPolicy(session.settings.approvalPolicy),
-        sandboxPolicy: { type: sandboxMode(session.settings.sandboxPolicy) },
-        model: session.model || undefined
+      await rpc.call('initialize', { clientInfo: { name: 'plexus', version: '0.1.0' } });
+      rpc.notify('initialized');
+      const result = await rpc.call('thread/start', {
+        cwd: session.cwd, approvalPolicy: approvals, sandbox, ...(session.model ? { model: session.model } : {})
       });
-      // thread/start answers { thread: { id, sessionId, ... } } - the id is nested, and
-      // reading it from the top level sends turn/start a missing threadId.
-      state.threadId = (thread && thread.thread && thread.thread.id) || (thread && thread.threadId) || state.threadId;
+      if (typeof result?.thread?.id !== 'string' || !result.thread.id) throw failure('codex_protocol_invalid');
+      state.threadId = result.thread.id;
       session.providerSessionId = state.threadId;
-      await call('turn/start', { threadId: state.threadId, input: [{ type: 'text', text: prompt }] });
-      await done;
+      const turn = await rpc.call('turn/start', { threadId: state.threadId, input: [{ type: 'text', text: prompt }] });
+      if (typeof turn?.turn?.id !== 'string' || !turn.turn.id) throw failure('codex_protocol_invalid');
+      state.turnId = turn.turn.id;
+      session.providerTurnId = state.turnId;
+      for (const msg of state.buffered) onNotification(msg);
+      state.buffered = [];
+      ready();
+      timer = setTimeout(() => rpc.fail('codex_turn_timeout'), this.turnTimeoutMs);
+      const terminal = await Promise.race([done, rpc.closed.then((error) => { throw error; })]);
+      if (terminal.status === 'failed') throw providerFailure(terminal.error);
+      if (terminal.status === 'interrupted') throw failure('codex_interrupted');
+    } catch (error) {
+      throw error instanceof CodexProviderError ? error : failure('codex_protocol_invalid');
     } finally {
-      try { child.kill(); } catch {}
+      ready();
+      clearTimeout(timer);
+      session.abort?.signal.removeEventListener('abort', onAbort);
+      rpc.close();
+      for (const resolve of session.pendingApprovals?.values() || []) resolve(ApprovalDecision.CANCEL);
+      session.pendingApprovals?.clear();
       session.child = null;
     }
-
-    if (state.error) throw new Error(state.error + (state.stderr ? ' — ' + state.stderr.trim().split('\n').slice(-2).join(' ') : ''));
   }
 }
 
