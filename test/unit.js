@@ -139,4 +139,44 @@ t('hub: the command log evicts settled entries and never a command still in flig
   hub.store.close();
 });
 
+t('hub: retries survive client disconnect and cannot change their target or payload', () => {
+  const hub = new Hub({ dbFile: ':memory:', log: () => {} });
+  const sent = [];
+  const socket = () => ({ readyState: 1, send: (raw) => sent.push(JSON.parse(raw)) });
+  const runtimeWs = socket(), first = socket(), retry = socket();
+  const ctx = { user: { id: 'u', name: 'alice' }, role: 'client', subs: new Set() };
+  hub.store.runtimePairing = () => ({ teamId: 'team' });
+  hub.store.membership = () => true;
+  hub.store.isApprover = () => false;
+  hub.runtimes.set('runtime', runtimeWs);
+  const msg = { id: 'retry-id', runtimeId: 'runtime', command: { method: 'thread/start' } };
+  hub.onCommand(first, ctx, msg);
+  hub.onClose(first, ctx);
+  hub.onCommand(retry, ctx, msg);
+  assert.equal(sent.filter((m) => m.type === 'command').length, 1);
+  assert.throws(() => hub.onCommand(retry, ctx, { ...msg, command: { method: 'thread/delete' } }), /different input/);
+  assert.throws(() => hub.onCommand(retry, { ...ctx, user: { id: 'other' } }, msg));
+  hub.handleMessage(runtimeWs, { role: 'runtime', user: {}, teamId: 'team', runtimeId: 'runtime' },
+    { type: 'command.result', id: msg.id, ok: true, result: { value: 1 } });
+  hub.onCommand(retry, ctx, msg);
+  assert.equal(sent.at(-1).duplicate, true);
+  assert.equal(sent.filter((m) => m.type === 'command').length, 1);
+  hub.store.close();
+});
+
+t('hub: runtime disconnect settles retries without dispatching the action again', () => {
+  const hub = new Hub({ dbFile: ':memory:', log: () => {} });
+  const runtimeWs = { readyState: 1 }, received = [];
+  const client = { readyState: 1, send: (raw) => received.push(JSON.parse(raw)) };
+  const entry = { state: 'pending', waiters: new Set([client]), runtimeWs };
+  hub.pendingCommands.set('uncertain', entry);
+  hub.commandLog.set('u/uncertain', entry);
+  hub.onClose(runtimeWs, { subs: new Set() });
+  assert.equal(entry.state, 'done');
+  assert.match(entry.result.error, /outcome may be unknown/);
+  assert.equal(received.length, 1);
+  assert.equal(hub.pendingCommands.size, 0);
+  hub.store.close();
+});
+
 console.log(`\n${n} unit tests passed ✅`);

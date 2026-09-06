@@ -217,3 +217,20 @@ This ticket is `ready-for-human` for reasons the harness cannot resolve itself:
 
 Everything else in the acceptance criteria is executed by
 [`test/codex-acceptance.js`](../../test/codex-acceptance.js) and recorded in the matrix.
+
+## Integration with private teams
+
+The merged runtime retains the project-isolation gate from #5: Codex exec, Codex
+app-server, and Claude CLI adapters cannot be selected through the production runtime.
+The adapters and historical provider evidence remain available for further isolation
+work; the old provider matrix does not prove the current production gate is open.
+The acceptance harness now creates a private team, invites its second participant,
+pairs the host locally, and explicitly grants both racing approvers authority.
+Provider lanes report blocked while isolation is pending. The default control check
+writes into `.artifacts/codex-control` so it cannot overwrite historical provider evidence.
+
+Retry handling retains authenticated runtime/socket ownership, membership and approval
+checks, and thread-delete reconciliation. Pending retries survive client disconnect;
+a host disconnect reports an unknown execution outcome. Reusing an identity with a
+changed target or payload is refused; concurrent cross-user identity collisions are
+refused rather than allowing one caller to capture another's result.

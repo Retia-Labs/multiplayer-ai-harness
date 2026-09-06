@@ -3,19 +3,21 @@
 // runs tools through the executor under the policy engine, and exposes steering,
 // interrupt, and approval resolution to the runtime (which routes them from the hub).
 const crypto = require('crypto');
-const fs = require('fs');
 const path = require('path');
 const { Events, ItemTypes, ItemStatus, TurnStatus, ApprovalDecision } = require('../protocol');
 const { decideCommand, decideFileWrite } = require('./policy');
 const { lineDiff } = require('./diff');
+const { WorkspaceAccess } = require('./workspace');
 
 const MAX_TOOL_OUTPUT = 20000;
 const MAX_MODEL_ROUNDS = 32;
 const uid = (p) => p + '_' + crypto.randomBytes(6).toString('hex');
 
 const TOOLS = [
-  { name: 'shell', description: 'Run a bash command in the workspace directory and return its output.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+  { name: 'read_file', description: 'Read one regular text file inside the authorized workspace. Absolute paths, traversal, and symlinks are refused.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
+  { name: 'list_files', description: 'List one directory inside the authorized workspace without following symlinks.', parameters: { type: 'object', properties: { path: { type: 'string' } } } },
   { name: 'write_file', description: 'Create or completely replace a file in the workspace.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
+  { name: 'remove_path', description: 'Remove a relative file or directory inside the authorized workspace after policy approval.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
   { name: 'update_plan', description: 'Show or update a step checklist for the user. Statuses: pending, inProgress, completed.', parameters: { type: 'object', properties: { explanation: { type: 'string' }, plan: { type: 'array', items: { type: 'object', properties: { step: { type: 'string' }, status: { type: 'string', enum: ['pending', 'inProgress', 'completed'] } }, required: ['step', 'status'] } } }, required: ['plan'] } }
 ];
 
@@ -30,13 +32,13 @@ class TurnSession {
     this.model = model;
     this.settings = settings;     // { approvalPolicy, sandboxPolicy, effort }
     this.executor = executor;
+    this.workspace = new WorkspaceAccess(this.cwd);
     this._emit = emit;
     this.history = history || [];
     this.log = log;
     this.running = false;
     this.cancelled = false;
     this.pendingApprovals = new Map(); // requestId -> resolve(decision)
-    this.sessionAllowed = new Set();
     this.steerQueue = [];
     this.usage = { input: 0, output: 0 };
     this.abort = new AbortController();
@@ -70,6 +72,7 @@ class TurnSession {
   }
 
   resolveApproval(requestId, decision, by) {
+    if (![ApprovalDecision.ACCEPT, ApprovalDecision.DECLINE, ApprovalDecision.CANCEL].includes(decision)) return false;
     const resolve = this.pendingApprovals.get(requestId);
     if (!resolve) return false;
     this.pendingApprovals.delete(requestId);
@@ -138,55 +141,127 @@ class TurnSession {
 
   async requestApproval(method, payload) {
     const requestId = uid('req');
-    this.emit(method, { requestId, availableDecisions: Object.values(ApprovalDecision), ...payload });
+    this.emit(method, {
+      requestId,
+      ...payload,
+      availableDecisions: [ApprovalDecision.ACCEPT, ApprovalDecision.DECLINE, ApprovalDecision.CANCEL]
+    });
     return await new Promise((resolve) => this.pendingApprovals.set(requestId, resolve));
   }
 
   // ---------- tools ----------
   async execCommand(command) {
     const item = { id: uid('cmd'), type: ItemTypes.COMMAND_EXECUTION, command, cwd: this.cwd, executor: this.executor.id, status: ItemStatus.IN_PROGRESS, aggregatedOutput: '' };
-    const decision = decideCommand(command, { ...this.settings, sessionAllowed: this.sessionAllowed });
+    const list = String(command).match(/^ls -la(?: ([A-Za-z0-9._/\\-]+))?$/);
+    if (list) return (await this.listFiles(list[1] || '.', command)).item;
+    const remove = String(command).match(/^rm -rf ([A-Za-z0-9._/\\-]+)$/);
+    if (remove) return (await this.removePath(remove[1], command)).item;
+
+    // Generic model providers receive structured workspace tools, never a local shell.
+    // Keep this compatibility entry point fail-closed for old demo scenarios and records.
     this.emit(Events.ITEM_STARTED, { item });
-    if (decision.verdict === 'deny') {
-      item.status = ItemStatus.DECLINED; item.aggregatedOutput = 'Declined by policy: ' + decision.reason;
-      this.emit(Events.ITEM_COMPLETED, { item });
-      return item;
-    }
-    if (decision.verdict === 'ask') {
-      const d = await this.requestApproval(Events.COMMAND_REQUEST_APPROVAL, { itemId: item.id, command, cwd: this.cwd, reason: decision.reason });
-      if (d === ApprovalDecision.ACCEPT_FOR_SESSION) this.sessionAllowed.add(command);
-      if (d === ApprovalDecision.DECLINE || d === ApprovalDecision.CANCEL) {
-        item.status = ItemStatus.DECLINED; item.aggregatedOutput = d === ApprovalDecision.CANCEL ? 'Cancelled.' : 'Declined by user.';
-        this.emit(Events.ITEM_COMPLETED, { item });
-        if (d === ApprovalDecision.CANCEL) this.interrupt();
-        return item;
-      }
-    }
-    const t0 = Date.now();
-    const result = await this.executor.run(command, {
-      cwd: this.cwd,
-      onChild: (c) => { this.child = c; },
-      onOutput: (delta) => { item.aggregatedOutput += delta; this.emit(Events.COMMAND_OUTPUT_DELTA, { itemId: item.id, delta }); }
-    });
-    this.child = null;
-    item.exitCode = result.code;
-    item.aggregatedOutput = result.out;
-    item.durationMs = Date.now() - t0;
-    item.status = result.code === 0 ? ItemStatus.COMPLETED : ItemStatus.FAILED;
+    item.status = ItemStatus.DECLINED;
+    item.exitCode = -1;
+    item.aggregatedOutput = 'Unavailable: arbitrary shell and Git commands require a proven project-confined provider sandbox.';
     this.emit(Events.ITEM_COMPLETED, { item });
     return item;
   }
 
+  async listFiles(relPath = '.', command = null) {
+    const item = { id: uid('cmd'), type: ItemTypes.COMMAND_EXECUTION, command: command || `list_files ${relPath}`, cwd: this.cwd, executor: 'workspace', status: ItemStatus.IN_PROGRESS, aggregatedOutput: '' };
+    this.emit(Events.ITEM_STARTED, { item });
+    try {
+      const rows = this.workspace.list(relPath);
+      item.aggregatedOutput = rows.map((entry) => `${entry.type === 'directory' ? 'd' : entry.type === 'symlink' ? 'l' : '-'} ${entry.name}`).join('\n') + (rows.length ? '\n' : '');
+      item.exitCode = 0;
+      item.status = ItemStatus.COMPLETED;
+    } catch (err) {
+      item.aggregatedOutput = String(err && err.message || err);
+      item.exitCode = -1;
+      item.status = ItemStatus.DECLINED;
+    }
+    this.emit(Events.ITEM_COMPLETED, { item });
+    return { item, result: item.aggregatedOutput };
+  }
+
+  async readFile(relPath) {
+    const item = { id: uid('cmd'), type: ItemTypes.COMMAND_EXECUTION, command: `read_file ${relPath}`, cwd: this.cwd, executor: 'workspace', status: ItemStatus.IN_PROGRESS, aggregatedOutput: '' };
+    this.emit(Events.ITEM_STARTED, { item });
+    try {
+      item.aggregatedOutput = this.workspace.readFile(relPath);
+      item.exitCode = 0;
+      item.status = ItemStatus.COMPLETED;
+    } catch (err) {
+      item.aggregatedOutput = String(err && err.message || err);
+      item.exitCode = -1;
+      item.status = ItemStatus.DECLINED;
+    }
+    this.emit(Events.ITEM_COMPLETED, { item });
+    return { item, result: item.aggregatedOutput };
+  }
+
+  async removePath(relPath, command = null) {
+    const label = command || `remove_path ${relPath}`;
+    const item = { id: uid('cmd'), type: ItemTypes.COMMAND_EXECUTION, command: label, cwd: this.cwd, executor: 'workspace', status: ItemStatus.IN_PROGRESS, aggregatedOutput: '' };
+    let target;
+    try { target = this.workspace.inspect(relPath); }
+    catch (err) {
+      this.emit(Events.ITEM_STARTED, { item });
+      item.status = ItemStatus.DECLINED; item.exitCode = -1; item.aggregatedOutput = String(err && err.message || err);
+      this.emit(Events.ITEM_COMPLETED, { item });
+      return { item, result: item.aggregatedOutput };
+    }
+    const policyCommand = command || `rm -rf ${target.relative}`;
+    const decision = decideCommand(policyCommand, this.settings);
+    this.emit(Events.ITEM_STARTED, { item });
+    if (decision.verdict === 'deny') {
+      item.status = ItemStatus.DECLINED; item.aggregatedOutput = 'Declined by policy: ' + decision.reason;
+      this.emit(Events.ITEM_COMPLETED, { item });
+      return { item, result: item.aggregatedOutput };
+    }
+    if (decision.verdict === 'ask') {
+      const d = await this.requestApproval(Events.COMMAND_REQUEST_APPROVAL, { itemId: item.id, command: label, cwd: this.cwd, reason: decision.reason });
+      if (d === ApprovalDecision.DECLINE || d === ApprovalDecision.CANCEL) {
+        item.status = ItemStatus.DECLINED; item.aggregatedOutput = d === ApprovalDecision.CANCEL ? 'Cancelled.' : 'Declined by user.';
+        this.emit(Events.ITEM_COMPLETED, { item });
+        if (d === ApprovalDecision.CANCEL) this.interrupt();
+        return { item, result: item.aggregatedOutput };
+      }
+    }
+    const t0 = Date.now();
+    try {
+      this.workspace.remove(target.relative);
+      item.exitCode = 0;
+      item.aggregatedOutput = `Removed ${target.relative}\n`;
+    } catch (err) {
+      item.exitCode = -1;
+      item.aggregatedOutput = String(err && err.message || err);
+    }
+    item.durationMs = Date.now() - t0;
+    item.status = item.exitCode === 0 ? ItemStatus.COMPLETED : ItemStatus.FAILED;
+    this.emit(Events.ITEM_COMPLETED, { item });
+    return { item, result: item.aggregatedOutput };
+  }
+
   async writeFile(relPath, content) {
-    const abs = path.resolve(this.cwd, relPath);
+    let target;
     let oldText = null;
-    try { oldText = fs.readFileSync(abs, 'utf8'); } catch {}
+    try {
+      target = this.workspace.inspect(relPath, { allowMissing: true });
+      if (!target.missing) oldText = this.workspace.readFile(target.relative);
+    } catch (err) {
+      const item = { id: uid('chg'), type: ItemTypes.FILE_CHANGE, status: ItemStatus.DECLINED, changes: [{ path: String(relPath), kind: 'update', additions: 0, deletions: 0, lines: [] }] };
+      this.emit(Events.ITEM_STARTED, { item });
+      this.emit(Events.ITEM_COMPLETED, { item });
+      return { item, result: 'Declined by workspace boundary: ' + String(err && err.message || err) };
+    }
+    relPath = target.relative;
     const kind = oldText === null ? 'add' : 'update';
     const d = kind === 'add'
       ? { lines: content.split('\n').slice(0, 400).map((t) => ({ kind: 'add', text: t })), additions: content.split('\n').length, deletions: 0 }
       : lineDiff(oldText, content);
     const item = { id: uid('chg'), type: ItemTypes.FILE_CHANGE, status: ItemStatus.IN_PROGRESS, changes: [{ path: relPath, kind, additions: d.additions, deletions: d.deletions, lines: d.lines }] };
-    let decision = decideFileWrite(abs, { workspace: this.cwd, ...this.settings });
+    let decision = decideFileWrite(target.path, { workspace: this.workspace.root, ...this.settings });
     const collision = decision.verdict === 'allow' && this.settings.approvalPolicy !== 'never' ? this.collisionFor(relPath) : null;
     if (collision) {
       const who = (collision.thread.by && collision.thread.by.name) || 'a teammate';
@@ -207,8 +282,7 @@ class TurnSession {
       }
     }
     try {
-      fs.mkdirSync(path.dirname(abs), { recursive: true });
-      fs.writeFileSync(abs, content);
+      this.workspace.writeFile(relPath, content);
       item.status = ItemStatus.COMPLETED;
     } catch (e) {
       item.status = ItemStatus.FAILED;
@@ -227,8 +301,8 @@ class TurnSession {
       `Workspace directory: ${this.cwd}`,
       this.thread.worktree ? `You are in an isolated git worktree on branch ${this.thread.branch}.` : '',
       `Sandbox policy: ${sb}. Approval policy: ${ap}.`,
-      'Tools: `shell` runs bash in the workspace; `write_file` creates/replaces a file; `update_plan` shows a live checklist — use it for multi-step work and keep statuses current.',
-      'Prefer small verifiable steps; verify with shell when practical. When done, summarize concisely in Markdown.',
+      'Tools are project-confined capabilities: `read_file`, `list_files`, `write_file`, and `remove_path` never follow symlinks or accept outside paths. `update_plan` shows a live checklist.',
+      'Prefer small verifiable steps and use the structured tools. Local shell and Git subprocesses are unavailable until the host has a proven project-confined provider sandbox.',
       this.teamAwareness()
     ].filter(Boolean).join('\n');
   }
@@ -272,7 +346,9 @@ class TurnSession {
 
   async runModel() {
     const messages = this.buildMessages();
-    const tools = this.settings.sandboxPolicy === 'read-only' ? [TOOLS[0]] : TOOLS;
+    const tools = this.settings.sandboxPolicy === 'read-only'
+      ? TOOLS.filter((tool) => ['read_file', 'list_files', 'update_plan'].includes(tool.name))
+      : TOOLS;
     for (let round = 0; round < MAX_MODEL_ROUNDS && !this.cancelled; round++) {
       while (this.steerQueue.length) {
         const s = this.steerQueue.shift();
@@ -298,11 +374,14 @@ class TurnSession {
         if (this.cancelled) return;
         let args = {}; try { args = JSON.parse(c.arguments || '{}'); } catch {}
         let result;
-        if (c.name === 'shell') {
-          const item = args.command ? await this.execCommand(String(args.command)) : { status: 'failed', aggregatedOutput: 'missing command', exitCode: -1 };
-          result = JSON.stringify({ exit_code: item.exitCode, status: item.status, output: (item.aggregatedOutput || '').slice(0, MAX_TOOL_OUTPUT) });
+        if (c.name === 'read_file') {
+          result = args.path != null ? (await this.readFile(String(args.path))).result.slice(0, MAX_TOOL_OUTPUT) : 'missing path';
+        } else if (c.name === 'list_files') {
+          result = (await this.listFiles(args.path == null ? '.' : String(args.path))).result.slice(0, MAX_TOOL_OUTPUT);
         } else if (c.name === 'write_file') {
           result = (args.path != null && args.content != null) ? (await this.writeFile(String(args.path), String(args.content))).result : 'missing path/content';
+        } else if (c.name === 'remove_path') {
+          result = args.path != null ? (await this.removePath(String(args.path))).result : 'missing path';
         } else if (c.name === 'update_plan') {
           result = Array.isArray(args.plan) ? this.updatePlan(args.plan, args.explanation) : 'missing plan';
         } else result = 'unknown tool ' + c.name;

@@ -22,6 +22,7 @@ const { execFileSync, spawnSync } = require('child_process');
 const { Hub } = require('../packages/hub/server');
 const { Runtime } = require('../packages/runtime/index');
 const { localShell } = require('../packages/runtime/executors');
+const { TeamOps } = require('../packages/protocol');
 const probeMod = require('../packages/runtime/codex-probe');
 
 const ROOT = path.join(__dirname, '..');
@@ -83,7 +84,7 @@ class Client {
     // this send - otherwise the first reply satisfies the second call.
     const from = this.msgs.length;
     this.send({ type: 'command', id, threadId, runtimeId, command });
-    return this.waitFrom(from, (m) => m.type === 'command.result' && m.id === id, 60000, command.method).then((m) => ({ ...m, id }));
+    return this.waitFrom(from, (m) => (m.type === 'command.result' && m.id === id) || (m.type === 'error' && m.ref === id), 60000, command.method).then((m) => ({ ...m, id, error: m.error || m.message }));
   }
   async command(threadId, command, opts) {
     const m = await this.raw(threadId, command, opts);
@@ -478,6 +479,17 @@ function laneEnv(lane, probe, tmp) {
   await rt.start();
   const alice = new Client(url, 'alice'); await alice.connect();
   const bob = new Client(url, 'bob'); await bob.connect();
+  alice.send({ type: TeamOps.TEAM_CREATE, name: 'Codex proof' });
+  const team = (await alice.wait((m) => m.type === 'team')).team;
+  alice.send({ type: TeamOps.RUNTIME_PAIR, teamId: team.id, code: rt.pairingCode });
+  await alice.wait((m) => m.type === 'runtime.paired');
+  alice.send({ type: TeamOps.INVITE_CREATE, teamId: team.id, inviteeUserId: bob.user.id });
+  const invite = (await alice.wait((m) => m.type === 'invitation')).invitation;
+  bob.send({ type: TeamOps.INVITE_ACCEPT, code: invite.code });
+  await bob.wait((m) => m.type === 'team');
+  alice.send({ type: TeamOps.APPROVER_GRANT, teamId: team.id, userId: alice.user.id });
+  alice.send({ type: TeamOps.APPROVER_GRANT, teamId: team.id, userId: bob.user.id });
+  await alice.wait((m) => m.type === 'approvers' && m.approvers.some((a) => a.userId === bob.user.id || a.id === bob.user.id));
   alice.send({ type: 'runtimes.list' });
   await alice.wait((m) => m.type === 'runtimes' && m.runtimes.some((r) => r.online), 15000, 'runtime registration');
 
@@ -490,6 +502,12 @@ function laneEnv(lane, probe, tmp) {
     }
     for (const lane of LANES.filter((l) => l !== 'control')) {
       console.log(`\n-- ${lane} lane --`);
+      if (!rt.providerList().some((p) => p.id === 'codex-cli' && p.configured)) {
+        record('AC3 authentication', `lane-${lane}`, 'blocked',
+        'The production runtime disables CLI providers until project-confined reads and writes are proven. Historical provider evidence is retained separately.');
+      lanes[lane] = 'blocked';
+        continue;
+      }
       const setup = laneEnv(lane, probe, tmp);
       if (setup.blocked) {
         record('AC3 authentication', `lane-${lane}`, 'blocked', setup.blocked, { operatorAction: setup.fix });

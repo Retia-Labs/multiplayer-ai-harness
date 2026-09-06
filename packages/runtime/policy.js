@@ -53,7 +53,9 @@ const PRESETS = {
   'read-only': { approvalPolicy: ApprovalPolicy.ON_REQUEST, sandboxPolicy: SandboxPolicy.READ_ONLY },
   'agent': { approvalPolicy: ApprovalPolicy.ON_REQUEST, sandboxPolicy: SandboxPolicy.WORKSPACE_WRITE },
   'agent-untrusted': { approvalPolicy: ApprovalPolicy.UNTRUSTED, sandboxPolicy: SandboxPolicy.WORKSPACE_WRITE },
-  'full-access': { approvalPolicy: ApprovalPolicy.NEVER, sandboxPolicy: SandboxPolicy.DANGER_FULL_ACCESS }
+  // Compatibility key retained for persisted threads. This means automatic operations
+  // inside the authorized workspace; it never removes the project boundary.
+  'full-access': { approvalPolicy: ApprovalPolicy.NEVER, sandboxPolicy: SandboxPolicy.WORKSPACE_WRITE }
 };
 
 module.exports = { decideCommand, decideFileWrite, isSafeCommand, isRiskyCommand, PRESETS };
