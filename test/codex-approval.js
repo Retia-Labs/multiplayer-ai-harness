@@ -78,6 +78,12 @@ class Client {
   const url = `ws://127.0.0.1:${addr.port}`;
   const taps = [];
   const rt = new Runtime({ hubUrl: url, userName: 'alice', dataDir: path.join(tmp, 'rt'), projects: [project], log: () => {} });
+  if (!rt.providerList().some((provider) => provider.id === 'codex-app-server' && provider.configured)) {
+    console.log('BLOCKED: production CLI providers require proven project isolation; the experimental approval proof is not enabled.');
+    rt.stop();
+    await hub.close();
+    return;
+  }
   rt.providerTap = (line, msg) => taps.push({ at: Date.now(), line, msg });
   await rt.start();
 

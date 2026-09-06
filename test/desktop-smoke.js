@@ -10,10 +10,14 @@ function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.
   fs.writeFileSync(path.join(project, 'a.txt'), 'a\n');
   execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: localShell().bin });
   const port = 7800 + Math.floor(Math.random() * 100);
+  const launchEnv = { ...process.env, ELECTRON_DISABLE_SANDBOX: '1', HUB_PORT: String(port), HARNESS_USER: 'dana' };
+  delete launchEnv.ELECTRON_RUN_AS_NODE;
+  if (process.env.DESKTOP_EXECUTABLE && process.platform === 'win32') launchEnv.PATH = process.env.SystemRoot + '/system32;' + process.env.SystemRoot;
   const app = await electron.launch({
-    args: ['apps/desktop/main.js', '--user-data-dir=' + path.join(tmp, 'ud'), '--no-sandbox'],
+    executablePath: process.env.DESKTOP_EXECUTABLE || undefined,
+    args: [...(process.env.DESKTOP_EXECUTABLE ? [] : ['apps/desktop/main.js']), '--user-data-dir=' + path.join(tmp, 'ud'), '--no-sandbox'],
     cwd: path.join(__dirname, '..'),
-    env: { ...process.env, ELECTRON_DISABLE_SANDBOX: '1', HUB_PORT: String(port), HARNESS_USER: 'dana' }
+    env: launchEnv
   });
   const win = await app.firstWindow();
   await win.waitForSelector('#team-gate:not(.hidden)', { timeout: 30000 });
@@ -52,7 +56,9 @@ function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.
   await win.waitForSelector('.edit-card', { timeout: 20000 });
   assert(fs.existsSync(path.join(project, 'NOTES.md')), 'agent wrote a file through the desktop-spawned runtime');
   await win.waitForFunction(() => document.querySelector('#working').classList.contains('hidden'), null, { timeout: 30000 });
-  await win.screenshot({ path: path.join(__dirname, '..', 'docs', 'harness', 'desktop.png') });
+  const evidenceDir = path.join(__dirname, '..', '.artifacts', 'desktop-bootstrap');
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  await win.screenshot({ path: path.join(evidenceDir, process.env.DESKTOP_EXECUTABLE ? 'packaged-workspace.png' : 'workspace.png') });
   await app.close();
   console.log('\ndesktop smoke passed ✅'); process.exit(0);
 })().catch((e) => { console.error('DESKTOP SMOKE FAILED', e); process.exit(1); });

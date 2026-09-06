@@ -201,7 +201,7 @@ and Outfit, loaded from the same bundled font files the web UI uses.
 | --- | --- |
 | 1 - install and launch on clean macOS and Windows; no system Node, terminal or source-tree dependency | **Partial.** The dependency half is proved on Windows, including from an installed copy with no Node on PATH. Neither platform has been exercised on a *clean* machine, and macOS not at all. |
 | 2 - readiness, actionable failures, remote hub still registers the local host | **Met.** Both paths tested. |
-| 3 - packaged resources, platform paths, project selection, recorded targets and prerequisites | **Partial.** All but project selection, which is a native folder dialog and has not been driven in a packaged build. |
+| 3 - packaged resources, platform paths, project selection, recorded targets and prerequisites | **Met on Windows.** Packaged resources and folder authorization pass the Electron-driven smoke test; the native dialog return is stubbed to a real temporary project. macOS remains untested. |
 | 4 - reproducible artifacts, installation evidence, signing provisioning identified | **Met for Windows.** Artifacts reproduce from `npm run dist:win`, install, launch and uninstall; provisioning is written up. No macOS artifact. |
 
 ## Not done
@@ -210,6 +210,45 @@ and Outfit, loaded from the same bundled font files the web UI uses.
 - **No clean-machine install test.** This machine is a developer box. Installing here shows
   the installer works; it does not show it works on a machine that has never had the
   toolchain. That needs a fresh Windows VM and a fresh Mac.
-- **Project selection untested when packaged.** The folder picker is a native dialog; it
-  needs either a person or an Electron-driving test harness that does not exist yet.
 - **No auto-update.** Out of scope for an internal slice and gated on the hosting decision.
+
+## Merge verification and edge-case scan (2026-09-06)
+
+Integrated with the current private-team and Codex-proof branches. Kept host-local
+folder authorization, canonical pairing codes, and the shared `apps/web` renderer.
+The exact local runtime now reports readiness over parent/child IPC after its hub
+handshake. An unpaired host says ?ready to pair?; another online host cannot make
+this local host appear ready. A runtime startup failure retains the boot screen.
+Retry waits for child shutdown and coalesces concurrent calls. Initial boot waits
+for the status listener to load; health requests have bounded network timeouts.
+A failed log stream does not crash startup, and reduced-motion preferences stop
+its progress animation.
+
+Validation: full `npm test` (protocol, 16 unit tests, 68 boundary checks, 9 Codex
+control checks, multiplayer browser E2E); `npm run check:design`; desktop smoke
+from source and from the Windows x64 packaged executable with system Node absent
+from PATH. Packaged smoke covers pairing, consumed codes, wrong-host refusal,
+folder authorization persistence/restart, and a real demo file write.
+`npm run test:desktop-bootstrap` covers unavailable remote hub, data-folder action,
+concurrent retries, the exact local unpaired host, exited runtime, and repair/retry.
+The dormant Codex approval proof reports the production isolation blocker instead
+of waiting for a command that cannot be authorized.
+
+`npm audit` and `npm audit --omit=dev` report zero vulnerabilities. This is a
+registry dependency scan, not a proof that all application defects are absent.
+Four design-checker tests fail on Windows exactly as on unchanged main (symlink
+permissions and path assertions); the GitHub Linux workflow passes.
+
+Visual contract: setup screen uses `setup` and then `shell`; startup is the
+existing compact desktop bootstrap surface before a workspace exists. It reuses
+the bundled Outfit font and Plexus palette; the live setup remains in `apps/web`.
+Compared startup, failure and setup screenshots at 1487?1058 and 390?844 with
+`docs/design/plexus/design/qa/setup-desktop.png`. No horizontal clipping found.
+The compact bootstrap and existing team gate intentionally retain their layout;
+this merge does not migrate them to the prototype's full workspace shell.
+Evidence is under `.artifacts/desktop-bootstrap/`; selected captures are committed
+under `docs/proofs/desktop-merge-checks/`. Accepted reference baselines are unchanged.
+
+macOS builds, clean-machine installations, signing/notarization, and production
+CLI isolation/approval proof remain release gates; merging this integration does
+not assert they are complete.

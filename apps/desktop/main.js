@@ -39,6 +39,7 @@ function openLog() {
     const dir = path.join(app.getPath('userData'), 'logs');
     fs.mkdirSync(dir, { recursive: true });
     logStream = fs.createWriteStream(path.join(dir, 'desktop.log'), { flags: 'a' });
+    logStream.on('error', () => { logStream = null; });
     log(`--- started ${new Date().toISOString()} · electron ${process.versions.electron} · node ${process.versions.node} · packaged=${app.isPackaged} ---`);
   } catch { /* logging must never be the reason the app fails to start */ }
 }
@@ -103,7 +104,7 @@ function launchRuntime() {
 }
 
 function stopService(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   return new Promise((resolve) => {
     let forceTimer;
     const done = () => { clearTimeout(forceTimer); resolve(); };
@@ -244,7 +245,7 @@ async function boot() {
   await win.loadURL(httpUrl + '/?name=' + encodeURIComponent(userName));
 }
 
-function createWindow() {
+async function createWindow() {
   win = new BrowserWindow({
     width: 1360, height: 860, minWidth: 960, minHeight: 620,
     title: 'Plexus', backgroundColor: '#080a09', autoHideMenuBar: true,
@@ -253,7 +254,7 @@ function createWindow() {
   });
   // The window exists before the services do, so startup is visible instead of being a
   // blank frame or - worse - no window at all when something fails.
-  win.loadFile(path.join(__dirname, 'boot.html'));
+  await win.loadFile(path.join(__dirname, 'boot.html'));
   win.webContents.setWindowOpenHandler(({ url }) => { if (url.startsWith('https://')) shell.openExternal(url); return { action: 'deny' }; });
 }
 
@@ -268,17 +269,22 @@ async function runBoot() {
 ipcMain.handle('desktop:pairingCode', async () => localPairingCode());
 ipcMain.handle('desktop:runtimeId', async () => localRuntimeId());
 ipcMain.handle('desktop:pickFolder', (_event, runtimeId) => pickAndAuthorizeProject(runtimeId));
-ipcMain.handle('desktop:retryBoot', async () => {
-  await Promise.all(children.splice(0).map(stopService));
-  runtimeChild = null;
-  serviceLogs.hub.length = 0;
-  serviceLogs.runtime.length = 0;
-  await win.loadFile(path.join(__dirname, 'boot.html'));
-  return runBoot();
+let retryPromise = null;
+ipcMain.handle('desktop:retryBoot', () => {
+  if (retryPromise) return retryPromise;
+  retryPromise = (async () => {
+    await Promise.all(children.splice(0).map(stopService));
+    runtimeChild = null;
+    serviceLogs.hub.length = 0;
+    serviceLogs.runtime.length = 0;
+    await win.loadFile(path.join(__dirname, 'boot.html'));
+    await runBoot();
+  })().finally(() => { retryPromise = null; });
+  return retryPromise;
 });
 ipcMain.handle('desktop:openDataFolder', async () => shell.openPath(app.getPath('userData')));
 
-app.whenReady().then(() => { openLog(); createWindow(); return runBoot(); });
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) { createWindow(); runBoot(); } });
+app.whenReady().then(async () => { openLog(); await createWindow(); return runBoot(); });
+app.on('activate', async () => { if (BrowserWindow.getAllWindows().length === 0) { await createWindow(); runBoot(); } });
 app.on('window-all-closed', () => app.quit());
 app.on('quit', () => { for (const c of children) { try { c.kill(); } catch {} } });
