@@ -1,5 +1,5 @@
 'use strict';
-// Harness hub: the sync service. Holds append-only thread event logs, presence,
+// Plexus hub: the sync service. Holds append-only thread event logs, presence,
 // the runtime fleet registry, and routes human commands (start/steer/approve) to
 // the single runtime that owns each thread. It never sees provider keys or runs
 // inference — runtimes talk to model providers directly.
@@ -9,7 +9,7 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 const { HubStore, uid } = require('./store');
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 
 class Hub {
   constructor({ dbFile = ':memory:', staticDir = null, log = () => {} } = {}) {

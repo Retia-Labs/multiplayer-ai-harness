@@ -46,11 +46,13 @@ async function boot() {
     httpUrl = `http://127.0.0.1:${port}`;
     const ok = await waitForHub(httpUrl);
     if (!ok) throw new Error('hub did not start');
-    const projects = (process.env.HARNESS_PROJECTS || '').split(':').filter(Boolean).flatMap((p) => ['--project', p]);
+    // path.delimiter, not ':' - a Windows path starts with a drive letter and a colon.
+    const projects = (process.env.HARNESS_PROJECTS || '').split(path.delimiter).filter(Boolean).flatMap((p) => ['--project', p]);
     spawnService('runtime', path.join(ROOT, 'packages', 'runtime', 'index.js'), ['--hub', httpUrl.replace('http', 'ws'), '--name', userName, '--data', dataDir, ...projects], {});
   }
   win = new BrowserWindow({
-    width: 1360, height: 860, minWidth: 960, minHeight: 620, title: 'Harness', backgroundColor: '#0d0f12', autoHideMenuBar: true,
+    width: 1360, height: 860, minWidth: 960, minHeight: 620, title: 'Plexus', backgroundColor: '#080a09', autoHideMenuBar: true,
+    icon: path.join(ROOT, 'apps', 'web', 'brand', 'plexus-app-icon-256.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
   });
   win.loadURL(httpUrl + '/?name=' + encodeURIComponent(userName));

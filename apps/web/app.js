@@ -1,4 +1,4 @@
-/* Harness web client — talks to the hub over WebSocket; identical UI for browser and desktop shell. */
+/* Plexus web client — talks to the hub over WebSocket; identical UI for browser and desktop shell. */
 (function () {
   const $ = (s) => document.querySelector(s);
   const el = {

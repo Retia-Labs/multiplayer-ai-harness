@@ -1,5 +1,5 @@
 'use strict';
-// Harness runtime daemon: the only process that holds provider keys and touches the
+// Plexus runtime daemon: the only process that holds provider keys and touches the
 // workspace. It registers with a hub, owns threads, runs turns, and executes commands
 // routed from any client (start, steer, interrupt, approvals, git operations).
 const os = require('os');

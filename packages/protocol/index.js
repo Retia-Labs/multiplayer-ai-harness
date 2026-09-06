@@ -1,5 +1,5 @@
 'use strict';
-// Harness protocol — an independent JavaScript implementation modeled on the shape
+// Plexus protocol — an independent JavaScript implementation modeled on the shape
 // of OpenAI Codex's app-server protocol (thread → turn → item, item/* notifications,
 // approval requests with accept/decline decisions) so that tools speaking Codex's
 // vocabulary feel familiar here. Names only; no code is copied from Codex.

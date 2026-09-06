@@ -115,7 +115,10 @@ class HubStore {
   }
 }
 
-const PALETTE = ['#22b8cf', '#c026d3', '#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#8b5cf6', '#ec4899'];
+// Teammate colours have to tell people apart, so they carry hue - but restrained ones
+// that sit on the dark ground, keep white initials legible, and stay clear of the lime
+// accent, which belongs to actions alone.
+const PALETTE = ['#4a7fb5', '#7e6bae', '#2f7f6e', '#a05f4a', '#8a6b2f', '#4f7a45', '#a05070', '#5c6b7a'];
 function pickColor(name) {
   let h = 0;
   for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
