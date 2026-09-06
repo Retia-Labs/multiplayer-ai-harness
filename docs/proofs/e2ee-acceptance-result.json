@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-09-06T04:12:49.614Z",
+  "ranAt": "2026-09-06T04:39:25.152Z",
   "results": [
     {
       "criterion": "AC1",
@@ -111,9 +111,27 @@
     },
     {
       "criterion": "AC3",
-      "name": "membership key rotation",
-      "status": "blocked",
-      "detail": "Olm/Megolm rotates a group session on membership change, but this experiment exchanges to-device messages, which have no group session to rotate. Proving rotation needs the Megolm room path, or MLS epochs (OpenMLS) for real post-compromise security."
+      "name": "a shared task session reaches every current member",
+      "status": "pass",
+      "detail": "5 key deliveries, both members read it"
+    },
+    {
+      "criterion": "AC3",
+      "name": "removing a member rotates the session",
+      "status": "pass",
+      "detail": "session invalidated and re-shared to the remaining members only"
+    },
+    {
+      "criterion": "AC3",
+      "name": "a removed member cannot read what comes after",
+      "status": "pass",
+      "detail": "carol reads it; bob cannot, even holding the ciphertext"
+    },
+    {
+      "criterion": "AC3",
+      "name": "rotation does not retract what was already read",
+      "status": "info",
+      "detail": "a removed device keeps what it already decrypted — removal is forward-only"
     },
     {
       "criterion": "AC4",

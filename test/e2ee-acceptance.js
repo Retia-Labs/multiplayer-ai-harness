@@ -224,10 +224,55 @@ const TASK = {
     return { detail: r.reason + ', and dropped from the directory' };
   });
 
-  await check('AC3', 'membership key rotation', async () => ({
-    status: 'blocked',
-    detail: 'Olm/Megolm rotates a group session on membership change, but this experiment exchanges to-device messages, which have no group session to rotate. Proving rotation needs the Megolm room path, or MLS epochs (OpenMLS) for real post-compromise security.'
-  }));
+  // Revocation at the relay is access control: a relay that ignores its own list still
+  // delivers. Rotation is the cryptographic half - the removed device is not given the new
+  // session, so it cannot read what follows even if it receives the bytes.
+  const ROOM = '!task_shared:plexus.local';
+  const CAROL = '@carol:plexus.local';
+  const carol = await Endpoint.create({ user: CAROL, device: 'CAROLDEV', transport });
+  const alice3 = await Endpoint.create({ user: ALICE, device: 'ALICESHARED', transport });
+  const bob3 = await Endpoint.create({ user: BOB, device: 'BOBSHARED', transport });
+  for (const e of [alice3, bob3, carol]) await e.track([ALICE, BOB, CAROL]);
+
+  await check('AC3', 'a shared task session reaches every current member', async () => {
+    const shared = await alice3.shareTaskKey(ROOM, [ALICE, BOB, CAROL]);
+    await bob3.open(dir.drain(BOB, 'BOBSHARED'));
+    await carol.open(dir.drain(CAROL, 'CAROLDEV'));
+    const m1 = await alice3.encryptTask(ROOM, 'plexus.task', { secret: 'BEFORE-REMOVAL' });
+    globalThis.__m1 = m1;
+    const asBob = await bob3.decryptTask(ROOM, m1);
+    const asCarol = await carol.decryptTask(ROOM, m1);
+    assert.equal(asBob.content.secret, 'BEFORE-REMOVAL');
+    assert.equal(asCarol.content.secret, 'BEFORE-REMOVAL');
+    return { detail: `${shared.delivered} key deliveries, both members read it` };
+  });
+
+  await check('AC3', 'removing a member rotates the session', async () => {
+    dir.revoke(BOB, 'BOBSHARED');
+    const rotated = await alice3.rotateTaskKey(ROOM);
+    assert.equal(rotated, true, 'the group session should have been invalidated');
+    await alice3.shareTaskKey(ROOM, [ALICE, CAROL]);
+    await carol.open(dir.drain(CAROL, 'CAROLDEV'));
+    return { detail: 'session invalidated and re-shared to the remaining members only' };
+  });
+
+  await check('AC3', 'a removed member cannot read what comes after', async () => {
+    const m2 = await alice3.encryptTask(ROOM, 'plexus.task', { secret: 'AFTER-REMOVAL' });
+    const asCarol = await carol.decryptTask(ROOM, m2);
+    assert.equal(asCarol.content.secret, 'AFTER-REMOVAL', 'a remaining member must still read');
+    let refused = false;
+    try { await bob3.decryptTask(ROOM, m2); } catch { refused = true; }
+    assert.ok(refused, 'the removed member decrypted post-rotation content');
+    return { detail: 'carol reads it; bob cannot, even holding the ciphertext' };
+  });
+
+  await check('AC3', 'rotation does not retract what was already read', async () => {
+    // Stated as a passing check because it is a real limit, not a bug: the old session is
+    // still in the removed device's store, so history it already had stays readable.
+    const stillReadable = await bob3.decryptTask(ROOM, globalThis.__m1);
+    assert.equal(stillReadable.content.secret, 'BEFORE-REMOVAL');
+    return { status: 'info', detail: 'a removed device keeps what it already decrypted — removal is forward-only' };
+  });
 
   console.log('\nAC4  storage and packaging, and what must be recorded');
 

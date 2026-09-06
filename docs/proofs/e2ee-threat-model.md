@@ -85,15 +85,16 @@ This boundary must be stated wherever the encryption is described to a customer.
 **A compromised endpoint.** Anything a device can read, an attacker on that device can read.
 Encryption is not endpoint security.
 
-**A removed device un-knowing what it held.** Revocation stops *future delivery*. It does not
-retract past content, and this experiment performs no key rotation, so there is no
-post-compromise security. A device removed at 3pm still holds everything it decrypted before
-3pm, and its keys still open anything it can otherwise obtain. MLS epochs (OpenMLS) would
-change this; Olm to-device messaging does not.
+**A removed device un-knowing what it held.** Removal is forward-only. Rotation means the
+device cannot read anything sent afterwards, but the old session is still in its store, so a
+device removed at 3pm keeps everything it decrypted before 3pm. No protocol retracts what has
+already been seen; this is a property of the world, not of the library.
 
-**A hostile relay refusing to enforce revocation.** Delivery refusal is access control, not
-cryptography. A relay that ignores its own revocation list will deliver anyway; only rotation
-makes removal cryptographically meaningful.
+**A forgotten rotation.** Rotation happens because the application asks for it. If a
+membership change ever fails to trigger one, the removed device keeps reading and nothing
+visibly breaks. MLS makes membership change and key change the same operation, which removes
+that failure mode; with Megolm it has to be enforced by the code path and tested for. That is
+now the strongest remaining argument for revisiting OpenMLS.
 
 **Traffic analysis.** See the metadata table.
 

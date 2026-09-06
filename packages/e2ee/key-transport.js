@@ -96,6 +96,10 @@ class KeyDirectory {
     return JSON.stringify({ one_time_keys, failures: {} });
   }
 
+  // Group-session keys travel as ordinary to-device envelopes, so they go through exactly
+  // the same revocation gate as anything else.
+  deliverToDevice(user, device, envelope) { return this.deliver(user, device, envelope); }
+
   deliver(user, device, envelope) {
     if (this.revoked.has(user + '/' + device)) return { delivered: false, reason: 'endpoint_revoked' };
     const box = user + '/' + device;
@@ -134,6 +138,7 @@ class KeyDirectory {
 // Binds one endpoint to the directory above.
 class KeyTransport {
   constructor(directory) { this.directory = directory; }
+  deliverToDevice(user, device, envelope) { return this.directory.deliverToDevice(user, device, envelope); }
   async send(type, { user, device, body }) {
     this.directory.audit.push({ type, user, device, at: Date.now() });
     if (type === 'KeysUpload') return this.directory.upload(user, device, body);

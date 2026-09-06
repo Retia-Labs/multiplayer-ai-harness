@@ -82,16 +82,25 @@ boundaries are written up in [the threat model](e2ee-threat-model.md).
 | --- | --- |
 | 1 — relay/database/logs cannot read content or keys; document the boundaries | **Met.** Proved against a real `HubStore` sqlite file, not a variable. All three trust boundaries documented, including the inference provider. |
 | 2 — a trusted endpoint verifies a new endpoint; test substitution, tampering, replay, staleness | **Met.** Cross-signing verification, plus five refusals with distinct reasons. |
-| 3 — clean-endpoint recovery, history scope, rotation, removal, expired grants | **Partial.** Recovery, removal and grant expiry are proved. **Key rotation is not**, and that is a real gap, not a formality. |
+| 3 — clean-endpoint recovery, history scope, rotation, removal, expired grants | **Met.** Recovery, removal, expired grants, and key rotation: a removed member provably cannot read content sent after rotation, while a remaining member still can. |
 | 4 — storage and packaging on both desktops and browser; record versions, failures, review needs | **Partial.** Versions, failure cases and review requirements recorded. Desktop/browser storage packaging is not built and macOS cannot be exercised here. |
 
-## The gap that matters most
+## Removal is now cryptographic, not just access control
 
-**No key rotation on membership change.** Revocation stops future *delivery* through the
-relay, which is access control rather than cryptography — a relay that ignores its own
-revocation list delivers anyway. A removed device still holds everything it decrypted before
-removal and its keys still open anything it can otherwise obtain.
+Tasks are shared through a Megolm group session rather than per-device messages. Removing a
+member invalidates that session and re-shares a new one to the remaining members only, so the
+removed device cannot read what follows **even if it obtains the ciphertext** — proved by
+handing it the ciphertext and watching it fail, while a remaining member reads the same bytes.
 
-Olm to-device messaging has no post-compromise security. MLS epochs do. If "remove a device"
-has to mean what a customer will assume it means, that is the argument for revisiting
-OpenMLS, and it is worth having before the production adapter is written rather than after.
+That is the difference between the relay declining to deliver, which a hostile relay can
+ignore, and the device being unable to read.
+
+**Removal is forward-only, and that is inherent.** The old session is still in the removed
+device's store, so anything it already decrypted stays readable. No protocol can retract what
+a device has already seen. What rotation buys is that everything *after* the removal is out
+of reach.
+
+The remaining argument for MLS is narrower than before: Megolm rotation is driven by the
+application deciding to rotate, where MLS epochs make membership change and key change the
+same operation. That is a robustness difference — a forgotten rotation is a silent leak —
+rather than the capability gap it looked like earlier.

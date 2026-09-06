@@ -147,6 +147,61 @@ class Endpoint {
     return out;
   }
 
+  // ---- shared task sessions, and rotating them on membership change ----
+  //
+  // A to-device message is sealed for one device, which is fine for control but wrong for
+  // a task several people watch. A group session is shared once with the current members
+  // and used for everything after - which is also what makes removal meaningful, because
+  // the session can be thrown away and the next one shared with fewer people.
+
+  // Hand the current group session to everyone who should be able to read what follows.
+  async shareTaskKey(roomId, users) {
+    // The group key itself travels sealed to each device, so the Olm sessions have to
+    // exist before it can be handed out at all.
+    await this.ensureSessions(users);
+    const settings = new sdk.EncryptionSettings();
+    const reqs = await this.machine.shareRoomKey(new sdk.RoomId(roomId), users.map(userId), settings);
+    let delivered = 0;
+    for (const req of reqs || []) {
+      const body = JSON.parse(req.body);
+      for (const [user, devices] of Object.entries(body.messages || {})) {
+        for (const [device, content] of Object.entries(devices)) {
+          const r = this.transport.deliverToDevice(user, device, { type: req.eventType || 'm.room.encrypted', sender: this.user, content });
+          if (r && r.delivered) delivered++;
+        }
+      }
+      try { await this.machine.markRequestAsSent(req.id, sdk.RequestType.ToDevice, '{}'); } catch {}
+    }
+    return { requests: (reqs || []).length, delivered };
+  }
+
+  async encryptTask(roomId, type, content) {
+    const ciphertext = await this.machine.encryptRoomEvent(new sdk.RoomId(roomId), type, JSON.stringify(content));
+    return { type: 'm.room.encrypted', sender: this.user, room_id: roomId, content: JSON.parse(ciphertext) };
+  }
+
+  async decryptTask(roomId, event) {
+    const wire = JSON.stringify({
+      type: 'm.room.encrypted',
+      sender: event.sender,
+      event_id: event.event_id || ('$' + Math.random().toString(36).slice(2)),
+      origin_server_ts: event.origin_server_ts || Date.now(),
+      room_id: roomId,
+      content: event.content
+    });
+    const decrypted = await this.machine.decryptRoomEvent(
+      wire, new sdk.RoomId(roomId), new sdk.DecryptionSettings(sdk.TrustRequirement.Untrusted)
+    );
+    return JSON.parse(decrypted.event);
+  }
+
+  // Throw the current group session away. The next share creates a new one, so anyone left
+  // out of that share cannot read anything sent afterwards - which is the difference
+  // between a relay declining to deliver and a device actually being unable to read.
+  async rotateTaskKey(roomId) {
+    return this.machine.invalidateGroupSession(new sdk.RoomId(roomId));
+  }
+
   // ---- endpoint identity and verification ----
 
   // Establish this account's cross-signing identity. The keys it publishes are public;
