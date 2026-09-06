@@ -5,6 +5,7 @@
 - [Implementation specification](product-spec.md), published as [GitHub issue #1](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1).
 - [Team issue breakdown](team-issue-breakdown.md), with work lanes, story coverage and dependencies.
 - [Issue manifest](team-issues/manifest.json), with the publication mapping and complete local issue bodies in the same directory.
+- [Plexus design reference and prototype](../design/plexus/README.md), with [agent implementation rules](../design/plexus/AGENT-DEVELOPMENT.md), shared tokens, screen contracts, and accepted captures. These guide presentation; the product spec and ADRs govern behavior.
 
 The spec supersedes earlier drafts where they differ. User interviews and a market-validation exercise are not implementation prerequisites. Preserve technical feasibility, privacy, platform and external-release gates. Readiness labels describe the kind of work; choose issues whose blockers are complete.
 

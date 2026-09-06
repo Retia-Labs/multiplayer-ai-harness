@@ -1,7 +1,9 @@
 // Unit tests: policy engine, Codex exec JSONL translator, line diff, hub store.
 const assert = require('assert');
 const { decideCommand, decideFileWrite, PRESETS } = require('../packages/runtime/policy');
-const { translate, sandboxFlags } = require('../packages/runtime/codex-exec');
+const { translate, sandboxFlags, buildArgs } = require('../packages/runtime/codex-exec');
+const codexProbe = require('../packages/runtime/codex-probe');
+const { Hub } = require('../packages/hub/server');
 const { lineDiff } = require('../packages/runtime/diff');
 const cc = require('../packages/runtime/claude-code');
 const { HubStore } = require('../packages/hub/store');
@@ -65,7 +67,7 @@ t('codex exec: JSONL events translate to protocol events', () => {
 });
 t('codex exec: sandbox policy maps to CLI flags', () => {
   assert.deepEqual(sandboxFlags('read-only'), ['--sandbox', 'read-only']);
-  assert.deepEqual(sandboxFlags('workspace-write'), ['--full-auto']);
+  assert.deepEqual(sandboxFlags('workspace-write'), ['--sandbox', 'workspace-write']);
   assert.deepEqual(sandboxFlags('danger-full-access'), ['--dangerously-bypass-approvals-and-sandbox']);
 });
 
@@ -106,6 +108,75 @@ t('hub store: append-only log with sequence numbers and cursor reads', () => {
   assert.equal(s.append('t', { method: 'b' }).seq, 2);
   assert.deepEqual(s.eventsFrom('t', 1).map((e) => e.method), ['b']);
   s.close();
+});
+
+t('codex exec: buildArgs pins the workspace and resumes an existing session in order', () => {
+  const fresh = buildArgs({ prompt: 'go', cwd: '/w', sandboxPolicy: 'workspace-write', model: 'gpt-5.4-mini' });
+  assert.deepEqual(fresh, ['exec', '--json', '--skip-git-repo-check', '-C', '/w', '--sandbox', 'workspace-write', '-m', 'gpt-5.4-mini', 'go']);
+  const resumed = buildArgs({ prompt: 'more', cwd: '/w', sandboxPolicy: 'read-only', sessionId: 'sess-1' });
+  // `codex exec resume` rejects --cd and --sandbox outright: the session carries both.
+  assert.deepEqual(resumed, ['exec', 'resume', '--json', '--skip-git-repo-check', 'sess-1', 'more']);
+  assert.ok(!resumed.includes('-C') && !resumed.includes('--sandbox'));
+});
+
+t('codex probe: resolves a runnable command shape, or a blocker that says what to do', () => {
+  const missing = codexProbe.resolveCodex('definitely-not-a-real-binary-xyz');
+  assert.equal(missing.ok, false);
+  const p = codexProbe.probe({ bin: 'definitely-not-a-real-binary-xyz' });
+  assert.ok(p.blockers.length);
+  assert.ok(p.blockers.every((b) => b.detail && b.alternative), 'every blocker carries an alternative');
+  const real = codexProbe.resolveCodex();
+  if (real.ok) assert.ok(Array.isArray(real.prefix) && real.bin, 'a resolved codex is [bin, ...prefix, ...args]');
+});
+
+t('hub: the command log evicts settled entries and never a command still in flight', () => {
+  const hub = new Hub({ dbFile: ':memory:', log: () => {} });
+  for (let i = 0; i < 5; i++) hub.commandLog.set('u/done' + i, { state: 'done', waiters: new Set() });
+  hub.commandLog.set('u/pending', { state: 'pending', waiters: new Set() });
+  hub.pruneCommandLog(2);
+  assert.ok(hub.commandLog.has('u/pending'), 'the in-flight command survived pruning');
+  assert.ok(hub.commandLog.size <= 3);
+  hub.store.close();
+});
+
+t('hub: retries survive client disconnect and cannot change their target or payload', () => {
+  const hub = new Hub({ dbFile: ':memory:', log: () => {} });
+  const sent = [];
+  const socket = () => ({ readyState: 1, send: (raw) => sent.push(JSON.parse(raw)) });
+  const runtimeWs = socket(), first = socket(), retry = socket();
+  const ctx = { user: { id: 'u', name: 'alice' }, role: 'client', subs: new Set() };
+  hub.store.runtimePairing = () => ({ teamId: 'team' });
+  hub.store.membership = () => true;
+  hub.store.isApprover = () => false;
+  hub.runtimes.set('runtime', runtimeWs);
+  const msg = { id: 'retry-id', runtimeId: 'runtime', command: { method: 'thread/start' } };
+  hub.onCommand(first, ctx, msg);
+  hub.onClose(first, ctx);
+  hub.onCommand(retry, ctx, msg);
+  assert.equal(sent.filter((m) => m.type === 'command').length, 1);
+  assert.throws(() => hub.onCommand(retry, ctx, { ...msg, command: { method: 'thread/delete' } }), /different input/);
+  assert.throws(() => hub.onCommand(retry, { ...ctx, user: { id: 'other' } }, msg));
+  hub.handleMessage(runtimeWs, { role: 'runtime', user: {}, teamId: 'team', runtimeId: 'runtime' },
+    { type: 'command.result', id: msg.id, ok: true, result: { value: 1 } });
+  hub.onCommand(retry, ctx, msg);
+  assert.equal(sent.at(-1).duplicate, true);
+  assert.equal(sent.filter((m) => m.type === 'command').length, 1);
+  hub.store.close();
+});
+
+t('hub: runtime disconnect settles retries without dispatching the action again', () => {
+  const hub = new Hub({ dbFile: ':memory:', log: () => {} });
+  const runtimeWs = { readyState: 1 }, received = [];
+  const client = { readyState: 1, send: (raw) => received.push(JSON.parse(raw)) };
+  const entry = { state: 'pending', waiters: new Set([client]), runtimeWs };
+  hub.pendingCommands.set('uncertain', entry);
+  hub.commandLog.set('u/uncertain', entry);
+  hub.onClose(runtimeWs, { subs: new Set() });
+  assert.equal(entry.state, 'done');
+  assert.match(entry.result.error, /outcome may be unknown/);
+  assert.equal(received.length, 1);
+  assert.equal(hub.pendingCommands.size, 0);
+  hub.store.close();
 });
 
 console.log(`\n${n} unit tests passed ✅`);

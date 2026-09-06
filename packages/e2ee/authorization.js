@@ -28,6 +28,8 @@ function issueGrant({ requestId, turnId, threadId, approverUser, approverDevice,
 
 const Refusals = {
   REPLAYED: 'grant_already_consumed',
+  INVALID: 'grant_invalid',
+  WRONG_THREAD: 'grant_for_another_thread',
   EXPIRED: 'grant_expired',
   WRONG_REQUEST: 'grant_for_another_request',
   STALE_TURN: 'grant_for_a_superseded_turn',
@@ -38,31 +40,41 @@ const Refusals = {
 // The execution host's ledger. It refuses a grant for a stated reason, and consumes the
 // ones it accepts so the same grant can never be acted on twice.
 class GrantLedger {
-  constructor() { this.consumed = new Map(); }
+  constructor() { this.consumed = new Map(); this.resolvedRequests = new Set(); }
 
   // `pending` is what the host is actually waiting for right now.
-  check(grant, pending, { now = Date.now(), decrypted = true } = {}) {
-    if (!decrypted) return { ok: false, reason: Refusals.NOT_DECRYPTED };
+  check(grant, pending, { now = Date.now(), decrypted = false } = {}) {
+    if (decrypted !== true) return { ok: false, reason: Refusals.NOT_DECRYPTED };
     if (!grant || !grant.grantId) return { ok: false, reason: Refusals.WRONG_REQUEST };
     if (this.consumed.has(grant.grantId)) return { ok: false, reason: Refusals.REPLAYED };
-    if (now > grant.expiresAt) return { ok: false, reason: Refusals.EXPIRED };
+    if (!pending || !['grantId', 'requestId', 'turnId', 'threadId', 'approverUser', 'approverDevice'].every((key) => typeof grant[key] === 'string' && grant[key].length > 0) ||
+        !['requestId', 'turnId', 'threadId', 'approverUser', 'approverDevice'].every((key) => typeof pending[key] === 'string' && pending[key].length > 0) ||
+        !['accept', 'decline', 'cancel'].includes(grant.decision) ||
+        ![now, grant.issuedAt, grant.expiresAt].every(Number.isFinite) || grant.issuedAt > now || grant.expiresAt <= grant.issuedAt) {
+      return { ok: false, reason: Refusals.INVALID };
+    }
+    if (now >= grant.expiresAt) return { ok: false, reason: Refusals.EXPIRED };
     if (grant.requestId !== pending.requestId) return { ok: false, reason: Refusals.WRONG_REQUEST };
     // The turn is the freshness anchor: an approval for a turn that has been superseded is
     // an approval for work that no longer exists, however recently it was issued.
     if (grant.turnId !== pending.turnId) return { ok: false, reason: Refusals.STALE_TURN };
-    if (pending.approverDevice && grant.approverDevice !== pending.approverDevice) {
+    if (grant.threadId !== pending.threadId) return { ok: false, reason: Refusals.WRONG_THREAD };
+    if (grant.approverUser !== pending.approverUser || grant.approverDevice !== pending.approverDevice) {
       return { ok: false, reason: Refusals.WRONG_APPROVER };
     }
+    if (this.resolvedRequests.has(JSON.stringify([grant.threadId, grant.turnId, grant.requestId]))) return { ok: false, reason: Refusals.REPLAYED };
     return { ok: true };
   }
 
   consume(grant) {
     this.consumed.set(grant.grantId, Date.now());
+    this.resolvedRequests.add(JSON.stringify([grant.threadId, grant.turnId, grant.requestId]));
     return { ok: true, decision: grant.decision };
   }
 
   // Recovery restores history, not authority. A grant recovered from a backup is still
-  // expired or still consumed, because the ledger and the clock both survive it.
+  // expired or still consumed while this ledger lives. Production must persist the
+  // consumed grants and resolved requests across execution-host restarts.
   resolve(grant, pending, opts) {
     const verdict = this.check(grant, pending, opts);
     if (!verdict.ok) return verdict;

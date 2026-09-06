@@ -124,3 +124,14 @@ Before any public claim of end-to-end encryption:
    with post-compromise security (MLS) are required for device removal to mean what
    customers will assume it means.
 3. Explicit wording for boundaries 2 and 3 in any customer-facing description.
+
+## Merge integration limits
+
+The experimental grant ledger validates thread, request, turn, user and device,
+requires explicit decryption evidence, rejects malformed timestamps/decisions,
+and rejects a second grant for an already resolved request. The caller must bind
+that evidence and approver identity to authenticated, verified crypto output;
+a payload's self-declared sender is not authority. Both replay sets are in-memory:
+production must persist them on the execution host before relying on them across
+restarts. Importing a recovery key here does not demonstrate restored history.
+The production hub remains unwired to this experiment. Issue #3 stays open.

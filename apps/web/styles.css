@@ -104,8 +104,9 @@ body[data-theme="light"] .brand .on-dark { display: none; }
 .thread-item:hover .t-del { opacity: .8; }
 .t-del:hover { background: var(--bg-active); color: var(--text); }
 .thread-empty { color: var(--text-faint); font-size: 12.5px; padding: 14px 10px; }
-.sidebar-footer { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border-soft); padding: 10px 12px; }
-.me { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); }
+.sidebar-footer { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border-soft); padding: 10px 12px; min-width: 0; }
+.me { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.me .avatar { flex: none; }
 
 /* avatars */
 .avatar { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 10.5px; font-weight: 700; color: #fff; flex: none; text-transform: uppercase; }
@@ -321,3 +322,15 @@ tr.hunk td { background: var(--bg-raised); color: var(--text-faint); padding: 3p
 .field input[type="text"] { padding: 7px 10px; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--bg); color: var(--text); outline: none; }
 .handoff-note { margin: 0 auto 16px; max-width: 780px; padding: 0 28px; }
 .handoff-note .hn { display: inline-flex; align-items: center; gap: 8px; border: 1px dashed var(--border); border-radius: var(--r-control); padding: 8px 12px; font-size: 12.5px; color: var(--text-dim); }
+
+/* ===== teams, invitations and host pairing ===== */
+.gate-block { display: flex; gap: 8px; margin-top: 12px; }
+.gate-block input { flex: 1; padding: 9px 12px; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--bg); color: var(--text); outline: none; }
+.gate-block input:focus { border-color: var(--text-faint); }
+.gate-or { margin: 14px 0 2px; color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .13em; }
+.gate-error { margin-top: 12px; color: var(--red); font-size: 12.5px; }
+.team-admin { display: flex; flex-direction: column; gap: 10px; }
+.team-admin-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.code-field { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 12px; padding: 6px 10px; border-radius: var(--r-control); border: 1px solid var(--border); background: var(--bg); color: var(--text); outline: none; min-width: 260px; }
+/* Membership is not decryption access; the badge says so rather than implying otherwise. */
+.enroll-badge { flex: none; font-size: 9.5px; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; color: var(--amber); border: 1px solid var(--amber); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }

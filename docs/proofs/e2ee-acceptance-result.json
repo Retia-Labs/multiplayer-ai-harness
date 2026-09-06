@@ -1,5 +1,5 @@
 {
-  "ranAt": "2026-09-06T04:39:25.152Z",
+  "ranAt": "2026-09-06T13:56:51.845Z",
   "results": [
     {
       "criterion": "AC1",
@@ -11,7 +11,7 @@
       "criterion": "AC1",
       "name": "the hub database on disk holds only ciphertext",
       "status": "pass",
-      "detail": "52.0 KB of sqlite, searched for plaintext"
+      "detail": "100.0 KB of sqlite, searched for plaintext"
     },
     {
       "criterion": "AC1",
@@ -86,6 +86,12 @@
       "detail": "grant_was_not_encrypted"
     },
     {
+      "criterion": "AC2",
+      "name": "grant binding and malformed-input boundaries fail closed",
+      "status": "pass",
+      "detail": "missing decryption evidence, wrong thread/user/device, exact expiry, malformed timestamps/decision, missing context, and a second grant for a resolved request are refused"
+    },
+    {
       "criterion": "AC3",
       "name": "the customer holds a recovery key the relay never sees",
       "status": "pass",
@@ -93,15 +99,15 @@
     },
     {
       "criterion": "AC3",
-      "name": "a clean endpoint recovers with the customer key alone",
+      "name": "a clean endpoint imports the customer recovery key",
       "status": "pass",
-      "detail": "no operator secret involved"
+      "detail": "key import needs no operator secret; restoration of encrypted history is not proved"
     },
     {
       "criterion": "AC3",
       "name": "recovery does not reinstate a consumed or expired grant",
       "status": "pass",
-      "detail": "history restores; authority does not"
+      "detail": "existing in-memory ledger still rejects consumed/expired grants; host restart persistence is not proved"
     },
     {
       "criterion": "AC3",

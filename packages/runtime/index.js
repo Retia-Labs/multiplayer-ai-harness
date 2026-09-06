@@ -10,17 +10,45 @@ const { HubClient } = require('./hub-client');
 const { RuntimeStore } = require('./store');
 const { TurnSession } = require('./session');
 const { createProvider, DEFAULT_MODELS } = require('./providers');
-const { CodexExecBackend, available: codexAvailable } = require('./codex-exec');
-const { ClaudeCodeBackend, available: claudeAvailable } = require('./claude-code');
 const { createExecutor, CrabboxExecutor } = require('./executors');
 const { PRESETS } = require('./policy');
-const git = require('./git');
-const { Commands, Events, ItemTypes } = require('../protocol');
+const { Commands, Events, ItemTypes, Errors, createPairingCode } = require('../protocol');
 
 const uid = (p) => p + '_' + crypto.randomBytes(8).toString('hex');
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  if (value && typeof value === 'object') {
+    return '{' + Object.keys(value).sort().map((key) => JSON.stringify(key) + ':' + canonicalJson(value[key])).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+
+function commandFingerprint(teamId, threadId, by, command) {
+  return crypto.createHash('sha256').update(canonicalJson({
+    teamId, threadId: threadId || null, userId: by && by.userId, command
+  })).digest('hex');
+}
+
+function writeOwnerFileAtomic(file, contents) {
+  const temp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(temp, contents, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    fs.renameSync(temp, file);
+    fs.chmodSync(file, 0o600);
+  } catch (err) {
+    try { fs.unlinkSync(temp); } catch {}
+    throw err;
+  }
+}
+
+// Ordered from least to most authority. The host chooses a ceiling; callers may only choose
+// a preset at or below it. `agent-untrusted` is stricter than `agent` because it asks before
+// every command that is not on the trusted list.
+const PRESET_ORDER = ['read-only', 'agent-untrusted', 'agent', 'full-access'];
+
 class Runtime {
-  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, log = () => {} }) {
+  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, maxPreset = 'agent', log = () => {} }) {
     this.hubUrl = hubUrl;
     this.org = org;
     this.userName = userName || os.userInfo().username;
@@ -28,14 +56,35 @@ class Runtime {
     fs.mkdirSync(this.dataDir, { recursive: true });
     this.store = new RuntimeStore(path.join(this.dataDir, 'runtime.sqlite'));
     this.id = this.store.getKv('runtimeId') || (() => { const id = uid('rt'); this.store.setKv('runtimeId', id); return id; })();
+    writeOwnerFileAtomic(path.join(this.dataDir, 'runtime-id'), this.id + '\n');
+    this.runtimeToken = this.store.getKv('runtimeToken') || (() => {
+      const token = 'rtt_' + crypto.randomBytes(32).toString('hex');
+      this.store.setKv('runtimeToken', token);
+      return token;
+    })();
     this.name = name || `${this.userName}@${os.hostname()}`;
     this.log = log;
     this.providerConfig = providers;   // { openai: {apiKey, baseUrl}, anthropic: {apiKey}, ollama: {baseUrl}, openrouter: {apiKey} }
     this.executor = createExecutor(executor);
     this.projects = new Map();
-    for (const dir of projects) this.projects.set(path.resolve(dir), { dir: path.resolve(dir), name: path.basename(dir) });
+    for (const dir of projects) {
+      this.projects.set(path.resolve(dir), {
+        dir: path.resolve(dir), name: path.basename(dir), branch: null, dirty: null
+      });
+    }
     this.sessions = new Map(); // threadId -> TurnSession
+    this.activeCommands = new Set();
+    // Only the operator of this machine decides which teams may drive it and how far a
+    // remote teammate may escalate. Both survive restarts.
+    this.teamId = this.store.getKv('teamId') || null;
+    // The desktop shell supplies the code so it can show it to the operator sitting at
+    // this machine; a headless host generates its own and prints it.
+    this.pairingCode = process.env.HARNESS_PAIRING_CODE || createPairingCode();
+    writeOwnerFileAtomic(path.join(this.dataDir, 'pairing-code'), this.pairingCode + '\n');
+    if (!PRESETS[maxPreset]) throw new Error('unknown max preset: ' + maxPreset);
+    this.maxPreset = maxPreset;
     this.hub = null;
+    this.providerTap = null;   // (line, ev, session) - raw provider acknowledgments, for proofs
     this.activity = { threads: [], overlaps: [] }; // team awareness snapshot pushed by the hub
   }
 
@@ -47,15 +96,16 @@ class Runtime {
       list.push({ id, label: { openai: 'OpenAI', anthropic: 'Anthropic', openrouter: 'OpenRouter' }[id], configured: !!(cfg && cfg.apiKey), models: DEFAULT_MODELS[id] || [] });
     }
     list.push({ id: 'ollama', label: 'Ollama / local', configured: true, models: DEFAULT_MODELS.ollama });
-    list.push({ id: 'codex-cli', label: 'Codex CLI (codex exec)', configured: codexAvailable(), models: ['gpt-5.1-codex-max', 'gpt-5.1-codex', 'gpt-5.1-codex-mini'] });
-    list.push({ id: 'claude-code', label: 'Claude Code CLI (your subscription)', configured: claudeAvailable(), models: ['default', 'sonnet', 'opus', 'haiku'] });
+    list.push({ id: 'codex-cli', label: 'Codex CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
+    list.push({ id: 'claude-code', label: 'Claude Code CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
     return list;
   }
 
   provider(id) {
     if (id === 'demo') return { id: 'demo' };
-    if (id === 'codex-cli') return new CodexExecBackend();
-    if (id === 'claude-code') return new ClaudeCodeBackend();
+    if (id === 'codex-cli' || id === 'codex-app-server' || id === 'claude-code') {
+      throw new Error(Errors.PROVIDER_NOT_ISOLATED + ': this CLI adapter is hidden until project-confined reads and writes are proven');
+    }
     const cfg = this.providerConfig[id] || {};
     if ((id === 'openai' || id === 'anthropic' || id === 'openrouter') && !cfg.apiKey) throw new Error(`No API key configured for ${id} on runtime ${this.name}`);
     return createProvider({ id, ...cfg });
@@ -70,37 +120,88 @@ class Runtime {
       platform: process.platform,
       projects: [...this.projects.values()],
       providers: this.providerList(),
-      executors: [{ id: 'local', label: 'This machine' }, { id: 'crabbox', label: 'Crabbox remote runner', available: CrabboxExecutor.available() }],
+      executors: [{ id: 'local', label: 'Structured workspace tools', shell: false }, { id: 'crabbox', label: 'Crabbox remote runner', available: CrabboxExecutor.available() }],
       executor: this.executor.id,
-      presets: Object.keys(PRESETS)
+      presets: PRESET_ORDER.slice(0, PRESET_ORDER.indexOf(this.maxPreset) + 1),
+      defaultPreset: this.defaultPreset()
     };
   }
 
   async start() {
-    for (const p of this.projects.values()) await this.describeProject(p);
-    this.hub = new HubClient({ url: this.hubUrl, hello: { role: 'runtime', org: this.org, name: this.userName, runtime: this.descriptor() }, log: this.log });
-    this.hub.on('welcome', () => {
-      this.log(`registered runtime ${this.id} (${this.name}) with hub`);
-      for (const t of this.store.listThreads()) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
+    this.hub = new HubClient({
+      url: this.hubUrl,
+      hello: { role: 'runtime', name: this.userName, runtime: this.descriptor(), pairingCode: this.pairingCode, runtimeToken: this.runtimeToken },
+      log: this.log
+    });
+    this.hub.on('welcome', (msg) => {
+      if (process.send) process.send({ type: 'runtime.ready', runtimeId: this.id, paired: !!msg.paired });
+      if (msg.paired) {
+        this.clearPairingChallenge();
+        this.log(`registered runtime ${this.id} (${this.name}) with hub`);
+        for (const t of this.store.listThreads()) {
+          if (t.orgId === this.teamId) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
+        }
+      } else {
+        this.announcePairing();
+      }
     });
     this.hub.on('message', (msg) => {
       if (msg.type === 'command') this.onCommand(msg).catch((err) => this.log('command error: ' + err.message));
       else if (msg.type === 'workspace.activity') this.activity = { threads: msg.threads || [], overlaps: msg.overlaps || [] };
+      else if (msg.type === 'paired') this.onPaired(msg);
+      else if (msg.type === 'unpaired') this.onUnpaired();
     });
     this.hub.connect();
     return this;
+  }
+
+  // Printed on the host, never sent to a client: a teammate has to be told this code by
+  // whoever is sitting at the machine, or read it here themselves.
+  announcePairing() {
+    const line = '-'.repeat(52);
+    this.log(`\n${line}\n  This host is not paired with a team yet.\n  Pairing code:  ${this.pairingCode}\n  Enter it in Plexus to share ${this.name}.\n${line}`);
+  }
+
+  onPaired(msg) {
+    this.teamId = msg.teamId;
+    this.clearPairingChallenge();
+    this.store.setKv('teamId', msg.teamId);
+    this.log(`paired with team ${msg.teamId}${msg.pairedBy ? ' by ' + msg.pairedBy.name : ''}`);
+    for (const t of this.store.listThreads()) {
+      if (t.orgId === this.teamId) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
+    }
+  }
+
+  clearPairingChallenge() {
+    this.pairingCode = null;
+    if (this.hub) this.hub.hello.pairingCode = null;
+    writeOwnerFileAtomic(path.join(this.dataDir, 'pairing-code'), '\n');
+  }
+
+  onUnpaired() {
+    this.teamId = null;
+    this.store.setKv('teamId', '');
+    // A code authorizes one pairing cycle. Rotate it even in the desktop process, whose
+    // initial code came through the environment, so somebody who saw an old code cannot
+    // reclaim the host after an owner detaches it.
+    this.pairingCode = createPairingCode();
+    writeOwnerFileAtomic(path.join(this.dataDir, 'pairing-code'), this.pairingCode + '\n');
+    this.hub.hello.pairingCode = this.pairingCode;
+    for (const s of this.sessions.values()) s.interrupt();
+    this.log('this host was unpaired; running turns were stopped');
+    this.hub.reconnect();
+  }
+
+  // The set of directories the operator explicitly shared. Nothing outside it is reachable,
+  // whatever a remote caller asks for.
+  isAuthorizedProject(dir) {
+    return this.projects.has(path.resolve(dir));
   }
 
   stop() {
     for (const s of this.sessions.values()) s.interrupt();
     if (this.hub) this.hub.close();
     this.store.close();
-  }
-
-  async describeProject(p) {
-    p.branch = await git.currentBranch(p.dir);
-    p.dirty = await git.isDirty(p.dir);
-    return p;
   }
 
   publicThread(t) {
@@ -124,18 +225,35 @@ class Runtime {
     const { id, threadId, by } = msg;
     const cmd = msg.command || {};
     const reply = (ok, payload) => this.hub.send({ type: 'command.result', id, ok, ...(ok ? { result: payload } : { error: payload }) });
+    const fingerprint = commandFingerprint(this.teamId, threadId, by, cmd);
+    const prior = this.store.getCommand(id);
+    if (prior) {
+      if (prior.fingerprint !== fingerprint) return reply(false, Errors.COMMAND_ID_CONFLICT);
+      if (prior.state === 'completed' && prior.reply) return reply(prior.reply.ok, prior.reply.payload);
+      return reply(false, this.activeCommands.has(id) ? Errors.COMMAND_IN_PROGRESS : Errors.COMMAND_OUTCOME_UNKNOWN);
+    }
+    if (!this.store.claimCommand(id, fingerprint)) return reply(false, Errors.COMMAND_IN_PROGRESS);
+    this.activeCommands.add(id);
     try {
       const result = await this.dispatch(cmd, threadId, by);
-      reply(true, result || {});
+      const finished = { ok: true, payload: result || {} };
+      this.store.completeCommand(id, fingerprint, finished);
+      this.activeCommands.delete(id);
+      reply(finished.ok, finished.payload);
     } catch (err) {
       this.log(`command ${cmd.method} failed: ${err.message}`);
-      reply(false, String(err && err.message || err));
+      const finished = { ok: false, payload: String(err && err.message || err) };
+      this.store.completeCommand(id, fingerprint, finished);
+      this.activeCommands.delete(id);
+      reply(finished.ok, finished.payload);
     }
   }
 
   async dispatch(cmd, threadId, by) {
     const thread = threadId ? this.store.getThread(threadId) : null;
-    if (threadId && !thread && cmd.method !== Commands.THREAD_DELETE) throw new Error('unknown thread on this runtime');
+    if (!this.teamId) throw new Error(Errors.RUNTIME_UNPAIRED);
+    if (threadId && !thread) throw new Error(Errors.UNKNOWN_THREAD + ': unknown thread on this runtime');
+    if (thread && thread.orgId !== this.teamId) throw new Error(Errors.FOREIGN_THREAD + ': thread belongs to another team');
     switch (cmd.method) {
       case Commands.THREAD_START: return { thread: await this.threadStart(cmd, by) };
       case Commands.THREAD_DELETE: return this.threadDelete(threadId);
@@ -144,7 +262,7 @@ class Runtime {
         this.appendEvent(threadId, { method: Events.THREAD_NAME_UPDATED, name: cmd.name, by });
         return {};
       case Commands.THREAD_SETTINGS_UPDATE:
-        thread.settings = { ...thread.settings, ...cmd.settings }; this.store.upsertThread(thread);
+        thread.settings = this.resolveSettings(thread.settings, cmd.settings || {}); this.store.upsertThread(thread);
         this.appendEvent(threadId, { method: Events.THREAD_SETTINGS_UPDATED, settings: thread.settings, by });
         return { settings: thread.settings };
       case Commands.TURN_START: return this.turnStart(thread, cmd, by);
@@ -152,8 +270,8 @@ class Runtime {
         const s = this.sessions.get(threadId);
         if (!s || !s.running) throw new Error('no active turn to steer');
         if (cmd.expectedTurnId && cmd.expectedTurnId !== s.turnId) throw new Error('expectedTurnId does not match the active turn');
-        s.steer(cmd.input, by);
-        return { turnId: s.turnId };
+        const delivery = s.steer(cmd.input, by);
+        return { turnId: s.turnId, delivery };
       }
       case Commands.TURN_INTERRUPT: {
         const s = this.sessions.get(threadId);
@@ -161,6 +279,9 @@ class Runtime {
         return {};
       }
       case Commands.APPROVAL_RESOLVE: {
+        // Second check, on the machine that will actually run the command. The hub says who
+        // it thinks is allowed; the host is the one taking the risk, so it says no too.
+        if (!by || !by.approver) throw new Error(Errors.NOT_APPROVER + ': this teammate has not been delegated approval authority');
         const s = this.sessions.get(threadId);
         if (!s || !s.resolveApproval(cmd.requestId, cmd.decision, by)) throw new Error('no such pending approval');
         return {};
@@ -169,24 +290,25 @@ class Runtime {
         const p = this.provider(cmd.provider || 'demo');
         return { models: p.id === 'demo' ? DEFAULT_MODELS.demo : await p.listModels() };
       }
-      case Commands.PROJECT_ADD: {
-        const dir = path.resolve(cmd.dir);
-        if (!fs.existsSync(dir)) throw new Error('directory does not exist: ' + dir);
-        const p = { dir, name: path.basename(dir) };
-        await this.describeProject(p);
-        this.projects.set(dir, p);
-        this.hub.send({ type: 'runtime.update', runtime: this.descriptor() });
-        return { project: p };
-      }
+      case Commands.PROJECT_ADD:
+        // Sharing a folder is a decision made at the machine, not over the network -
+        // otherwise any team member could hand their agent an arbitrary path on someone
+        // else's disk. The host operator adds projects with --project or runtime.json.
+        throw new Error(Errors.PROJECT_ADD_LOCAL_ONLY + ': a project must be authorized on the host itself');
       case Commands.THREAD_ASSIGN: {
         thread.assignee = cmd.assignee || null; thread.handoffNote = cmd.note || null; this.store.upsertThread(thread);
         this.appendEvent(threadId, { method: Events.THREAD_ASSIGNEE_UPDATED, assignee: thread.assignee, note: thread.handoffNote, by });
         return { assignee: thread.assignee };
       }
-      case Commands.GIT_DIFF: return { files: await git.diff(thread.workDir), branch: await git.currentBranch(thread.workDir) };
-      case Commands.GIT_COMMIT: return await git.commitAll(thread.workDir, cmd.message);
-      case Commands.GIT_REVERT_FILE: return await git.revertFile(thread.workDir, cmd.path, !!cmd.untracked);
-      case Commands.GIT_PATCH: return { patch: await git.patchText(thread.workDir) };
+      case Commands.GIT_COMMIT:
+        this.assertGitMutationAllowed(thread);
+        throw new Error(Errors.PROJECT_OPERATION_UNAVAILABLE + ': remote Git subprocesses require a project-confined sandbox');
+      case Commands.GIT_REVERT_FILE:
+        this.assertGitMutationAllowed(thread);
+        throw new Error(Errors.PROJECT_OPERATION_UNAVAILABLE + ': remote Git subprocesses require a project-confined sandbox');
+      case Commands.GIT_DIFF:
+      case Commands.GIT_PATCH:
+        throw new Error(Errors.PROJECT_OPERATION_UNAVAILABLE + ': remote Git subprocesses require a project-confined sandbox');
       default: throw new Error('unknown command: ' + cmd.method);
     }
   }
@@ -197,22 +319,22 @@ class Runtime {
 
   async threadStart(cmd, by) {
     const cwd = cmd.cwd ? path.resolve(cmd.cwd) : null;
-    if (cwd && !this.projects.has(cwd)) {
-      if (!fs.existsSync(cwd)) throw new Error('unknown project: ' + cwd);
-      const p = { dir: cwd, name: path.basename(cwd) }; await this.describeProject(p); this.projects.set(cwd, p);
+    // This used to register any path that happened to exist, which let a remote caller
+    // start an agent anywhere on the host's disk.
+    if (!cwd || !this.isAuthorizedProject(cwd)) {
+      throw new Error(Errors.PROJECT_NOT_AUTHORIZED + ': select a workspace shared on this host');
     }
-    const preset = PRESETS[cmd.settings && cmd.settings.preset] || PRESETS.agent;
+    const settings = this.resolveSettings({}, cmd.settings || {});
+    this.provider(settings.provider || 'demo');
     const thread = {
-      id: uid('thr'), name: cmd.name || 'New thread', orgId: this.org, runtimeId: this.id, runtimeName: this.name,
+      id: uid('thr'), name: cmd.name || 'New thread', orgId: this.teamId, runtimeId: this.id, runtimeName: this.name,
       cwd, workDir: cwd, worktree: false, branch: null, createdBy: by, createdAt: Date.now(), updatedAt: Date.now(),
       status: { type: 'idle' },
-      settings: { provider: 'demo', model: 'demo-agent', effort: 'medium', ...preset, ...(cmd.settings || {}) }
+      settings: { provider: 'demo', model: 'demo-agent', effort: 'medium', ...settings }
     };
-    if (cmd.worktree && cwd) {
-      const wt = await git.createWorktree(cwd, this.dataDir, thread.id);
-      if (wt.ok) { thread.worktree = true; thread.workDir = wt.dir; thread.branch = wt.branch; }
-    }
-    if (!thread.branch && cwd) thread.branch = await git.currentBranch(cwd);
+    if (cmd.worktree) throw new Error(Errors.PROJECT_OPERATION_UNAVAILABLE + ': remote worktree creation requires a project-confined sandbox');
+    const project = this.projects.get(cwd);
+    thread.branch = project ? project.branch : null;
     this.store.upsertThread(thread);
     this.hub.send({ type: 'thread.upsert', thread: this.publicThread(thread) });
     return this.publicThread(thread);
@@ -221,18 +343,58 @@ class Runtime {
   async threadDelete(threadId) {
     const s = this.sessions.get(threadId);
     if (s) { s.interrupt(); this.sessions.delete(threadId); }
-    const t = this.store.getThread(threadId);
-    if (t && t.worktree && t.workDir && t.cwd) await git.removeWorktree(t.cwd, t.workDir);
+    // Old worktrees are left for the host operator to clean up. A remote delete must not
+    // launch repository-controlled Git hooks or subprocesses.
     this.store.deleteThread(threadId);
     return {};
+  }
+
+  // A remote teammate may pick any preset up to the ceiling the operator set on this host.
+  clampPreset(preset) {
+    if (!PRESETS[preset]) throw new Error(Errors.POLICY_ESCALATION + ': unknown preset ' + preset);
+    if (PRESET_ORDER.indexOf(preset) > PRESET_ORDER.indexOf(this.maxPreset)) {
+      throw new Error(Errors.POLICY_ESCALATION + ': this host allows at most "' + this.maxPreset + '"');
+    }
+    return preset;
+  }
+
+  defaultPreset() {
+    const agent = PRESET_ORDER.indexOf('agent');
+    return PRESET_ORDER[Math.min(agent, PRESET_ORDER.indexOf(this.maxPreset))];
+  }
+
+  assertGitMutationAllowed(thread) {
+    const settings = this.resolveSettings(thread.settings, {});
+    if (settings.sandboxPolicy === PRESETS['read-only'].sandboxPolicy) {
+      throw new Error(Errors.POLICY_ESCALATION + ': this thread is read-only');
+    }
+  }
+
+  presetForSettings(settings = {}) {
+    return Object.keys(PRESETS).find((name) => {
+      const policy = PRESETS[name];
+      return policy.approvalPolicy === settings.approvalPolicy && policy.sandboxPolicy === settings.sandboxPolicy;
+    }) || null;
+  }
+
+  resolveSettings(current = {}, requested = {}) {
+    const preset = this.clampPreset(requested.preset || current.preset || this.presetForSettings(current) || this.defaultPreset());
+    const policy = PRESETS[preset];
+    for (const field of ['approvalPolicy', 'sandboxPolicy']) {
+      if (Object.prototype.hasOwnProperty.call(requested, field) && requested[field] !== policy[field]) {
+        throw new Error(Errors.POLICY_ESCALATION + ': choose a named preset instead of overriding ' + field);
+      }
+    }
+    return { ...current, ...requested, preset, ...policy };
   }
 
   async turnStart(thread, cmd, by) {
     const active = this.sessions.get(thread.id);
     if (active && active.running) throw new Error('a turn is already running — use turn/steer');
-    const settings = { ...thread.settings, ...(cmd.settings || {}) };
-    if (cmd.settings) { thread.settings = settings; this.store.upsertThread(thread); }
+    const settings = this.resolveSettings(thread.settings, cmd.settings || {});
     const provider = this.provider(settings.provider || 'demo');
+    thread.settings = settings;
+    this.store.upsertThread(thread);
     const session = new TurnSession({
       thread, by, input: cmd.input, provider, model: settings.model, settings, executor: this.executor,
       history: this.store.listItems(thread.id), log: this.log,
@@ -269,6 +431,7 @@ function parseArgs(argv) {
     else if (a === '--project' || a === '-p') out.projects.push(next());
     else if (a === '--executor') out.executor = next();
     else if (a === '--runtime-name') out.name = next();
+    else if (a === '--max-preset') out.maxPreset = next();
   }
   return out;
 }
@@ -300,10 +463,11 @@ if (require.main === module) {
     providers: providersFromEnv(cfg),
     executor: args.executor || cfg.executor || 'local',
     name: args.name || cfg.runtimeName,
+    maxPreset: args.maxPreset || cfg.maxPreset || 'agent',
     log: (m) => console.log('[runtime]', m)
   });
   rt.start().then(() => console.log(`[runtime] ${rt.name} → ${rt.hubUrl}`));
   process.on('SIGINT', () => { rt.stop(); process.exit(0); });
 }
 
-module.exports = { Runtime, parseArgs, providersFromEnv };
+module.exports = { Runtime, parseArgs, providersFromEnv, commandFingerprint };

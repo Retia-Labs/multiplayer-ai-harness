@@ -115,10 +115,24 @@ Runtime config can also live in `~/.harness/runtime.json`:
 ```bash
 npm run test:unit       # policy matrix, codex exec JSONL translator, diff, hub store
 npm run test:protocol   # scripted hub + runtime + two WebSocket clients (no browser)
+npm run test:codex      # Codex acceptance harness, control lane only (no provider spend)
 npm run test:e2e        # two real Chromium users: approve / steer / late-join / changes / worktree
 npm run test:desktop    # Electron shell boots hub + runtime and runs a turn (needs xvfb)
 npm run smoke           # the original Codex-clone smoke test
 ```
+
+### Proving it against the real Codex CLI
+
+```bash
+npm run codex:probe     # which codex, what version, which auth, which capability gaps
+npm run proof:codex     # every lane this machine allows: control + subscription + API key
+```
+
+`proof:codex` runs real `codex exec` turns and spends real provider quota. It writes a
+result matrix and Codex's own event stream to [docs/proofs/](docs/proofs/); the contract it
+establishes - pinned version, platform prerequisites, auth modes, usage owner and the gaps
+that have no answer yet - is written up in
+[docs/proofs/codex-shared-control.md](docs/proofs/codex-shared-control.md).
 
 ## Layout
 
@@ -153,6 +167,10 @@ The dossier's Phase 2 exit criterion — *"Alice's agent hits an approval wall, 
 phone, both watch the diff land live"* — is what this repo demonstrates.
 
 ## Implementation planning
+
+The accepted **Plexus Review together** design lives in this repository at [docs/design/plexus](docs/design/plexus/README.md): nine interactive reference screens, six reusable template contracts, tokens, assets, and desktop/mobile captures. Start UI tasks with the [agent development workflow](docs/design/plexus/AGENT-DEVELOPMENT.md), linked from root `AGENTS.md` and `CLAUDE.md`. The preview is isolated from the production shared renderer; adding these references does not migrate the app to React.
+
+Run `npm run check:design` to verify the reference pack and instruction links, and `npm run test:design` for the checker regression tests. The Design reference integrity workflow runs both in CI. These checks cover reference integrity; production visual regression and required review settings still need to be established as the design is adopted.
 
 The [planning index](docs/planning/README.md) links the current implementation spec, team issues,
 accepted decisions, and supporting research. Start with [spec issue #1](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1)

@@ -1,0 +1,23 @@
+{"type":"thread.started","thread_id":"01a0743e-39de-77b1-853d-15265f96b485"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll print `sample.txt` from the current workspace, then return exactly `READY`."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'Get-Content sample.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'Get-Content sample.txt'","aggregated_output":"alpha\r\nbeta\r\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"READY"}}
+{"type":"turn.completed","usage":{"input_tokens":29992,"cached_input_tokens":16896,"output_tokens":171,"reasoning_output_tokens":82}}
+{"type":"thread.started","thread_id":"01a0743e-39de-77b1-853d-15265f96b485"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"BETA"}}
+{"type":"turn.completed","usage":{"input_tokens":45025,"cached_input_tokens":31488,"output_tokens":293,"reasoning_output_tokens":196}}
+{"type":"thread.started","thread_id":"01a0743e-39de-77b1-853d-15265f96b485"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"READY"}}
+{"type":"turn.completed","usage":{"input_tokens":60080,"cached_input_tokens":46080,"output_tokens":344,"reasoning_output_tokens":240}}
+{"type":"thread.started","thread_id":"01a0743e-a6fe-7480-82bb-b334c95b5d24"}
+{"type":"turn.started"}
+{"type":"thread.started","thread_id":"01a0743e-afb0-72d2-accd-74dce272d6cf"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'Get-Content -LiteralPath sample.txt'","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"\"C:\\\\WINDOWS\\\\System32\\\\WindowsPowerShell\\\\v1.0\\\\powershell.exe\" -Command 'Get-Content -LiteralPath sample.txt'","aggregated_output":"alpha\r\nbeta\r\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"READY"}}
+{"type":"turn.completed","usage":{"input_tokens":27530,"cached_input_tokens":13696,"output_tokens":65,"reasoning_output_tokens":0}}

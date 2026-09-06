@@ -34,7 +34,10 @@ class HubClient extends EventEmitter {
       this.emit('message', msg);
     });
     ws.addEventListener('close', () => {
-      if (this.ws === ws) this.ws = null;
+      if (this.ws === ws) {
+        this.ws = null;
+        this.welcome = null;
+      }
       this.emit('disconnect');
       if (!this.closed) {
         setTimeout(() => this.connect(), this.backoff);
@@ -47,6 +50,12 @@ class HubClient extends EventEmitter {
   send(msg) {
     if (this.ws && this.ws.readyState === 1 && this.welcome) this.ws.send(JSON.stringify(msg));
     else this.queue.push(msg);
+  }
+
+  reconnect() {
+    this.welcome = null;
+    if (this.ws) this.ws.close();
+    else this.connect();
   }
 
   close() {

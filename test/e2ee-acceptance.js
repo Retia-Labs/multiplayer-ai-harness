@@ -142,18 +142,18 @@ const TASK = {
   // Replay and staleness are authorization properties, not encryption ones: the ciphertext
   // of a captured approval stays perfectly valid, so the binding has to refuse it.
   const ledger = new GrantLedger();
-  const pending = { requestId: 'req_42', turnId: 'turn_7', approverDevice: 'BOBDEV' };
+  const pending = { requestId: 'req_42', turnId: 'turn_7', approverDevice: 'BOBDEV', approverUser: BOB, threadId: 'thr_demo' };
 
   await check('AC2', 'a bound approval is accepted once', async () => {
     const grant = issueGrant({ ...pending, threadId: 'thr_demo', approverUser: BOB, decision: 'accept' });
     globalThis.__grant = grant;
-    const r = ledger.resolve(grant, pending);
+    const r = ledger.resolve(grant, pending, { decrypted: true });
     assert.ok(r.ok, 'a fresh, bound grant should be accepted');
     return { detail: 'decision ' + r.decision };
   });
 
   await check('AC2', 'a replayed approval is refused', async () => {
-    const r = ledger.resolve(globalThis.__grant, pending);
+    const r = ledger.resolve(globalThis.__grant, pending, { decrypted: true });
     assert.equal(r.ok, false);
     assert.equal(r.reason, Refusals.REPLAYED);
     return { detail: r.reason };
@@ -161,7 +161,7 @@ const TASK = {
 
   await check('AC2', 'an approval for a superseded turn is refused', async () => {
     const grant = issueGrant({ ...pending, threadId: 'thr_demo', approverUser: BOB, decision: 'accept' });
-    const r = ledger.resolve(grant, { ...pending, turnId: 'turn_8' });
+    const r = ledger.resolve(grant, { ...pending, turnId: 'turn_8' }, { decrypted: true });
     assert.equal(r.ok, false);
     assert.equal(r.reason, Refusals.STALE_TURN);
     return { detail: r.reason };
@@ -169,7 +169,7 @@ const TASK = {
 
   await check('AC2', 'an expired approval is refused', async () => {
     const grant = issueGrant({ ...pending, threadId: 'thr_demo', approverUser: BOB, decision: 'accept', ttlMs: 1000 });
-    const r = ledger.resolve(grant, pending, { now: Date.now() + 60000 });
+    const r = ledger.resolve(grant, pending, { decrypted: true, now: Date.now() + 60000 });
     assert.equal(r.ok, false);
     assert.equal(r.reason, Refusals.EXPIRED);
     return { detail: r.reason };
@@ -183,6 +183,29 @@ const TASK = {
     return { detail: r.reason };
   });
 
+  await check('AC2', 'grant binding and malformed-input boundaries fail closed', async () => {
+    const now = 10000;
+    const fresh = () => issueGrant({ ...pending, decision: 'accept', now, ttlMs: 1000 });
+    const rejected = (grant, context, opts, reason) => {
+      const result = new GrantLedger().resolve(grant, context, opts);
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, reason);
+    };
+    rejected(fresh(), pending, { now }, Refusals.NOT_DECRYPTED);
+    rejected(fresh(), { ...pending, threadId: 'other' }, { now, decrypted: true }, Refusals.WRONG_THREAD);
+    rejected(fresh(), { ...pending, approverUser: '@other:plexus.local' }, { now, decrypted: true }, Refusals.WRONG_APPROVER);
+    rejected(fresh(), { ...pending, approverDevice: 'OTHER' }, { now, decrypted: true }, Refusals.WRONG_APPROVER);
+    rejected(fresh(), pending, { now: 11000, decrypted: true }, Refusals.EXPIRED);
+    for (const patch of [{ expiresAt: undefined }, { expiresAt: NaN }, { expiresAt: '11000' }, { issuedAt: 12000 }, { decision: 'anything' }]) {
+      rejected({ ...fresh(), ...patch }, pending, { now, decrypted: true }, Refusals.INVALID);
+    }
+    rejected(fresh(), null, { now, decrypted: true }, Refusals.INVALID);
+    const single = new GrantLedger();
+    assert.equal(single.resolve(fresh(), pending, { now, decrypted: true }).ok, true);
+    assert.equal(single.resolve(fresh(), pending, { now, decrypted: true }).reason, Refusals.REPLAYED);
+    return { detail: 'missing decryption evidence, wrong thread/user/device, exact expiry, malformed timestamps/decision, missing context, and a second grant for a resolved request are refused' };
+  });
+
   console.log('\nAC3  clean-endpoint recovery, rotation and device removal');
 
   await check('AC3', 'the customer holds a recovery key the relay never sees', async () => {
@@ -194,7 +217,7 @@ const TASK = {
     return { detail: `version ${version}, key held only by the customer` };
   });
 
-  await check('AC3', 'a clean endpoint recovers with the customer key alone', async () => {
+  await check('AC3', 'a clean endpoint imports the customer recovery key', async () => {
     const fresh = await Endpoint.create({ user: ALICE, device: 'ALICECLEAN', transport });
     const before = await fresh.recoveryKeyOnThisEndpoint();
     assert.equal(before, null, 'a clean endpoint starts with nothing');
@@ -202,18 +225,18 @@ const TASK = {
     assert.ok(restored, 'restore failed');
     const after = await fresh.recoveryKeyOnThisEndpoint();
     assert.equal(after, globalThis.__recoveryKey, 'the restored key should match');
-    return { detail: 'no operator secret involved' };
+    return { detail: 'key import needs no operator secret; restoration of encrypted history is not proved' };
   });
 
   await check('AC3', 'recovery does not reinstate a consumed or expired grant', async () => {
     // The ledger and the clock survive a restore, so history comes back and authority
     // does not. This is asserted because a naive "restore everything" would do the opposite.
-    const replayed = ledger.resolve(globalThis.__grant, pending);
+    const replayed = ledger.resolve(globalThis.__grant, pending, { decrypted: true });
     assert.equal(replayed.reason, Refusals.REPLAYED);
     const stale = issueGrant({ ...pending, threadId: 'thr_demo', approverUser: BOB, decision: 'accept', ttlMs: 1 });
-    const r = ledger.resolve(stale, pending, { now: Date.now() + 60000 });
+    const r = ledger.resolve(stale, pending, { decrypted: true, now: Date.now() + 60000 });
     assert.equal(r.reason, Refusals.EXPIRED);
-    return { detail: 'history restores; authority does not' };
+    return { detail: 'existing in-memory ledger still rejects consumed/expired grants; host restart persistence is not proved' };
   });
 
   await check('AC3', 'a removed endpoint receives no further content', async () => {
