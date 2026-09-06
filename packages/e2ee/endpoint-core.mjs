@@ -112,11 +112,12 @@ class Endpoint {
   // decrypt rather than to treat the body as plaintext. Getting it wrong does not error -
   // the event simply arrives unencrypted-looking - so the envelope is built here and not
   // left to callers.
-  async sealTo(user, device, type, payload) {
+  async sealTo(user, device, type, payload, { verified = false } = {}) {
     await this.ensureSessions([user]);
     const target = await this.getDevice(user, device);
     if (!target) throw new Error('unknown endpoint ' + user + '/' + device);
-    const ciphertext = await target.encryptToDeviceEvent(type, payload);
+    const ciphertext = await target.encryptToDeviceEvent(type, payload,
+      verified ? sdk.CollectStrategy.onlyTrustedDevices() : undefined);
     return {
       type: 'm.room.encrypted',
       sender: this.user,
@@ -302,7 +303,7 @@ class Endpoint {
 
   async sealControl(user, device, payload) {
     if (!await this.isEndpointVerified(user, device)) throw new Error('endpoint_unverified');
-    return this.sealTo(user, device, 'plexus.control.v1', payload);
+    return this.sealTo(user, device, 'plexus.control.v1', payload, { verified: true });
   }
 
   async openControl(envelopes) {

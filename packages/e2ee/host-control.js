@@ -90,4 +90,21 @@ class EncryptedHostControl {
   close() { this.db.close(); }
 }
 
-module.exports = { EncryptedHostControl };
+// Owner-side state becomes applied only after the exact host acknowledges this update.
+// No timeout or relay receipt can complete it. The caller retains pending state on error.
+class MembershipReceipt {
+  constructor({ host, epoch, challenge }) {
+    this.host = host; this.epoch = epoch; this.challenge = challenge;
+    this.status = 'pending-host-acknowledgment';
+  }
+  async accept(endpoint, envelope) {
+    const event = await endpoint.openControl([envelope]);
+    const receipt = event.content;
+    if (!sameEndpoint(this.host, event) || receipt?.kind !== 'membership.applied' ||
+        receipt.epoch !== this.epoch || receipt.challenge !== this.challenge) throw new Error('membership_receipt_mismatch');
+    this.status = 'applied';
+    return event;
+  }
+}
+
+module.exports = { EncryptedHostControl, MembershipReceipt };

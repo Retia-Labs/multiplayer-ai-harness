@@ -8,7 +8,7 @@ const { chromium, _electron: electron } = require('playwright-core');
 const { Endpoint } = require('../packages/e2ee/endpoint');
 const { ExperimentRelay } = require('../packages/e2ee/experiment-relay');
 const { HttpKeyTransport } = require('../packages/e2ee/http-transport.mjs');
-const { EncryptedHostControl } = require('../packages/e2ee/host-control');
+const { EncryptedHostControl, MembershipReceipt } = require('../packages/e2ee/host-control');
 const { issueGrant } = require('../packages/e2ee/authorization');
 const { KeyDirectory, KeyTransport } = require('../packages/e2ee/key-transport');
 const root = path.join(__dirname, '..');
@@ -111,12 +111,20 @@ async function stopDesktop(driver) { await driver.call('close'); await desktop.c
   const ledgerFile = path.join(temp, 'host.sqlite');
   const openHost = () => new EncryptedHostControl({ endpoint: host, owner: owner.identity, file: ledgerFile });
   control = openHost();
-  let snapshot;
+  let snapshot, revocation;
   async function reconcile(epoch, members, approvers) {
     const challenge = control.beginReconcile();
+    revocation = new MembershipReceipt({ host: host.identity(), epoch, challenge });
+    const ownerReceiver = { openControl: (events) => owner.call('openControl', events) };
+    const wrongAck = await host.sealControl(owner.identity.user, owner.identity.device,
+      { kind: 'membership.applied', epoch, challenge: 'stale-challenge' });
+    await rejects(() => revocation.accept(ownerReceiver, wrongAck), /membership_receipt_mismatch/);
+    assert.equal(revocation.status, 'pending-host-acknowledgment');
     snapshot = await owner.call('sealControl', host.user, host.device, { kind: 'membership', challenge, epoch, members, approvers });
     const ack = await control.applyMembership(snapshot);
-    const receipt = await owner.call('openControl', [ack]);
+    assert.equal(revocation.status, 'pending-host-acknowledgment');
+    const receipt = await revocation.accept(ownerReceiver, ack);
+    assert.equal(revocation.status, 'applied');
     assert.equal(receipt.content.epoch, epoch); assert.equal(receipt.content.challenge, challenge);
     assert.equal(receipt.senderDevice, host.device);
     return receipt;
@@ -144,6 +152,19 @@ async function stopDesktop(driver) { await driver.call('close'); await desktop.c
   await rejects(() => control.applyMembership(oldSnapshot));
   await reconcile(1, ids, [approver]);
   assert.equal((await control.resolve(await sealGrant(grant), pending)).reason, 'grant_already_consumed');
+  const originalOpenControl = host.openControl.bind(host);
+  host.openControl = async (...args) => { const result = await originalOpenControl(...args); control.disconnect(); return result; };
+  assert.equal((await control.resolve(await sealGrant(grant), pending)).reason, 'membership_reconciliation_required');
+  host.openControl = originalOpenControl;
+  const raceChallenge = control.beginReconcile();
+  const raceSnapshot = await owner.call('sealControl', host.user, host.device,
+    { kind: 'membership', challenge: raceChallenge, epoch: 1, members: ids, approvers: [approver] });
+  const originalConfirm = host.confirmEndpoint.bind(host);
+  host.confirmEndpoint = async (...args) => { const result = await originalConfirm(...args); control.disconnect(); return result; };
+  await rejects(() => control.applyMembership(raceSnapshot), /membership_challenge_superseded/);
+  host.confirmEndpoint = originalConfirm;
+  assert.equal(control.reconciled, false);
+  await reconcile(1, ids, [approver]);
   ok('authenticated sender, tamper, plaintext, stale-turn and replay checks survive execution-host restart');
 
   const extra = await Endpoint.create({ user: owner.identity.user, device: 'OTHER-PROJECT',
@@ -168,7 +189,7 @@ async function stopDesktop(driver) { await driver.call('close'); await desktop.c
   // A removed device keeps old plaintext but cannot obtain the newly rotated session,
   // even if the relay deliberately gives it all subsequent ciphertext.
   control.disconnect();
-  let revocation = 'pending-host-acknowledgment';
+  revocation = new MembershipReceipt({ host: host.identity(), epoch: 2, challenge: null });
   assert.equal((await control.resolve(await sealGrant(grant), pending)).reason, 'membership_reconciliation_required');
   relay.directory.revoke(alice.identity.user, alice.identity.device);
   await owner.call('shareVerifiedTaskKey', room, [owner.identity, host.identity()]);
@@ -177,9 +198,14 @@ async function stopDesktop(driver) { await driver.call('close'); await desktop.c
   assert.equal((await host.decryptTask(room, future)).content.text, 'post-removal-' + secret);
   await rejects(() => alice.call('decryptTask', room, future));
   assert.equal((await alice.call('decryptTask', room, history)).content.text, secret);
-  assert.equal(revocation, 'pending-host-acknowledgment');
+  assert.equal(revocation.status, 'pending-host-acknowledgment');
   await reconcile(2, [owner.identity, host.identity()], []);
-  revocation = 'applied';
+  assert.equal(revocation.status, 'applied');
+  const rollbackChallenge = control.beginReconcile();
+  const rollback = await owner.call('sealControl', host.user, host.device,
+    { kind: 'membership', challenge: rollbackChallenge, epoch: 1, members: ids, approvers: [approver] });
+  await rejects(() => control.applyMembership(rollback), /membership_rollback/);
+  await reconcile(2, [owner.identity, host.identity()], []);
   const removedEnvelope = await sealGrant({ ...grant, membershipEpoch: 2 });
   const removedResult = await control.resolve(removedEnvelope, pending).catch((error) => ({ ok: false, reason: error.message }));
   assert.equal(removedResult.ok, false);
