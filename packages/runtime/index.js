@@ -48,9 +48,10 @@ function writeOwnerFileAtomic(file, contents) {
 const PRESET_ORDER = ['read-only', 'agent-untrusted', 'agent', 'full-access'];
 
 class Runtime {
-  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, maxPreset = 'agent', log = () => {} }) {
+  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, maxPreset = 'agent', encryptedTasksOnly = false, log = () => {} }) {
     this.hubUrl = hubUrl;
     this.org = org;
+    this.encryptedTasksOnly = encryptedTasksOnly;
     this.userName = userName || os.userInfo().username;
     this.dataDir = dataDir || path.join(os.homedir(), '.harness');
     fs.mkdirSync(this.dataDir, { recursive: true });
@@ -118,7 +119,8 @@ class Runtime {
       name: this.name,
       host: os.hostname(),
       platform: process.platform,
-      projects: [...this.projects.values()],
+      projects: this.encryptedTasksOnly ? [] : [...this.projects.values()],
+      taskProtocol: this.encryptedTasksOnly ? 'encrypted-v1' : 'legacy',
       providers: this.providerList(),
       executors: [{ id: 'local', label: 'Structured workspace tools', shell: false }, { id: 'crabbox', label: 'Crabbox remote runner', available: CrabboxExecutor.available() }],
       executor: this.executor.id,
@@ -139,7 +141,7 @@ class Runtime {
         this.clearPairingChallenge();
         this.log(`registered runtime ${this.id} (${this.name}) with hub`);
         for (const t of this.store.listThreads()) {
-          if (t.orgId === this.teamId) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
+          if (!this.encryptedTasksOnly && t.orgId === this.teamId) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
         }
       } else {
         this.announcePairing();
@@ -168,7 +170,7 @@ class Runtime {
     this.store.setKv('teamId', msg.teamId);
     this.log(`paired with team ${msg.teamId}${msg.pairedBy ? ' by ' + msg.pairedBy.name : ''}`);
     for (const t of this.store.listThreads()) {
-      if (t.orgId === this.teamId) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
+      if (!this.encryptedTasksOnly && t.orgId === this.teamId) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
     }
   }
 
@@ -225,6 +227,7 @@ class Runtime {
     const { id, threadId, by } = msg;
     const cmd = msg.command || {};
     const reply = (ok, payload) => this.hub.send({ type: 'command.result', id, ok, ...(ok ? { result: payload } : { error: payload }) });
+    if (this.encryptedTasksOnly) return reply(false, 'encrypted_route_required');
     const fingerprint = commandFingerprint(this.teamId, threadId, by, cmd);
     const prior = this.store.getCommand(id);
     if (prior) {
@@ -250,6 +253,7 @@ class Runtime {
   }
 
   async dispatch(cmd, threadId, by) {
+    if (this.encryptedTasksOnly) throw new Error('encrypted_route_required');
     const thread = threadId ? this.store.getThread(threadId) : null;
     if (!this.teamId) throw new Error(Errors.RUNTIME_UNPAIRED);
     if (threadId && !thread) throw new Error(Errors.UNKNOWN_THREAD + ': unknown thread on this runtime');
@@ -432,6 +436,7 @@ function parseArgs(argv) {
     else if (a === '--executor') out.executor = next();
     else if (a === '--runtime-name') out.name = next();
     else if (a === '--max-preset') out.maxPreset = next();
+    else if (a === '--encrypted-tasks-only') out.encryptedTasksOnly = true;
   }
   return out;
 }
@@ -464,6 +469,7 @@ if (require.main === module) {
     executor: args.executor || cfg.executor || 'local',
     name: args.name || cfg.runtimeName,
     maxPreset: args.maxPreset || cfg.maxPreset || 'agent',
+    encryptedTasksOnly: args.encryptedTasksOnly || cfg.encryptedTasksOnly === true,
     log: (m) => console.log('[runtime]', m)
   });
   rt.start().then(() => console.log(`[runtime] ${rt.name} → ${rt.hubUrl}`));
