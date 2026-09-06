@@ -1,0 +1,173 @@
+{
+  "ranAt": "2026-09-06T13:56:51.845Z",
+  "results": [
+    {
+      "criterion": "AC1",
+      "name": "the relay holds only ciphertext in memory",
+      "status": "pass",
+      "detail": "algorithm m.olm.v1.curve25519-aes-sha2"
+    },
+    {
+      "criterion": "AC1",
+      "name": "the hub database on disk holds only ciphertext",
+      "status": "pass",
+      "detail": "100.0 KB of sqlite, searched for plaintext"
+    },
+    {
+      "criterion": "AC1",
+      "name": "the intended endpoint reads the task",
+      "status": "pass",
+      "detail": "sealed by @alice:plexus.local"
+    },
+    {
+      "criterion": "AC1",
+      "name": "cleartext metadata the relay still needs is recorded",
+      "status": "info",
+      "detail": "endpoint ids and public keys, who talks to whom, envelope sizes, timing, delivery cursors — see docs/proofs/e2ee-threat-model.md"
+    },
+    {
+      "criterion": "AC2",
+      "name": "cross-signing identity established",
+      "status": "pass",
+      "detail": "master key present: true"
+    },
+    {
+      "criterion": "AC2",
+      "name": "a second endpoint of the same account starts unverified",
+      "status": "pass",
+      "detail": "ALICELAPTOP unverified until vouched for"
+    },
+    {
+      "criterion": "AC2",
+      "name": "an existing trusted endpoint verifies the new one",
+      "status": "pass",
+      "detail": "ALICEDEV signed ALICELAPTOP"
+    },
+    {
+      "criterion": "AC2",
+      "name": "a relay-substituted key is not verified",
+      "status": "pass",
+      "detail": "unknown to the trusted set, so unverified"
+    },
+    {
+      "criterion": "AC2",
+      "name": "a modified control message does not decrypt",
+      "status": "pass",
+      "detail": "fails closed"
+    },
+    {
+      "criterion": "AC2",
+      "name": "a bound approval is accepted once",
+      "status": "pass",
+      "detail": "decision accept"
+    },
+    {
+      "criterion": "AC2",
+      "name": "a replayed approval is refused",
+      "status": "pass",
+      "detail": "grant_already_consumed"
+    },
+    {
+      "criterion": "AC2",
+      "name": "an approval for a superseded turn is refused",
+      "status": "pass",
+      "detail": "grant_for_a_superseded_turn"
+    },
+    {
+      "criterion": "AC2",
+      "name": "an expired approval is refused",
+      "status": "pass",
+      "detail": "grant_expired"
+    },
+    {
+      "criterion": "AC2",
+      "name": "an approval that did not arrive encrypted is refused",
+      "status": "pass",
+      "detail": "grant_was_not_encrypted"
+    },
+    {
+      "criterion": "AC2",
+      "name": "grant binding and malformed-input boundaries fail closed",
+      "status": "pass",
+      "detail": "missing decryption evidence, wrong thread/user/device, exact expiry, malformed timestamps/decision, missing context, and a second grant for a resolved request are refused"
+    },
+    {
+      "criterion": "AC3",
+      "name": "the customer holds a recovery key the relay never sees",
+      "status": "pass",
+      "detail": "version 1, key held only by the customer"
+    },
+    {
+      "criterion": "AC3",
+      "name": "a clean endpoint imports the customer recovery key",
+      "status": "pass",
+      "detail": "key import needs no operator secret; restoration of encrypted history is not proved"
+    },
+    {
+      "criterion": "AC3",
+      "name": "recovery does not reinstate a consumed or expired grant",
+      "status": "pass",
+      "detail": "existing in-memory ledger still rejects consumed/expired grants; host restart persistence is not proved"
+    },
+    {
+      "criterion": "AC3",
+      "name": "a removed endpoint receives no further content",
+      "status": "pass",
+      "detail": "endpoint_revoked, and dropped from the directory"
+    },
+    {
+      "criterion": "AC3",
+      "name": "a shared task session reaches every current member",
+      "status": "pass",
+      "detail": "5 key deliveries, both members read it"
+    },
+    {
+      "criterion": "AC3",
+      "name": "removing a member rotates the session",
+      "status": "pass",
+      "detail": "session invalidated and re-shared to the remaining members only"
+    },
+    {
+      "criterion": "AC3",
+      "name": "a removed member cannot read what comes after",
+      "status": "pass",
+      "detail": "carol reads it; bob cannot, even holding the ciphertext"
+    },
+    {
+      "criterion": "AC3",
+      "name": "rotation does not retract what was already read",
+      "status": "info",
+      "detail": "a removed device keeps what it already decrypted — removal is forward-only"
+    },
+    {
+      "criterion": "AC4",
+      "name": "persistent key storage support on this platform",
+      "status": "info",
+      "detail": "Node has no IndexedDB, so the crypto store is memory-only here. Persistence lives in the browser or the Electron renderer. (The `indexedDB` getter returned `null` or `undefined`)"
+    },
+    {
+      "criterion": "AC4",
+      "name": "protocol and library versions pinned",
+      "status": "pass",
+      "detail": "matrix-sdk-crypto-wasm 18.8.0, algorithm m.olm.v1.curve25519-aes-sha2"
+    },
+    {
+      "criterion": "AC4",
+      "name": "desktop packaging of the crypto store",
+      "status": "blocked",
+      "detail": "Needs the store in an Electron renderer with its pickle key sealed by safeStorage, exercised on macOS and Windows. Not built, and macOS cannot be exercised on this machine."
+    },
+    {
+      "criterion": "AC4",
+      "name": "offline revocation acknowledgment",
+      "status": "blocked",
+      "detail": "An execution host that cannot reach the relay cannot learn a device was removed. Deciding the tolerated window is a product decision, not a test."
+    },
+    {
+      "criterion": "AC4",
+      "name": "qualified review requirement",
+      "status": "info",
+      "detail": "This is an integration experiment, not a security audit. Independent review of the enrollment, recovery and revocation design is required before any E2EE claim is made publicly."
+    }
+  ]
+}
