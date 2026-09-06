@@ -1,0 +1,151 @@
+{
+  "version": "1.0.0",
+  "name": "Plexus screen template contracts",
+  "source": "selected-direction.png",
+  "scope": "Frontend concept templates. These contracts describe UI meaning, not implemented backend guarantees.",
+  "constraints": [
+    "Identify the task, responsible person, execution host, provider account, and actor separately.",
+    "Display host connectivity independently from the agent turn state and task outcome; a disconnected host can leave the outcome unknown.",
+    "Keep shared file and diff views read-only.",
+    "Attach the original actor and a delivery receipt to input addressed to an agent.",
+    "Separate requests for human help from instructions addressed to an agent.",
+    "Tie each approval to one named action with its scope and requesting actor.",
+    "A responsibility handoff keeps execution on the current host.",
+    "Link summaries and claims to inspectable source events, files, or results.",
+    "Reject agent input that names a stale turn, and keep interruption requested until the host acknowledges it.",
+    "Project access covers existing history and future tasks; revocation for an unreachable host can remain pending.",
+    "Label sample setup, access, and encryption states as concept behavior; do not imply live guarantees."
+  ],
+  "templates": [
+    {
+      "id": "shell",
+      "name": "Shared workspace shell",
+      "purpose": "Keep task context and operational ownership visible around every shared-work screen.",
+      "slots": [
+        { "name": "navigation", "required": true, "content": "Plexus lockup, workspace breadcrumb, current task, local profile" },
+        { "name": "taskRail", "required": true, "content": "Task list, selected task, contextual files or destinations" },
+        { "name": "ownership", "required": true, "content": "Responsible person, execution host, provider/account, host connectivity" },
+        { "name": "main", "required": true, "content": "One selected screen template" },
+        { "name": "inspector", "required": false, "content": "Sources, discussion, activity, or a decision related to main content" }
+      ],
+      "states": ["task-selected", "task-empty", "host-connected", "host-disconnected", "host-reconnecting"],
+      "semantics": [
+        "Use an explicit selected-navigation label and aria-current.",
+        "Host status must not imply that an agent is running or idle.",
+        "Use text with every presence or status indicator.",
+        "Changing screens must preserve the selected task unless the user selects another task."
+      ]
+    },
+    {
+      "id": "review",
+      "name": "Review together",
+      "purpose": "Let teammates inspect a shared change, discuss it, and send attributed corrections to the executing agent.",
+      "slots": [
+        { "name": "heading", "required": true, "content": "Change title and task name" },
+        { "name": "attributedDirection", "required": true, "content": "Human actor, instruction, timestamp, target agent, delivery receipt" },
+        { "name": "artifact", "required": true, "content": "Read-only diff with file path, line numbers, additions and removals" },
+        { "name": "verification", "required": true, "content": "Latest check label, result, time, and source action" },
+        { "name": "discussion", "required": true, "content": "Attributed human and agent messages and separately labelled help requests" },
+        { "name": "composer", "required": true, "content": "Recipient, turn target, instruction field, send action, resulting receipt" }
+      ],
+      "states": ["review-ready", "agent-active", "input-draft", "input-queued", "input-delivered", "input-failed", "stale-turn-rejected", "interrupt-requested", "interrupt-acknowledged", "help-open", "help-resolved"],
+      "semantics": [
+        "State which agent and turn receive input before sending.",
+        "Keep the sender attribution when presenting delivered input.",
+        "Do not show delivery success until the data source confirms it; demo receipts must be identified as simulated.",
+        "Use added/removed markers as well as color in the diff.",
+        "Reject a stale-turn command instead of silently redirecting it to the current turn.",
+        "Keep interruption in a requested state until acknowledged; a disconnected host does not prove that execution stopped.",
+        "Resolving human help does not approve an agent action."
+      ]
+    },
+    {
+      "id": "evidence",
+      "name": "Evidence and catch-up",
+      "purpose": "Explain what changed and let a reader inspect the records supporting each claim.",
+      "slots": [
+        { "name": "scope", "required": true, "content": "Task and time or event range covered" },
+        { "name": "summary", "required": true, "content": "Concise description with linked sources" },
+        { "name": "records", "required": true, "content": "Actor, event type, timestamp, result, and stable event label" },
+        { "name": "detail", "required": true, "content": "Inspectable source body, file excerpt, test output, or delivery record" },
+        { "name": "followup", "required": false, "content": "Open review, inspect change, or request clarification" }
+      ],
+      "states": ["current", "unread", "filtered", "empty", "source-open", "source-unavailable", "stale"],
+      "semantics": [
+        "A summary is a reading aid; preserve access to the underlying records.",
+        "Distinguish agent claims from recorded verification outcomes.",
+        "Keep unavailable evidence visible as unavailable instead of fabricating a source.",
+        "Display the covered range or update time so freshness is understandable."
+      ]
+    },
+    {
+      "id": "decision",
+      "name": "Scoped decision",
+      "purpose": "Collect an explicit decision about one agent action or one responsibility handoff.",
+      "slots": [
+        { "name": "request", "required": true, "content": "Requesting actor, task, action or command, timestamp" },
+        { "name": "scope", "required": true, "content": "Files/resources affected, execution host, provider account, reason" },
+        { "name": "evidence", "required": true, "content": "Source record and inspectable supporting context" },
+        { "name": "actions", "required": true, "content": "Explicit approve/reject or confirm/cancel controls" },
+        { "name": "receipt", "required": true, "content": "Decision maker, exact decision, timestamp, and resulting state" }
+      ],
+      "states": ["pending", "approved", "rejected", "cancelled", "expired"],
+      "semantics": [
+        "Approval covers only the displayed action; never imply a blanket permission grant.",
+        "Show a neutral alternative and prevent duplicate decisions; the first valid approval decision wins.",
+        "For a handoff, name both people and explicitly keep the same execution host.",
+        "A demo approval changes local sample state; it does not execute the command."
+      ]
+    },
+    {
+      "id": "inbox",
+      "name": "Attention inbox",
+      "purpose": "Help a teammate find and resolve the human requests and decisions that need their attention.",
+      "slots": [
+        { "name": "filters", "required": true, "content": "All, help, approvals, or equivalent explicit categories" },
+        { "name": "items", "required": true, "content": "Request kind, originating actor, task, summary, age, status" },
+        { "name": "detail", "required": true, "content": "Selected request and supporting context" },
+        { "name": "response", "required": true, "content": "Type-appropriate reply, review, approve, reject, or resolve action" }
+      ],
+      "states": ["unread", "read", "pending", "resolved", "filtered-empty", "all-clear"],
+      "semantics": [
+        "Help, approval, and agent-delivery events must retain distinct labels.",
+        "Opening a request does not resolve it.",
+        "Do not turn a human reply into agent input without an explicit send action.",
+        "Keep resolved or decided items understandable through their receipts."
+      ]
+    },
+    {
+      "id": "setup",
+      "name": "Setup and access",
+      "purpose": "Explain the workspace, host, provider, and membership relationships before shared work begins.",
+      "slots": [
+        { "name": "workspace", "required": true, "content": "Workspace and repository identity" },
+        { "name": "host", "required": true, "content": "Execution machine, owner, connection state, concept setup action" },
+        { "name": "provider", "required": true, "content": "Provider and account associated with execution" },
+        { "name": "members", "required": true, "content": "Membership/access roles and invited or joined states" },
+        { "name": "capabilityNotice", "required": true, "content": "Clear boundary between demonstrated UI and future connected/security behavior" }
+      ],
+      "states": ["not-configured", "configuring", "ready", "disconnected", "invited", "joined", "access-removed", "revocation-pending"],
+      "semantics": [
+        "Do not present a workspace login as provider authentication.",
+        "Name the machine that will execute work.",
+        "Explain that a responsible person and an execution host are different concepts.",
+        "Explain that project-level access includes existing history and future tasks.",
+        "Keep revocation pending for an unreachable host rather than claiming immediate removal everywhere.",
+        "Label encryption, invitations, access enforcement, and provider setup as unimplemented concept behavior in this prototype."
+      ]
+    }
+  ],
+  "screens": [
+    { "id": "review", "name": "Review together", "templates": ["shell", "review"] },
+    { "id": "workspace", "name": "Workspace", "templates": ["shell"] },
+    { "id": "activity", "name": "Activity", "templates": ["shell", "evidence"] },
+    { "id": "catchup", "name": "Catch up", "templates": ["shell", "evidence"] },
+    { "id": "inbox", "name": "Inbox", "templates": ["shell", "inbox"] },
+    { "id": "approval", "name": "Approval", "templates": ["shell", "decision"] },
+    { "id": "setup", "name": "Setup", "templates": ["shell", "setup"] },
+    { "id": "access", "name": "Access", "templates": ["shell", "setup"] },
+    { "id": "templates", "name": "Templates", "templates": ["shell"] }
+  ]
+}

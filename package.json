@@ -9,7 +9,7 @@
     "runtime": "node packages/runtime/index.js",
     "desktop": "electron apps/desktop/main.js",
     "codex-clone": "electron src/main/main.js",
-    "test": "npm run test:protocol && npm run test:unit && npm run test:e2e",
+    "test": "npm run test:protocol && npm run test:unit && npm run test:team && npm run test:e2e",
     "test:protocol": "node test/protocol-smoke.js",
     "test:unit": "node test/unit.js",
     "test:e2e": "node test/e2e-multiplayer.js",
@@ -18,7 +18,10 @@
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win --publish never",
     "dist:mac": "electron-builder --mac --publish never",
-    "dist:dir": "electron-builder --dir --publish never"
+    "dist:dir": "electron-builder --dir --publish never",
+    "test:team": "node test/team-boundaries.js",
+    "check:design": "node scripts/check-design-contract.js",
+    "test:design": "node --test test/design-contract.js"
   },
   "license": "MIT",
   "devDependencies": {

@@ -1,0 +1,152 @@
+{
+  "name": "Plexus shared review",
+  "version": "1.0.0",
+  "format": "Portable design values; not a JSON Schema or a DTCG token document",
+  "provenance": {
+    "visualTarget": "selected-direction.png",
+    "brandSource": "../../../../apps/web/styles.css",
+    "spec": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1",
+    "note": "Brand colors and Outfit come from the existing Plexus identity, also represented in this repository's shared renderer and supplied assets. App dimensions, state colors, and compact type scale extend that identity for the selected shared-review concept."
+  },
+  "color": {
+    "background": "#080a09",
+    "surface": "#101310",
+    "raised": "#161a16",
+    "ink": "#eef1e9",
+    "muted": "#969d94",
+    "accent": "#d5f5a3",
+    "accentInk": "#182010",
+    "divider": "rgba(225, 239, 217, 0.12)",
+    "focus": "#d5f5a3",
+    "warning": "#dfba60",
+    "danger": "#e29e98",
+    "additionBackground": "#a6be4f13",
+    "removalBackground": "#932b251b"
+  },
+  "type": {
+    "family": "Outfit",
+    "fallback": "system-ui, sans-serif",
+    "fontFile": "/assets/outfit.woff2",
+    "codeFamily": "SFMono-Regular, Consolas, Liberation Mono, monospace",
+    "pageTitle": {
+      "sizePx": 30,
+      "weight": 450,
+      "lineHeight": 1.2,
+      "trackingEm": -0.04
+    },
+    "sectionTitle": {
+      "sizePx": 20,
+      "weight": 450,
+      "lineHeight": 1.5,
+      "trackingEm": -0.025
+    },
+    "body": {
+      "sizePx": 15,
+      "sizeRangePx": [
+        14,
+        16
+      ],
+      "weight": 400,
+      "lineHeight": 1.5
+    },
+    "label": {
+      "sizePx": 12,
+      "sizeRangePx": [
+        10,
+        13
+      ],
+      "weight": 400,
+      "lineHeight": 1.5
+    },
+    "code": {
+      "sizePx": 14,
+      "weight": 400,
+      "lineHeight": 2.142857142857143,
+      "responsiveSizeRangePx": [
+        11,
+        14
+      ],
+      "note": "Read-only diff; narrow-screen overrides keep overflow local to the code pane.",
+      "lineHeightPx": 30
+    }
+  },
+  "space": {
+    "unitPx": 4,
+    "scalePx": [
+      4,
+      8,
+      12,
+      16,
+      20,
+      24,
+      32,
+      40,
+      48,
+      64
+    ]
+  },
+  "radius": {
+    "controlPx": 5,
+    "inputPx": 6,
+    "panelPx": 5,
+    "templatePanelPx": 8,
+    "largePanelPx": 12,
+    "avatar": "50%",
+    "agentAvatarPx": 9
+  },
+  "layout": {
+    "referenceCanvasPx": {
+      "width": 1487,
+      "height": 1058
+    },
+    "desktopReferencePx": {
+      "width": 1487,
+      "topbar": 86,
+      "sidebar": 304,
+      "inspector": 424,
+      "center": 759
+    },
+    "sidebar": "clamp(240px, 20.4vw, 304px)",
+    "inspector": "clamp(340px, 28.5vw, 424px)",
+    "center": "minmax(0, 1fr)",
+    "contentPaddingPx": {
+      "top": 32,
+      "horizontal": 30,
+      "bottom": 30
+    },
+    "panelGapPx": 17,
+    "dividerWidthPx": 1,
+    "standardControlHeightPx": 38,
+    "compactControlHeightRangePx": [
+      26,
+      33
+    ],
+    "touchTargetPx": 44,
+    "responsive": {
+      "wide": "Above 1200px, use clamped side panes. From 1101px to 1200px, use a 235px task rail and 335px inspector.",
+      "medium": "From 761px to 1100px, retain a 230px task rail. Hide the inspector until opened as a fixed right drawer, up to 420px wide, below the 86px top bar.",
+      "narrow": "At 760px and below, use a 68px top bar and one work column. Open navigation as a 280px left drawer with backdrop; open the inspector as a full-width right drawer. Code may scroll inside its own pane.",
+      "minimumViewportWidthPx": 360
+    }
+  },
+  "motion": {
+    "interactionMs": 200,
+    "entranceMs": 320,
+    "staggerMs": 35,
+    "entranceTravelPx": 7,
+    "templateRevealMs": 350,
+    "templateRevealTravelPx": 12,
+    "hoverTravelPx": 2,
+    "ease": "power2.out",
+    "reducedMotion": "Remove travel, scrub, and nonessential animation; keep all states and actions immediately available.",
+    "constraint": "Keep scroll effects out of code reading, approvals, and task controls."
+  },
+  "accessibility": {
+    "bodyTextContrastTarget": 4.5,
+    "largeTextContrastTarget": 3,
+    "meaningfulControlBoundaryContrastTarget": 3,
+    "focusOutlinePx": 2,
+    "stateLabelRequired": true,
+    "decorativeDividerIsControlBoundary": false
+  }
+}

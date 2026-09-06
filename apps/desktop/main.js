@@ -12,7 +12,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
-const crypto = require('crypto');
+const { createPairingCode } = require('../../packages/protocol');
 
 // Packaged, everything lives under the asar and `getAppPath()` is its root. In a checkout
 // that call returns whatever directory Electron was pointed at, which is not the same
@@ -28,6 +28,8 @@ if (userDataArg) app.setPath('userData', userDataArg.split('=').slice(1).join('=
 let win = null;
 const children = [];
 const serviceLogs = { hub: [], runtime: [] };
+let runtimeChild = null;
+let runtimeLaunch = null;
 
 // An installed app has no console to print to, so a startup failure would otherwise be
 // invisible to the user and unreportable to us. Everything the shell prints also goes here.
@@ -46,15 +48,7 @@ function log(line) {
   if (logStream) { try { logStream.write(text + '\n'); } catch {} }
 }
 
-// This process is the host, so it mints the pairing code and shows it to the person at the
-// machine. It never travels anywhere else.
-function newPairingCode() {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let out = '';
-  for (const b of crypto.randomBytes(8)) out += alphabet[b % alphabet.length];
-  return out.slice(0, 4) + '-' + out.slice(4, 8);
-}
-const PAIRING_CODE = newPairingCode();
+const PAIRING_CODE = createPairingCode();
 
 function status(step, state, detail) {
   const first = detail ? String(detail).split(/\r?\n/)[0] : '';
@@ -70,10 +64,13 @@ function spawnService(label, script, args, env) {
     // cwd has to be somewhere the OS can actually chdir to.
     cwd: SERVICE_CWD,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...env },
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   });
   // Without this, a spawn that fails outright throws an unhandled error event and the app
   // dies with nothing on screen - the exact failure mode this slice is meant to remove.
+  child.on('message', (message) => {
+    if (label === 'runtime' && message.type === 'runtime.ready') child.runtimeReady = message;
+  });
   child.on('error', (err) => status(label, 'failed', `could not start: ${err.message}`));
   const keep = (s) => {
     const lines = serviceLogs[label];
@@ -99,11 +96,88 @@ function spawnService(label, script, args, env) {
   return child;
 }
 
+function launchRuntime() {
+  if (!runtimeLaunch) return null;
+  runtimeChild = spawnService('runtime', runtimeLaunch.script, runtimeLaunch.args, runtimeLaunch.env);
+  return runtimeChild;
+}
+
+function stopService(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    let forceTimer;
+    const done = () => { clearTimeout(forceTimer); resolve(); };
+    child.once('exit', done);
+    child.kill();
+    forceTimer = setTimeout(() => {
+      if (child.exitCode === null) child.kill('SIGKILL');
+    }, 2000);
+  });
+}
+
+function addProjectToRuntimeConfig(dataDir, dir) {
+  const configPath = path.join(dataDir, 'runtime.json');
+  let config = {};
+  if (fs.existsSync(configPath)) {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (!config || Array.isArray(config) || typeof config !== 'object') throw new Error('runtime.json must contain an object');
+  }
+  if (config.projects != null && !Array.isArray(config.projects)) throw new Error('runtime.json projects must be an array');
+  const projects = [...new Set([...(config.projects || []).map((p) => path.resolve(p)), dir])];
+  if (projects.length === (config.projects || []).length) return false;
+  const tempPath = configPath + `.tmp-${process.pid}`;
+  fs.writeFileSync(tempPath, JSON.stringify({ ...config, projects }, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(tempPath, configPath);
+  return true;
+}
+
+function localRuntimeId() {
+  if (!runtimeLaunch) return null;
+  try {
+    const id = fs.readFileSync(path.join(runtimeLaunch.dataDir, 'runtime-id'), 'utf8').trim();
+    return id || null;
+  } catch {
+    return null;
+  }
+}
+
+function localPairingCode() {
+  if (!runtimeLaunch) return null;
+  try {
+    const code = fs.readFileSync(path.join(runtimeLaunch.dataDir, 'pairing-code'), 'utf8').trim();
+    return code || null;
+  } catch {
+    // The runtime writes the same initial code as soon as it starts. This fallback only
+    // covers the short interval before that owner-only file exists.
+    return PAIRING_CODE;
+  }
+}
+
+async function pickAndAuthorizeProject(runtimeId) {
+  // A desktop connected only to a remote hub must not authorize paths on an unrelated
+  // runtime. The native picker is a host-local consent path only when this shell launched
+  // the runtime itself.
+  if (!runtimeLaunch) throw new Error('This desktop is connected to a remote hub and has no local execution host.');
+  const ownedRuntimeId = localRuntimeId();
+  if (!ownedRuntimeId) throw new Error('The local execution host is still starting. Try again in a moment.');
+  if (runtimeId !== ownedRuntimeId) throw new Error("Select this desktop's local execution host before sharing a folder.");
+  const res = await dialog.showOpenDialog(win, { title: 'Register project folder', properties: ['openDirectory', 'createDirectory'] });
+  if (res.canceled || !res.filePaths.length) return { changed: false, canceled: true };
+  const dir = path.resolve(res.filePaths[0]);
+  if (!fs.statSync(dir).isDirectory()) throw new Error('Selected project is not a directory');
+  if (!addProjectToRuntimeConfig(runtimeLaunch.dataDir, dir)) return { changed: false, canceled: false };
+
+  await stopService(runtimeChild);
+  launchRuntime();
+  // Report the outcome without exposing the authorized filesystem path to the renderer.
+  return { changed: true, canceled: false };
+}
+
 async function waitForHub(url, tries = 80) {
   let lastErr = null;
   for (let i = 0; i < tries; i++) {
     try {
-      const r = await fetch(url + '/api/health');
+      const r = await fetch(url + '/api/health', { signal: AbortSignal.timeout(1500) });
       if (r.ok) return { ok: true, health: await r.json() };
       lastErr = 'HTTP ' + r.status;
     } catch (e) { lastErr = e.message; }
@@ -112,17 +186,15 @@ async function waitForHub(url, tries = 80) {
   return { ok: false, error: lastErr };
 }
 
-// Waits until the execution host has actually registered, so "ready" means the app can run
-// something rather than merely having painted a window.
-async function waitForRuntime(url, tries = 60) {
+// Readiness comes from this child after its authenticated hub handshake. A fresh host
+// can be ready to pair without being authorized to execute for any team yet.
+async function waitForRuntime(tries = 60) {
   for (let i = 0; i < tries; i++) {
-    try {
-      const r = await fetch(url + '/api/health');
-      if (r.ok && (await r.json()).runtimes > 0) return true;
-    } catch {}
+    if (!runtimeChild || runtimeChild.exitCode !== null || runtimeChild.signalCode !== null) return null;
+    if (runtimeChild.runtimeReady) return runtimeChild.runtimeReady;
     await new Promise((r) => setTimeout(r, 250));
   }
-  return false;
+  return null;
 }
 
 async function boot() {
@@ -154,14 +226,19 @@ async function boot() {
   status('runtime', 'working', 'Starting this machine as an execution host…');
   // path.delimiter, not ':' - a Windows path starts with a drive letter and a colon.
   const projects = (process.env.HARNESS_PROJECTS || '').split(path.delimiter).filter(Boolean).flatMap((p) => ['--project', p]);
-  spawnService('runtime', path.join(ROOT, 'packages', 'runtime', 'index.js'),
-    ['--hub', httpUrl.replace(/^http/, 'ws'), '--name', userName, '--data', dataDir, ...projects],
-    { HARNESS_PAIRING_CODE: PAIRING_CODE });
+  runtimeLaunch = {
+    script: path.join(ROOT, 'packages', 'runtime', 'index.js'),
+    args: ['--hub', httpUrl.replace(/^http/, 'ws'), '--name', userName, '--data', dataDir, ...projects],
+    env: { HARNESS_PAIRING_CODE: PAIRING_CODE }, dataDir
+  };
+  launchRuntime();
 
-  const registered = await waitForRuntime(httpUrl);
+  const registered = await waitForRuntime();
   status('runtime', registered ? 'ready' : 'failed', registered
-    ? 'This machine is available to the team'
+    ? (registered.paired ? 'This machine is available to the team' : 'This machine is ready to pair with your team')
     : `The execution host did not register.\n${serviceLogs.runtime.slice(-6).join('\n') || 'It produced no output.'}`);
+
+  if (!registered) throw new Error('The execution host did not connect. Try again or inspect the data folder logs.');
 
   status('ui', 'working', 'Opening the workspace…');
   await win.loadURL(httpUrl + '/?name=' + encodeURIComponent(userName));
@@ -188,17 +265,18 @@ async function runBoot() {
   }
 }
 
-ipcMain.handle('desktop:pairingCode', async () => PAIRING_CODE);
+ipcMain.handle('desktop:pairingCode', async () => localPairingCode());
+ipcMain.handle('desktop:runtimeId', async () => localRuntimeId());
+ipcMain.handle('desktop:pickFolder', (_event, runtimeId) => pickAndAuthorizeProject(runtimeId));
 ipcMain.handle('desktop:retryBoot', async () => {
-  for (const c of children.splice(0)) { try { c.kill(); } catch {} }
+  await Promise.all(children.splice(0).map(stopService));
+  runtimeChild = null;
+  serviceLogs.hub.length = 0;
+  serviceLogs.runtime.length = 0;
   await win.loadFile(path.join(__dirname, 'boot.html'));
   return runBoot();
 });
 ipcMain.handle('desktop:openDataFolder', async () => shell.openPath(app.getPath('userData')));
-ipcMain.handle('desktop:pickFolder', async () => {
-  const res = await dialog.showOpenDialog(win, { title: 'Register project folder', properties: ['openDirectory', 'createDirectory'] });
-  return res.canceled || !res.filePaths.length ? null : res.filePaths[0];
-});
 
 app.whenReady().then(() => { openLog(); createWindow(); return runBoot(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) { createWindow(); runBoot(); } });

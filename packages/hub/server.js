@@ -8,6 +8,18 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const { HubStore, uid } = require('./store');
+const { TeamOps, Errors, Roles, Commands } = require('../protocol');
+
+// Authorization failures carry a code so a caller can tell them apart. `fail` is used for
+// every boundary in this file; a bare `throw new Error(...)` would collapse them back into
+// one indistinguishable message.
+function fail(code, detail) {
+  const err = new Error(detail ? `${code}: ${detail}` : code);
+  err.code = code;
+  return err;
+}
+
+const PAIRING_TTL_MS = 10 * 60 * 1000;   // a pairing code is short-lived on purpose
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 
@@ -18,7 +30,10 @@ class Hub {
     this.log = log;
     this.clients = new Map();   // ws -> { user, role, runtimeId?, subs:Set<threadId> }
     this.runtimes = new Map();  // runtimeId -> ws
-    this.pendingCommands = new Map(); // commandId -> origin ws
+    this.pendingCommands = new Map(); // commandId -> { origin, runtimeId, runtimeWs }
+    // Hosts that have connected but are not attached to any team yet, keyed by the pairing
+    // code printed on the host's own console. Reading that code is the local consent.
+    this.pendingPairings = new Map(); // pairingCode -> { runtimeId, descriptor, at, ws }
     this.activity = new Map();  // threadId -> { threadId, projectKey, files: Map<path, ts>, branch, worktree, by, name, runtimeId, active, lastAt }
     this.server = http.createServer((req, res) => this.handleHttp(req, res));
     this.wss = new WebSocketServer({ server: this.server });
@@ -37,6 +52,18 @@ class Hub {
   }
 
   // ---------------- HTTP: static web UI + tiny API ----------------
+  // Bearer token on the Authorization header, or ?token= for the polling fallback.
+  httpAccount(req, url) {
+    const header = req.headers.authorization || '';
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : url.searchParams.get('token');
+    return token ? this.store.userByToken(token) : null;
+  }
+
+  httpError(res, status, code) {
+    res.writeHead(status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: code }));
+  }
+
   handleHttp(req, res) {
     const url = new URL(req.url, 'http://x');
     if (url.pathname === '/api/health') {
@@ -45,8 +72,13 @@ class Hub {
     }
     const evm = url.pathname.match(/^\/api\/threads\/([^/]+)\/events$/);
     if (evm) {
+      // This is the seq-cursor fallback for the live socket, so it carries exactly the
+      // same content and needs exactly the same authorization.
+      const user = this.httpAccount(req, url);
+      if (!user) return this.httpError(res, 401, Errors.UNAUTHENTICATED);
       const thread = this.store.getThread(evm[1]);
-      if (!thread) { res.writeHead(404, { 'content-type': 'application/json' }); return res.end('{"error":"not_found"}'); }
+      if (!thread) return this.httpError(res, 404, Errors.UNKNOWN_THREAD);
+      if (!this.store.membership(thread.orgId, user.id)) return this.httpError(res, 403, Errors.NOT_A_MEMBER);
       const after = parseInt(url.searchParams.get('after') || '0', 10) || 0;
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 500);
       const events = this.store.eventsFrom(thread.id, after, limit);
@@ -54,9 +86,13 @@ class Hub {
       return res.end(JSON.stringify({ thread, events, nextSeq: events.length ? events[events.length - 1].seq : after }));
     }
     if (url.pathname === '/api/threads') {
-      const org = url.searchParams.get('org') || 'local';
+      const user = this.httpAccount(req, url);
+      if (!user) return this.httpError(res, 401, Errors.UNAUTHENTICATED);
+      const teamId = url.searchParams.get('team');
+      if (!teamId || !this.store.getTeam(teamId)) return this.httpError(res, 404, Errors.UNKNOWN_TEAM);
+      if (!this.store.membership(teamId, user.id)) return this.httpError(res, 403, Errors.NOT_A_MEMBER);
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ threads: this.store.listThreads(org) }));
+      return res.end(JSON.stringify({ threads: this.store.listThreads(teamId) }));
     }
     if (!this.staticDir) { res.writeHead(404); return res.end('no ui'); }
     let p = url.pathname === '/' ? '/index.html' : url.pathname;
@@ -70,13 +106,13 @@ class Hub {
 
   // ---------------- WebSocket ----------------
   onConnection(ws) {
-    const ctx = { user: null, role: null, runtimeId: null, subs: new Set(), org: null };
+    const ctx = { user: null, role: null, runtimeId: null, subs: new Set(), teamId: null };
     this.clients.set(ws, ctx);
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
       try { this.handleMessage(ws, ctx, msg); } catch (err) {
-        this.send(ws, { type: 'error', message: String(err && err.message || err), ref: msg.id });
+        this.send(ws, { type: 'error', code: (err && err.code) || null, message: String((err && err.message) || err), ref: msg.id });
       }
     });
     ws.on('close', () => this.onClose(ws, ctx));
@@ -86,93 +122,353 @@ class Hub {
     if (ws.readyState === 1) ws.send(JSON.stringify(msg));
   }
 
-  broadcastOrg(orgId, msg, { roles = ['client'] } = {}) {
+  broadcastTeam(teamId, msg, { roles = ['client'] } = {}) {
+    if (!teamId) return;
     for (const [ws, ctx] of this.clients) {
-      if (ctx.org === orgId && roles.includes(ctx.role)) this.send(ws, msg);
+      if (ctx.teamId !== teamId || !roles.includes(ctx.role)) continue;
+      if (ctx.role === 'client' && (!ctx.user || !this.store.membership(teamId, ctx.user.id))) continue;
+      if (ctx.role === 'runtime' && this.runtimes.get(ctx.runtimeId) !== ws) continue;
+      this.send(ws, msg);
     }
   }
 
   onClose(ws, ctx) {
     this.clients.delete(ws);
+    for (const [commandId, pending] of this.pendingCommands) {
+      if (pending.origin === ws) {
+        // A delete may already have happened on the host. Keep its reconciliation record
+        // even if nobody remains to receive the reply, or the hub can resurrect a ghost.
+        if (pending.commandMethod === Commands.THREAD_DELETE) pending.origin = null;
+        else this.pendingCommands.delete(commandId);
+      } else if (pending.runtimeWs === ws) {
+        this.pendingCommands.delete(commandId);
+        if (pending.origin) this.send(pending.origin, { type: 'command.result', id: commandId, ok: false, error: 'runtime offline' });
+      }
+    }
+    for (const [code, pending] of this.pendingPairings) {
+      if (pending.ws === ws) this.pendingPairings.delete(code);
+    }
     for (const threadId of ctx.subs) this.broadcastPresence(threadId);
     if (ctx.role === 'runtime' && ctx.runtimeId && this.runtimes.get(ctx.runtimeId) === ws) {
       this.runtimes.delete(ctx.runtimeId);
-      if (ctx.org) this.broadcastRuntimes(ctx.org);
+      if (ctx.teamId) this.broadcastRuntimes(ctx.teamId);
     }
   }
 
   handleMessage(ws, ctx, msg) {
     if (msg.type === 'hello') return this.onHello(ws, ctx, msg);
-    if (!ctx.user) throw new Error('not authenticated — send hello first');
+    if (!ctx.user) throw fail(Errors.UNAUTHENTICATED, 'send hello first');
     switch (msg.type) {
+      // ---- team administration (never routed to a runtime) ----
+      case TeamOps.TEAM_CREATE: {
+        const team = this.store.createTeam(msg.name, ctx.user.id);
+        this.joinTeamContext(ws, ctx, team.id);
+        return this.send(ws, { type: 'team', team, membership: this.store.membership(team.id, ctx.user.id), ref: msg.id });
+      }
+      case TeamOps.TEAM_LIST:
+        return this.send(ws, { type: 'teams', teams: this.store.teamsFor(ctx.user.id), ref: msg.id });
+      case TeamOps.TEAM_MEMBERS:
+        this.requireMember(ctx, msg.teamId);
+        return this.send(ws, { type: 'users', users: this.store.listMembers(msg.teamId), ref: msg.id });
+      case TeamOps.INVITE_CREATE: {
+        this.requireOwner(ctx, msg.teamId);
+        const invitee = this.store.userById(String(msg.inviteeUserId || ''));
+        if (!invitee) throw fail(Errors.UNKNOWN_USER, 'inviteeUserId must identify an existing account');
+        if (this.store.membership(msg.teamId, invitee.id)) throw fail(Errors.ALREADY_MEMBER);
+        const ttl = Math.min(Math.max(parseInt(msg.ttlMs, 10) || 7 * 24 * 3600 * 1000, 60000), 30 * 24 * 3600 * 1000);
+        const role = msg.role === Roles.OWNER ? Roles.OWNER : Roles.MEMBER;
+        const invite = this.store.createInvitation(msg.teamId, ctx.user.id, invitee.id, role, ttl);
+        return this.send(ws, { type: 'invitation', invitation: invite, ref: msg.id });
+      }
+      case TeamOps.INVITE_ACCEPT: {
+        const r = this.store.redeemInvitation(String(msg.code || ''), ctx.user.id);
+        if (!r.ok) throw fail(r.reason);
+        const team = this.store.getTeam(r.invite.teamId);
+        this.joinTeamContext(ws, ctx, team.id);
+        this.broadcastTeam(team.id, { type: 'users', users: this.store.listMembers(team.id) });
+        return this.send(ws, { type: 'team', team, membership: this.store.membership(team.id, ctx.user.id), ref: msg.id });
+      }
+      case TeamOps.INVITE_REVOKE: {
+        const inv = this.store.getInvitation(String(msg.code || ''));
+        if (!inv) throw fail(Errors.INVITE_INVALID);
+        this.requireOwner(ctx, inv.team_id);
+        this.store.revokeInvitation(inv.code);
+        return this.send(ws, { type: 'ok', ref: msg.id });
+      }
+      case TeamOps.MEMBER_REMOVE: {
+        this.requireOwner(ctx, msg.teamId);
+        const team = this.store.getTeam(msg.teamId);
+        if (msg.userId === team.ownerId) throw fail(Errors.OWNER_REQUIRED, 'the owner cannot be removed');
+        this.store.removeMember(msg.teamId, msg.userId);
+        // Drop the removed member's live subscriptions at once. Their connection keeps
+        // pointing at the team on purpose: the next request then answers "not a member",
+        // which is the true reason, rather than pretending the team never existed.
+        const changedSubscriptions = new Set();
+        for (const [cws, c] of this.clients) {
+          if (c.role !== 'client' || !c.user || c.user.id !== msg.userId) continue;
+          for (const threadId of [...c.subs]) {
+            const thread = this.store.getThread(threadId);
+            if (thread && thread.orgId === msg.teamId) {
+              c.subs.delete(threadId);
+              changedSubscriptions.add(threadId);
+            }
+          }
+          for (const [commandId, pending] of this.pendingCommands) {
+            if (pending.origin !== cws || pending.teamId !== msg.teamId) continue;
+            if (pending.commandMethod === Commands.THREAD_DELETE) pending.origin = null;
+            else this.pendingCommands.delete(commandId);
+          }
+          if (c.teamId === msg.teamId) this.send(cws, { type: 'removed', teamId: msg.teamId });
+        }
+        for (const threadId of changedSubscriptions) this.broadcastPresence(threadId);
+        this.broadcastTeam(msg.teamId, { type: 'users', users: this.store.listMembers(msg.teamId) });
+        this.broadcastTeam(msg.teamId, { type: 'approvers', teamId: msg.teamId, approvers: this.store.listApprovers(msg.teamId) });
+        return this.send(ws, { type: 'ok', ref: msg.id });
+      }
+      case TeamOps.APPROVER_GRANT: {
+        this.requireOwner(ctx, msg.teamId);
+        if (!this.store.membership(msg.teamId, msg.userId)) throw fail(Errors.NOT_A_MEMBER, 'that person is not in this team');
+        this.store.grantApprover(msg.teamId, msg.userId, ctx.user.id);
+        this.broadcastTeam(msg.teamId, { type: 'approvers', teamId: msg.teamId, approvers: this.store.listApprovers(msg.teamId) });
+        return this.send(ws, { type: 'ok', ref: msg.id });
+      }
+      case TeamOps.APPROVER_REVOKE: {
+        this.requireOwner(ctx, msg.teamId);
+        this.store.revokeApprover(msg.teamId, msg.userId);
+        this.broadcastTeam(msg.teamId, { type: 'approvers', teamId: msg.teamId, approvers: this.store.listApprovers(msg.teamId) });
+        return this.send(ws, { type: 'ok', ref: msg.id });
+      }
+      case TeamOps.APPROVER_LIST:
+        this.requireMember(ctx, msg.teamId);
+        return this.send(ws, { type: 'approvers', teamId: msg.teamId, approvers: this.store.listApprovers(msg.teamId), ref: msg.id });
+      case TeamOps.RUNTIME_PAIR: return this.pairRuntime(ws, ctx, msg);
+      case TeamOps.RUNTIME_UNPAIR: {
+        const pairing = this.store.runtimePairing(msg.runtimeId);
+        if (!pairing) throw fail(Errors.UNKNOWN_RUNTIME);
+        this.requireOwner(ctx, pairing.teamId);
+        this.store.unpairRuntime(msg.runtimeId);
+        this.store.deleteRuntime(msg.runtimeId);
+        for (const [code, pending] of this.pendingPairings) {
+          if (pending.runtimeId === msg.runtimeId) this.pendingPairings.delete(code);
+        }
+        const rws = this.runtimes.get(msg.runtimeId);
+        if (rws) {
+          const rctx = this.clients.get(rws);
+          if (rctx) rctx.teamId = null;
+          this.runtimes.delete(msg.runtimeId);
+          this.send(rws, { type: 'unpaired' });
+        }
+        for (const [commandId, pending] of this.pendingCommands) {
+          if (pending.runtimeId !== msg.runtimeId) continue;
+          this.pendingCommands.delete(commandId);
+          this.send(pending.origin, { type: 'command.result', id: commandId, ok: false, error: Errors.RUNTIME_UNPAIRED });
+        }
+        this.broadcastRuntimes(pairing.teamId);
+        return this.send(ws, { type: 'ok', ref: msg.id });
+      }
+      case 'team.switch': {
+        this.joinTeamContext(ws, ctx, msg.teamId);
+        return this.send(ws, { type: 'team', team: this.store.getTeam(msg.teamId), membership: this.store.membership(msg.teamId, ctx.user.id), ref: msg.id });
+      }
+
+      // ---- team-scoped reads ----
       case 'threads.list':
-        return this.send(ws, { type: 'threads', threads: this.store.listThreads(ctx.org) });
+        this.requireMember(ctx, ctx.teamId);
+        return this.send(ws, { type: 'threads', threads: this.store.listThreads(ctx.teamId) });
       case 'runtimes.list':
-        return this.send(ws, { type: 'runtimes', runtimes: this.runtimeList(ctx.org) });
+        this.requireMember(ctx, ctx.teamId);
+        return this.send(ws, { type: 'runtimes', runtimes: this.runtimeList(ctx.teamId) });
       case 'users.list':
-        return this.send(ws, { type: 'users', users: this.store.listUsers(ctx.org) });
+        this.requireMember(ctx, ctx.teamId);
+        return this.send(ws, { type: 'users', users: this.store.listMembers(ctx.teamId) });
       case 'thread.subscribe': return this.subscribe(ws, ctx, msg);
-      case 'workspace.activity': return this.send(ws, { type: 'workspace.activity', ...this.activitySnapshot(ctx.org) });
+      case 'workspace.activity':
+        this.requireMember(ctx, ctx.teamId);
+        return this.send(ws, { type: 'workspace.activity', ...this.activitySnapshot(ctx.teamId) });
       case 'thread.unsubscribe':
         ctx.subs.delete(msg.threadId);
         return this.broadcastPresence(msg.threadId);
       case 'thread.delete': {
-        const t = this.store.getThread(msg.threadId);
-        if (t && t.orgId === ctx.org) {
-          this.routeToRuntime(t.runtimeId, { type: 'command', id: uid('cmd'), threadId: t.id, by: this.who(ctx), command: { type: 'thread.delete' } });
-          this.store.deleteThread(t.id);
-          this.broadcastOrg(ctx.org, { type: 'thread.deleted', threadId: t.id });
-        }
-        return;
+        return this.onCommand(ws, ctx, { ...msg, type: 'command', command: { method: Commands.THREAD_DELETE } });
       }
       case 'command': return this.onCommand(ws, ctx, msg);
+
       // ---- runtime-only messages ----
       case 'thread.upsert': return this.onThreadUpsert(ws, ctx, msg);
       case 'append': return this.onAppend(ws, ctx, msg);
       case 'command.result': {
-        const origin = this.pendingCommands.get(msg.id);
+        if (ctx.role !== 'runtime') throw fail(Errors.UNAUTHENTICATED, 'runtime only');
+        if (!ctx.teamId || this.runtimes.get(ctx.runtimeId) !== ws) throw fail(Errors.RUNTIME_AUTHENTICATION);
+        const pending = this.pendingCommands.get(msg.id);
+        if (pending && (pending.runtimeId !== ctx.runtimeId || pending.runtimeWs !== ws)) {
+          throw fail(Errors.RUNTIME_AUTHENTICATION, 'command result came from a different runtime');
+        }
         this.pendingCommands.delete(msg.id);
-        if (origin) this.send(origin, msg);
+        if (pending && msg.ok && pending.commandMethod === Commands.THREAD_DELETE) {
+          const thread = this.store.getThread(pending.threadId);
+          if (thread && thread.orgId === pending.teamId && thread.runtimeId === pending.runtimeId) {
+            this.store.deleteThread(thread.id);
+            this.broadcastTeam(thread.orgId, { type: 'thread.deleted', threadId: thread.id });
+          }
+        }
+        if (pending && pending.origin) this.send(pending.origin, msg);
         return;
       }
       case 'runtime.update':
-        if (ctx.role !== 'runtime') throw new Error('runtime only');
-        this.store.upsertRuntime(ctx.org, { ...msg.runtime, id: ctx.runtimeId });
-        return this.broadcastRuntimes(ctx.org);
+        if (ctx.role !== 'runtime') throw fail(Errors.UNAUTHENTICATED, 'runtime only');
+        if (!ctx.teamId) throw fail(Errors.RUNTIME_UNPAIRED);
+        if (this.runtimes.get(ctx.runtimeId) !== ws) throw fail(Errors.RUNTIME_AUTHENTICATION);
+        {
+          const stored = this.store.getRuntime(ctx.runtimeId);
+          this.store.upsertRuntime(ctx.teamId, {
+            ...msg.runtime,
+            id: ctx.runtimeId,
+            ownerId: stored && stored.ownerId,
+            ownerName: stored && stored.ownerName
+          });
+        }
+        return this.broadcastRuntimes(ctx.teamId);
       case 'ping': return this.send(ws, { type: 'pong' });
       default: throw new Error('unknown message type: ' + msg.type);
     }
   }
 
+  // Attaching a host to a team needs the code the host printed on its own console. That
+  // possession is the local consent: a remote member cannot claim a host it cannot see.
+  pairRuntime(ws, ctx, msg) {
+    this.requireOwner(ctx, msg.teamId);
+    const code = String(msg.code || '').trim().toUpperCase();
+    const pending = this.pendingPairings.get(code);
+    if (!code || !pending) throw fail(Errors.PAIRING_INVALID);
+    if (Date.now() - pending.at > PAIRING_TTL_MS) {
+      this.pendingPairings.delete(code);
+      throw fail(Errors.PAIRING_EXPIRED);
+    }
+    const pendingCtx = this.clients.get(pending.ws);
+    if (pending.ws.readyState !== 1 || !pendingCtx || pendingCtx.role !== 'runtime' || pendingCtx.runtimeId !== pending.runtimeId) {
+      this.pendingPairings.delete(code);
+      throw fail(Errors.PAIRING_INVALID, 'runtime disconnected');
+    }
+    const pairing = this.store.pairRuntime(pending.runtimeId, msg.teamId, ctx.user.id, pending.runtimeToken);
+    if (!pairing) {
+      this.pendingPairings.delete(code);
+      throw fail(Errors.RUNTIME_AUTHENTICATION, 'runtime identity is already reserved');
+    }
+    for (const [pendingCode, candidate] of this.pendingPairings) {
+      if (candidate.runtimeId === pending.runtimeId) this.pendingPairings.delete(pendingCode);
+    }
+    this.store.upsertRuntime(msg.teamId, { ...pending.descriptor, ownerId: ctx.user.id, ownerName: ctx.user.name });
+    const rctx = this.clients.get(pending.ws);
+    if (rctx) rctx.teamId = msg.teamId;
+    const previous = this.runtimes.get(pending.runtimeId);
+    if (previous && previous !== pending.ws) { try { previous.close(); } catch {} }
+    this.runtimes.set(pending.runtimeId, pending.ws);
+    this.send(pending.ws, { type: 'paired', teamId: msg.teamId, pairedBy: this.who(ctx) });
+    this.broadcastRuntimes(msg.teamId);
+    return this.send(ws, { type: 'runtime.paired', runtimeId: pending.runtimeId, teamId: msg.teamId, ref: msg.id });
+  }
+
+  // A name is an identity claim, not an authorization one. Logging in by name mints a NEW
+  // account with its own token; it never resolves to an existing account, so typing a
+  // teammate's name gets you a same-named stranger with no memberships. Access comes only
+  // from a membership row, and a membership row comes only from an accepted invitation.
   onHello(ws, ctx, msg) {
-    const orgId = msg.org || 'local';
-    this.store.ensureOrg(orgId);
+    if (ctx.user) throw fail(Errors.UNAUTHENTICATED, 'hello was already received on this connection');
     let user = msg.token ? this.store.userByToken(msg.token) : null;
-    let created = false;
-    if (!user && msg.name) {
-      const before = this.store.listUsers(orgId).length;
-      user = this.store.loginOrCreate(orgId, msg.name, msg.color);
-      created = this.store.listUsers(orgId).length > before;
+    if (msg.token && !user) throw fail(Errors.UNAUTHENTICATED, 'unknown token');
+    if (!user) {
+      if (!msg.name) throw fail(Errors.UNAUTHENTICATED, 'hello needs a token or a name');
+      user = this.store.createAccount(msg.name, msg.color);
     }
-    if (!user) throw new Error('hello needs a token or a name');
-    ctx.user = user; ctx.org = user.org_id; ctx.role = msg.role === 'runtime' ? 'runtime' : 'client';
+    ctx.user = user;
+    ctx.role = msg.role === 'runtime' ? 'runtime' : 'client';
+
     if (ctx.role === 'runtime') {
-      if (!msg.runtime || !msg.runtime.id) throw new Error('runtime hello needs runtime.id');
+      if (!msg.runtime || !msg.runtime.id) throw fail(Errors.UNKNOWN_RUNTIME, 'runtime hello needs runtime.id');
       ctx.runtimeId = msg.runtime.id;
-      const prev = this.runtimes.get(ctx.runtimeId);
-      if (prev && prev !== ws) { try { prev.close(); } catch {} }
-      this.runtimes.set(ctx.runtimeId, ws);
-      this.store.upsertRuntime(ctx.org, { ...msg.runtime, ownerId: user.id, ownerName: user.name });
+      ctx.runtimeDescriptor = msg.runtime;
+      // A host with no pairing is parked, not admitted: it holds a code the operator can
+      // read off its own console, and only someone with that code can attach it to a team.
+      const pairing = this.store.runtimePairing(ctx.runtimeId);
+      const hasCredential = this.store.runtimeCredentialExists(ctx.runtimeId);
+      const credentialMatches = this.store.runtimeCredentialMatches(ctx.runtimeId, msg.runtimeToken);
+      if (pairing && !hasCredential) {
+        throw fail(Errors.RUNTIME_AUTHENTICATION, 'legacy runtime identity must be unpaired before enrollment');
+      }
+      if (hasCredential && !credentialMatches) {
+        throw fail(Errors.RUNTIME_AUTHENTICATION, 'runtime identity belongs to another installation');
+      }
+      if (pairing && credentialMatches) {
+        for (const [code, pending] of this.pendingPairings) {
+          if (pending.runtimeId === ctx.runtimeId) this.pendingPairings.delete(code);
+        }
+        const prev = this.runtimes.get(ctx.runtimeId);
+        if (prev && prev !== ws) { try { prev.close(); } catch {} }
+        this.runtimes.set(ctx.runtimeId, ws);
+        ctx.teamId = pairing.teamId;
+        const stored = this.store.getRuntime(ctx.runtimeId);
+        this.store.upsertRuntime(pairing.teamId, {
+          ...msg.runtime,
+          ownerId: stored ? stored.ownerId : pairing.pairedBy,
+          ownerName: stored && stored.ownerName
+        });
+      } else {
+        const code = String(msg.pairingCode || '').trim().toUpperCase();
+        if (!code || !msg.runtimeToken) throw fail(Errors.RUNTIME_AUTHENTICATION, 'pair this host again from its local code');
+        const existing = this.pendingPairings.get(code);
+        if (existing && existing.ws !== ws) throw fail(Errors.PAIRING_INVALID, 'pairing code is already in use');
+        ctx.teamId = null;
+        this.pendingPairings.set(code, { runtimeId: ctx.runtimeId, descriptor: msg.runtime, runtimeToken: msg.runtimeToken, at: Date.now(), ws });
+      }
     }
+
+    const teams = ctx.role === 'client' ? this.store.teamsFor(user.id) : [];
     this.send(ws, {
       type: 'welcome',
       user: { id: user.id, name: user.name, color: user.color, token: user.token },
-      org: ctx.org, role: ctx.role
+      role: ctx.role,
+      teams,
+      // No team yet is the normal first-run state, not an error: create one or accept an invite.
+      teamId: ctx.teamId || (teams[0] && teams[0].id) || null,
+      paired: ctx.role === 'runtime' ? !!ctx.teamId : undefined
     });
-    if (ctx.role === 'runtime') this.broadcastRuntimes(ctx.org);
-    if (created) this.broadcastOrg(ctx.org, { type: 'users', users: this.store.listUsers(ctx.org) });
-    this.send(ws, { type: 'workspace.activity', ...this.activitySnapshot(ctx.org) });
-    this.log(`hello ${ctx.role} ${user.name}${ctx.runtimeId ? ' runtime=' + ctx.runtimeId : ''}`);
+    if (ctx.role === 'client' && teams[0]) this.joinTeamContext(ws, ctx, teams[0].id);
+    if (ctx.role === 'runtime' && ctx.teamId) this.broadcastRuntimes(ctx.teamId);
+    this.log(`hello ${ctx.role} ${user.name}${ctx.runtimeId ? ' runtime=' + ctx.runtimeId + (ctx.teamId ? '' : ' (unpaired)') : ''}`);
+  }
+
+  // Point a client connection at one of its teams and send that team's snapshot.
+  joinTeamContext(ws, ctx, teamId) {
+    this.requireMember(ctx, teamId);
+    ctx.teamId = teamId;
+    this.send(ws, { type: 'threads', threads: this.store.listThreads(teamId) });
+    this.send(ws, { type: 'runtimes', runtimes: this.runtimeList(teamId) });
+    this.send(ws, { type: 'users', users: this.store.listMembers(teamId) });
+    this.send(ws, { type: 'workspace.activity', ...this.activitySnapshot(teamId) });
+  }
+
+  // ---- authorization ----
+  requireMember(ctx, teamId) {
+    if (!ctx.user) throw fail(Errors.UNAUTHENTICATED);
+    if (!teamId) throw fail(Errors.UNKNOWN_TEAM);
+    if (!this.store.getTeam(teamId)) throw fail(Errors.UNKNOWN_TEAM);
+    const m = this.store.membership(teamId, ctx.user.id);
+    if (!m) throw fail(Errors.NOT_A_MEMBER);
+    return m;
+  }
+
+  requireOwner(ctx, teamId) {
+    const m = this.requireMember(ctx, teamId);
+    if (m.role !== Roles.OWNER) throw fail(Errors.OWNER_REQUIRED);
+    return m;
+  }
+
+  // The team that owns a thread, checked against the caller rather than trusted from them.
+  requireThread(ctx, threadId) {
+    const t = this.store.getThread(threadId);
+    if (!t) throw fail(Errors.UNKNOWN_THREAD);
+    this.requireMember(ctx, t.orgId);
+    return t;
   }
 
   who(ctx) {
@@ -184,13 +480,14 @@ class Hub {
   }
 
   broadcastRuntimes(orgId) {
-    this.broadcastOrg(orgId, { type: 'runtimes', runtimes: this.runtimeList(orgId) });
+    this.broadcastTeam(orgId, { type: 'runtimes', runtimes: this.runtimeList(orgId) });
   }
 
   // ---- subscriptions & presence ----
   subscribe(ws, ctx, msg) {
-    const thread = this.store.getThread(msg.threadId);
-    if (!thread || thread.orgId !== ctx.org) throw new Error('unknown thread');
+    // An outsider asking for a thread id they guessed must not learn whether it exists,
+    // but a member of another team must be told plainly that it is not theirs.
+    const thread = this.requireThread(ctx, msg.threadId);
     ctx.subs.add(thread.id);
     const events = this.store.eventsFrom(thread.id, msg.afterSeq || 0);
     this.send(ws, { type: 'thread.snapshot', thread, events });
@@ -198,9 +495,11 @@ class Hub {
   }
 
   viewers(threadId) {
+    const thread = this.store.getThread(threadId);
+    if (!thread) return [];
     const out = [];
     for (const [, c] of this.clients) {
-      if (c.role === 'client' && c.subs.has(threadId) && c.user) {
+      if (c.role === 'client' && c.subs.has(threadId) && c.user && this.store.membership(thread.orgId, c.user.id)) {
         if (!out.find((v) => v.userId === c.user.id)) out.push({ userId: c.user.id, name: c.user.name, color: c.user.color });
       }
     }
@@ -208,24 +507,51 @@ class Hub {
   }
 
   broadcastPresence(threadId) {
+    const thread = this.store.getThread(threadId);
+    if (!thread) return;
     const viewers = this.viewers(threadId);
     const msg = { type: 'presence', threadId, viewers };
-    for (const [ws, c] of this.clients) if (c.subs.has(threadId)) this.send(ws, msg);
+    for (const [ws, c] of this.clients) {
+      if (!c.subs.has(threadId)) continue;
+      if (c.role !== 'client' || !c.user || !this.store.membership(thread.orgId, c.user.id)) {
+        c.subs.delete(threadId);
+        continue;
+      }
+      this.send(ws, msg);
+    }
   }
 
   // ---- commands: human -> owning runtime ----
   onCommand(ws, ctx, msg) {
     const cmd = msg.command || {};
     let runtimeId = msg.runtimeId;
+    let thread = null;
     if (msg.threadId) {
-      const t = this.store.getThread(msg.threadId);
-      if (!t || t.orgId !== ctx.org) throw new Error('unknown thread');
-      runtimeId = t.runtimeId;
+      thread = this.requireThread(ctx, msg.threadId);
+      runtimeId = thread.runtimeId;
     }
-    if (!runtimeId) throw new Error('command needs threadId or runtimeId');
+    if (!runtimeId) throw fail(Errors.UNKNOWN_RUNTIME, 'command needs threadId or runtimeId');
+    // Routing is authorized against the host's pairing, not against what the caller says:
+    // otherwise any member could drive a host belonging to somebody else's team.
+    const pairing = this.store.runtimePairing(runtimeId);
+    if (!pairing) throw fail(Errors.RUNTIME_UNPAIRED);
+    if (thread && thread.orgId !== pairing.teamId) throw fail(Errors.FOREIGN_RUNTIME, 'the thread host is paired to a different team');
+    if (!this.store.membership(pairing.teamId, ctx.user.id)) throw fail(Errors.FOREIGN_RUNTIME);
+    // Being in the team lets you watch and steer. Letting an agent actually run a risky
+    // action is a separate grant, and it is checked here rather than assumed from role.
+    const isApproval = cmd.method === Commands.APPROVAL_RESOLVE;
+    if (isApproval && !this.store.isApprover(pairing.teamId, ctx.user.id)) throw fail(Errors.NOT_APPROVER);
     const id = msg.id || uid('cmd');
-    this.pendingCommands.set(id, ws);
-    const ok = this.routeToRuntime(runtimeId, { type: 'command', id, threadId: msg.threadId || null, by: this.who(ctx), command: cmd });
+    if (this.pendingCommands.has(id)) throw fail(Errors.COMMAND_IN_PROGRESS);
+    // The execution host is told whether the hub considered this caller an approver, so it
+    // can refuse on its own account rather than trusting the routing alone.
+    const by = { ...this.who(ctx), approver: this.store.isApprover(pairing.teamId, ctx.user.id) };
+    const runtimeWs = this.runtimes.get(runtimeId);
+    if (runtimeWs) this.pendingCommands.set(id, {
+      origin: ws, runtimeId, runtimeWs, teamId: pairing.teamId,
+      threadId: msg.threadId || null, commandMethod: cmd.method
+    });
+    const ok = runtimeWs ? this.routeToRuntime(runtimeId, { type: 'command', id, threadId: msg.threadId || null, by, command: cmd }) : false;
     if (!ok) {
       this.pendingCommands.delete(id);
       this.send(ws, { type: 'command.result', id, ok: false, error: 'runtime offline' });
@@ -234,29 +560,46 @@ class Hub {
 
   routeToRuntime(runtimeId, msg) {
     const rws = this.runtimes.get(runtimeId);
-    if (!rws) return false;
+    if (!rws || rws.readyState !== 1) return false;
     this.send(rws, msg);
     return true;
   }
 
   // ---- runtime writes ----
   onThreadUpsert(ws, ctx, msg) {
-    if (ctx.role !== 'runtime') throw new Error('runtime only');
+    if (ctx.role !== 'runtime') throw fail(Errors.UNAUTHENTICATED, 'runtime only');
+    if (!ctx.teamId) throw fail(Errors.RUNTIME_UNPAIRED);
+    if (this.runtimes.get(ctx.runtimeId) !== ws) throw fail(Errors.RUNTIME_AUTHENTICATION);
+    if (!msg.thread || !msg.thread.id) throw fail(Errors.UNKNOWN_THREAD);
     const existing = this.store.getThread(msg.thread.id);
-    const thread = { ...(existing || {}), ...msg.thread, orgId: ctx.org, runtimeId: ctx.runtimeId };
+    if (existing && (existing.orgId !== ctx.teamId || existing.runtimeId !== ctx.runtimeId)) {
+      throw fail(Errors.FOREIGN_THREAD, 'thread ownership cannot be changed');
+    }
+    const thread = { ...(existing || {}), ...msg.thread, orgId: ctx.teamId, runtimeId: ctx.runtimeId };
     thread.status = thread.status || { type: 'idle' };
     this.store.upsertThread(thread);
-    this.broadcastOrg(ctx.org, { type: 'thread.updated', thread });
-    if (thread.cwd) this.touchActivity(thread, ctx.org, {});
+    this.broadcastTeam(ctx.teamId, { type: 'thread.updated', thread });
+    if (thread.cwd) this.touchActivity(thread, ctx.teamId, {});
   }
 
   onAppend(ws, ctx, msg) {
-    if (ctx.role !== 'runtime') throw new Error('runtime only');
+    if (ctx.role !== 'runtime') throw fail(Errors.UNAUTHENTICATED, 'runtime only');
+    if (!ctx.teamId) throw fail(Errors.RUNTIME_UNPAIRED);
+    if (this.runtimes.get(ctx.runtimeId) !== ws) throw fail(Errors.RUNTIME_AUTHENTICATION);
     const thread = this.store.getThread(msg.threadId);
-    if (!thread || thread.runtimeId !== ctx.runtimeId) throw new Error('not the owner of this thread');
+    if (!thread || thread.orgId !== ctx.teamId || thread.runtimeId !== ctx.runtimeId) {
+      throw fail(Errors.FOREIGN_THREAD, 'not the owner of this thread');
+    }
     const { seq, ts } = this.store.append(thread.id, msg.event);
     const out = { type: 'event', threadId: thread.id, seq, ts, ...msg.event };
-    for (const [cws, c] of this.clients) if (c.subs.has(thread.id)) this.send(cws, out);
+    for (const [cws, c] of this.clients) {
+      if (!c.subs.has(thread.id)) continue;
+      if (c.role !== 'client' || !c.user || !this.store.membership(thread.orgId, c.user.id)) {
+        c.subs.delete(thread.id);
+        continue;
+      }
+      this.send(cws, out);
+    }
 
     // Derive thread status for the fleet/sidebar from the event stream
     // (mirrors Codex's thread/status/changed: idle | active{activeFlags} | systemError).
@@ -265,7 +608,7 @@ class Hub {
     let patch = null;
     if (m === 'turn/started') patch = { status: { type: 'active', activeFlags: [] }, activeTurnId: ev.turnId, pendingApproval: null, lastTurnBy: ev.by || null };
     else if (m === 'item/commandExecution/requestApproval' || m === 'item/fileChange/requestApproval') {
-      patch = { status: { type: 'active', activeFlags: ['waitingOnApproval'] }, pendingApproval: { requestId: ev.requestId, itemId: ev.itemId, command: ev.command, changes: ev.changes, reason: ev.reason, kind: m === 'item/fileChange/requestApproval' ? 'fileChange' : 'command' } };
+      patch = { status: { type: 'active', activeFlags: ['waitingOnApproval'] }, pendingApproval: { requestId: ev.requestId, itemId: ev.itemId, command: ev.command, changes: ev.changes, reason: ev.reason, availableDecisions: ev.availableDecisions, kind: m === 'item/fileChange/requestApproval' ? 'fileChange' : 'command' } };
     } else if (m === 'serverRequest/resolved') patch = { status: { type: 'active', activeFlags: [] }, pendingApproval: null };
     else if (m === 'turn/completed') patch = { status: ev.status === 'failed' ? { type: 'systemError' } : { type: 'idle' }, activeTurnId: null, pendingApproval: null, lastTurnStatus: ev.status, lastTurnAt: Date.now() };
     else if (m === 'thread/name/updated') patch = { name: ev.name };
@@ -273,17 +616,17 @@ class Hub {
     if (patch) {
       const updated = { ...thread, ...patch, lastSeq: seq, updatedAt: Date.now() };
       this.store.upsertThread(updated);
-      this.broadcastOrg(ctx.org, { type: 'thread.updated', thread: updated });
-      if (m === 'turn/started') this.touchActivity(updated, ctx.org, { active: true });
-      if (m === 'turn/completed') this.touchActivity(updated, ctx.org, { active: false });
+      this.broadcastTeam(ctx.teamId, { type: 'thread.updated', thread: updated });
+      if (m === 'turn/started') this.touchActivity(updated, ctx.teamId, { active: true });
+      if (m === 'turn/completed') this.touchActivity(updated, ctx.teamId, { active: false });
     }
     if (m === 'item/completed' && ev.item && ev.item.type === 'fileChange' && ev.item.status === 'completed') {
-      this.touchActivity(thread, ctx.org, { files: ev.item.changes.map((c) => c.path) });
+      this.touchActivity(thread, ctx.teamId, { files: ev.item.changes.map((c) => c.path) });
     }
     if (m === 'thread/assignee/updated') {
       const updated = { ...thread, assignee: ev.assignee || null, handoffNote: ev.note || null, updatedAt: Date.now() };
       this.store.upsertThread(updated);
-      this.broadcastOrg(ctx.org, { type: 'thread.updated', thread: updated });
+      this.broadcastTeam(ctx.teamId, { type: 'thread.updated', thread: updated });
     }
   }
 }
@@ -328,8 +671,7 @@ Hub.prototype.activitySnapshot = function (orgId) {
 
 Hub.prototype.broadcastActivity = function (orgId) {
   const snap = this.activitySnapshot(orgId);
-  const msg = { type: 'workspace.activity', ...snap };
-  for (const [ws, ctx] of this.clients) if (ctx.org === orgId && ctx.user) this.send(ws, msg);
+  this.broadcastTeam(orgId, { type: 'workspace.activity', ...snap }, { roles: ['client', 'runtime'] });
 };
 
 module.exports = { Hub };
