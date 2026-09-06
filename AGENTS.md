@@ -1,5 +1,13 @@
 # Agent Instructions
 
+## Plexus UI design contract
+
+For UI work in `apps/web/`, `apps/desktop/`, or shared UI modules, first read [`docs/design/plexus/AGENT-DEVELOPMENT.md`](docs/design/plexus/AGENT-DEVELOPMENT.md). It links the accepted Review together design, bundled tokens, six screen-template contracts, reference captures, and the runnable prototype. The product specification and domain decisions still govern behavior; a sample screen does not replace them.
+
+Before editing, name the screen/template IDs, shared components to reuse, affected states, reference captures, and intended checks. Pass the same references into delegated UI tasks. Extend the accepted design in the shared web/desktop renderer; keep prototype sample state and receipt timers out of production.
+
+Before reporting completion, inspect rendered screenshots against the accepted references, run applicable checks, and report state coverage, evidence, results, and intentional departures. Run `npm run check:design` when changing the reference pack or its agent entry points. This checks reference integrity; it does not prove visual or runtime correctness. Do not change design contracts or screenshot baselines merely to hide regressions. Report verification that could not run explicitly.
+
 ## Agent skills
 
 ### Issue tracker
