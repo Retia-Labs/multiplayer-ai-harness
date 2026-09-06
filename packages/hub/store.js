@@ -15,28 +15,202 @@ class HubStore {
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS orgs     (id TEXT PRIMARY KEY, name TEXT, created_at INTEGER);
       CREATE TABLE IF NOT EXISTS users    (id TEXT PRIMARY KEY, org_id TEXT, name TEXT, color TEXT, token TEXT UNIQUE, created_at INTEGER);
+      -- A team is the private boundary. Its id is what the older tables call org_id, so
+      -- threads/runtimes/users keep their columns and gain a real membership check above.
+      CREATE TABLE IF NOT EXISTS teams       (id TEXT PRIMARY KEY, name TEXT, owner_id TEXT, created_at INTEGER);
+      CREATE TABLE IF NOT EXISTS memberships (team_id TEXT, user_id TEXT, role TEXT, enrollment TEXT, created_at INTEGER, PRIMARY KEY (team_id, user_id));
+      CREATE TABLE IF NOT EXISTS invitations (code TEXT PRIMARY KEY, team_id TEXT, role TEXT, created_by TEXT, invitee_user_id TEXT, created_at INTEGER, expires_at INTEGER, accepted_by TEXT, accepted_at INTEGER, revoked_at INTEGER);
+      -- Which team a paired execution host belongs to, and who consented to the pairing.
+      CREATE TABLE IF NOT EXISTS pairings    (runtime_id TEXT PRIMARY KEY, team_id TEXT, paired_by TEXT, paired_at INTEGER);
+      CREATE TABLE IF NOT EXISTS runtime_credentials (runtime_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL);
+      -- Deliberately its own table rather than a column on memberships: approval authority
+      -- is a separate grant, and storing it beside the role would invite conflating them.
+      CREATE TABLE IF NOT EXISTS approvers   (team_id TEXT, user_id TEXT, granted_by TEXT, granted_at INTEGER, PRIMARY KEY (team_id, user_id));
       CREATE TABLE IF NOT EXISTS runtimes (id TEXT PRIMARY KEY, org_id TEXT, json TEXT, last_seen INTEGER);
       CREATE TABLE IF NOT EXISTS threads  (id TEXT PRIMARY KEY, org_id TEXT, runtime_id TEXT, json TEXT, updated_at INTEGER);
       CREATE TABLE IF NOT EXISTS events   (thread_id TEXT, seq INTEGER, ts INTEGER, json TEXT, PRIMARY KEY (thread_id, seq));
       CREATE INDEX IF NOT EXISTS threads_org ON threads(org_id, updated_at);
     `);
+    // Existing prototype databases predate targeted invitations. Keeping the column
+    // nullable lets SQLite migrate them in place; redemption below deliberately refuses
+    // those old bearer-only rows because no authenticated recipient was recorded.
+    const invitationColumns = this.db.prepare('PRAGMA table_info(invitations)').all();
+    if (!invitationColumns.some((column) => column.name === 'invitee_user_id')) {
+      this.db.exec('ALTER TABLE invitations ADD COLUMN invitee_user_id TEXT');
+    }
     this._stmts = {
       insertOrg: this.db.prepare('INSERT OR IGNORE INTO orgs (id, name, created_at) VALUES (?, ?, ?)'),
       getUserByToken: this.db.prepare('SELECT * FROM users WHERE token = ?'),
+      getUserById: this.db.prepare('SELECT * FROM users WHERE id = ?'),
       getUserByName: this.db.prepare('SELECT * FROM users WHERE org_id = ? AND name = ?'),
       insertUser: this.db.prepare('INSERT INTO users (id, org_id, name, color, token, created_at) VALUES (?, ?, ?, ?, ?, ?)'),
       listUsers: this.db.prepare('SELECT id, org_id, name, color FROM users WHERE org_id = ?'),
-      upsertRuntime: this.db.prepare('INSERT INTO runtimes (id, org_id, json, last_seen) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json, last_seen = excluded.last_seen'),
+      upsertRuntime: this.db.prepare('INSERT INTO runtimes (id, org_id, json, last_seen) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET org_id = excluded.org_id, json = excluded.json, last_seen = excluded.last_seen'),
+      getRuntime: this.db.prepare('SELECT * FROM runtimes WHERE id = ?'),
       listRuntimes: this.db.prepare('SELECT * FROM runtimes WHERE org_id = ?'),
-      upsertThread: this.db.prepare('INSERT INTO threads (id, org_id, runtime_id, json, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json, runtime_id = excluded.runtime_id, updated_at = excluded.updated_at'),
+      deleteRuntime: this.db.prepare('DELETE FROM runtimes WHERE id = ?'),
+      upsertThread: this.db.prepare('INSERT INTO threads (id, org_id, runtime_id, json, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at'),
       getThread: this.db.prepare('SELECT * FROM threads WHERE id = ?'),
       listThreads: this.db.prepare('SELECT * FROM threads WHERE org_id = ? ORDER BY updated_at DESC LIMIT ?'),
       deleteThread: this.db.prepare('DELETE FROM threads WHERE id = ?'),
       deleteEvents: this.db.prepare('DELETE FROM events WHERE thread_id = ?'),
       lastSeq: this.db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE thread_id = ?'),
       insertEvent: this.db.prepare('INSERT INTO events (thread_id, seq, ts, json) VALUES (?, ?, ?, ?)'),
-      eventsFrom: this.db.prepare('SELECT seq, ts, json FROM events WHERE thread_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?')
+      eventsFrom: this.db.prepare('SELECT seq, ts, json FROM events WHERE thread_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?'),
+      insertTeam: this.db.prepare('INSERT INTO teams (id, name, owner_id, created_at) VALUES (?, ?, ?, ?)'),
+      getTeam: this.db.prepare('SELECT * FROM teams WHERE id = ?'),
+      upsertMember: this.db.prepare('INSERT INTO memberships (team_id, user_id, role, enrollment, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(team_id, user_id) DO UPDATE SET role = excluded.role'),
+      getMember: this.db.prepare('SELECT * FROM memberships WHERE team_id = ? AND user_id = ?'),
+      listMembers: this.db.prepare('SELECT m.team_id, m.user_id, m.role, m.enrollment, u.name, u.color FROM memberships m JOIN users u ON u.id = m.user_id WHERE m.team_id = ?'),
+      listTeamsFor: this.db.prepare('SELECT t.* , m.role, m.enrollment FROM memberships m JOIN teams t ON t.id = m.team_id WHERE m.user_id = ?'),
+      deleteMember: this.db.prepare('DELETE FROM memberships WHERE team_id = ? AND user_id = ?'),
+      insertInvite: this.db.prepare('INSERT INTO invitations (code, team_id, role, created_by, invitee_user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+      getInvite: this.db.prepare('SELECT * FROM invitations WHERE code = ?'),
+      acceptInvite: this.db.prepare('UPDATE invitations SET accepted_by = ?, accepted_at = ? WHERE code = ?'),
+      revokeInvite: this.db.prepare('UPDATE invitations SET revoked_at = ? WHERE code = ?'),
+      revokePendingInvitesForMember: this.db.prepare('UPDATE invitations SET revoked_at = ? WHERE team_id = ? AND invitee_user_id = ? AND accepted_at IS NULL AND revoked_at IS NULL'),
+      insertPairing: this.db.prepare('INSERT INTO pairings (runtime_id, team_id, paired_by, paired_at) VALUES (?, ?, ?, ?) ON CONFLICT(runtime_id) DO UPDATE SET team_id = excluded.team_id, paired_by = excluded.paired_by, paired_at = excluded.paired_at'),
+      getPairing: this.db.prepare('SELECT * FROM pairings WHERE runtime_id = ?'),
+      deletePairing: this.db.prepare('DELETE FROM pairings WHERE runtime_id = ?'),
+      setRuntimeCredential: this.db.prepare('INSERT INTO runtime_credentials (runtime_id, token_hash) VALUES (?, ?)'),
+      getRuntimeCredential: this.db.prepare('SELECT token_hash FROM runtime_credentials WHERE runtime_id = ?'),
+      grantApprover: this.db.prepare('INSERT INTO approvers (team_id, user_id, granted_by, granted_at) VALUES (?, ?, ?, ?) ON CONFLICT(team_id, user_id) DO UPDATE SET granted_by = excluded.granted_by, granted_at = excluded.granted_at'),
+      getApprover: this.db.prepare('SELECT * FROM approvers WHERE team_id = ? AND user_id = ?'),
+      listApprovers: this.db.prepare('SELECT a.user_id, a.granted_by, a.granted_at, u.name FROM approvers a JOIN users u ON u.id = a.user_id WHERE a.team_id = ?'),
+      revokeApprover: this.db.prepare('DELETE FROM approvers WHERE team_id = ? AND user_id = ?')
     };
+  }
+
+  // An identity, and nothing else. Deliberately never looks up an existing row by name:
+  // that lookup was the authorization bypass, because it let anyone become a teammate by
+  // typing their name.
+  createAccount(name, color) {
+    const user = {
+      id: uid('u'), org_id: '', name: name || 'someone', color: color || pickColor(name || ''),
+      token: 'tok_' + crypto.randomBytes(24).toString('hex'), created_at: Date.now()
+    };
+    this._stmts.insertUser.run(user.id, user.org_id, user.name, user.color, user.token, user.created_at);
+    return user;
+  }
+
+  // ---- teams & membership ----
+  // An account is an identity, nothing more. Membership of a team is granted by an
+  // invitation the team's owner issued, never by what the caller claims about itself.
+  createTeam(name, ownerId) {
+    const team = { id: uid('team'), name: name || 'Team', owner_id: ownerId, created_at: Date.now() };
+    this._stmts.insertTeam.run(team.id, team.name, team.owner_id, team.created_at);
+    this._stmts.upsertMember.run(team.id, ownerId, 'owner', 'pending', Date.now());
+    return { id: team.id, name: team.name, ownerId, createdAt: team.created_at };
+  }
+
+  getTeam(id) {
+    const r = this._stmts.getTeam.get(id);
+    return r ? { id: r.id, name: r.name, ownerId: r.owner_id, createdAt: r.created_at } : null;
+  }
+
+  membership(teamId, userId) {
+    const r = this._stmts.getMember.get(teamId, userId);
+    return r ? { teamId: r.team_id, userId: r.user_id, role: r.role, enrollment: r.enrollment } : null;
+  }
+
+  listMembers(teamId) {
+    return this._stmts.listMembers.all(teamId).map((r) => ({ userId: r.user_id, name: r.name, color: r.color, role: r.role, enrollment: r.enrollment }));
+  }
+
+  teamsFor(userId) {
+    return this._stmts.listTeamsFor.all(userId).map((r) => ({ id: r.id, name: r.name, ownerId: r.owner_id, role: r.role, enrollment: r.enrollment }));
+  }
+
+  removeMember(teamId, userId) {
+    this._stmts.deleteMember.run(teamId, userId);
+    this._stmts.revokeApprover.run(teamId, userId);
+    // Removal is the owner's latest decision. Older unused invitations must not let the
+    // removed account silently add itself back afterward.
+    this._stmts.revokePendingInvitesForMember.run(Date.now(), teamId, userId);
+    return { ok: true };
+  }
+
+  // ---- invitations ----
+  createInvitation(teamId, createdBy, inviteeUserId, role = 'member', ttlMs = 7 * 24 * 3600 * 1000) {
+    const invitee = this.userById(inviteeUserId);
+    if (!invitee) return null;
+    const code = 'inv_' + crypto.randomBytes(12).toString('base64url');
+    const now = Date.now();
+    this._stmts.insertInvite.run(code, teamId, role, createdBy, invitee.id, now, now + ttlMs);
+    return {
+      code, teamId, role, createdAt: now, expiresAt: now + ttlMs,
+      invitee: { userId: invitee.id, name: invitee.name, color: invitee.color }
+    };
+  }
+
+  // Returns { ok: true, invite } or { ok: false, reason } - the reason is the caller's
+  // error code, because "expired" and "already used" are different security facts.
+  redeemInvitation(code, userId, now = Date.now()) {
+    const r = this._stmts.getInvite.get(code);
+    if (!r) return { ok: false, reason: 'invitation_invalid' };
+    if (!r.invitee_user_id || r.invitee_user_id !== userId) return { ok: false, reason: 'invitation_recipient_mismatch' };
+    if (r.revoked_at) return { ok: false, reason: 'invitation_revoked' };
+    if (r.accepted_at) return { ok: false, reason: 'invitation_already_accepted' };
+    if (now > r.expires_at) return { ok: false, reason: 'invitation_expired' };
+    // An invitation adds a seat; it must never rewrite the role on an existing seat.
+    // Recheck here because the recipient may have joined after this code was created.
+    if (this.membership(r.team_id, userId)) return { ok: false, reason: 'already_a_member' };
+    this._stmts.acceptInvite.run(userId, now, code);
+    this._stmts.upsertMember.run(r.team_id, userId, r.role, 'pending', now);
+    return { ok: true, invite: { code, teamId: r.team_id, role: r.role } };
+  }
+
+  getInvitation(code) { return this._stmts.getInvite.get(code) || null; }
+  revokeInvitation(code) { this._stmts.revokeInvite.run(Date.now(), code); return { ok: true }; }
+
+  // ---- delegated approval authority ----
+  // Never granted implicitly. Creating a team, owning it, or holding a seat gives none of
+  // this; somebody has to hand it over deliberately.
+  grantApprover(teamId, userId, grantedBy) {
+    this._stmts.grantApprover.run(teamId, userId, grantedBy, Date.now());
+    return { teamId, userId, grantedBy };
+  }
+  isApprover(teamId, userId) { return !!this._stmts.getApprover.get(teamId, userId); }
+  listApprovers(teamId) {
+    return this._stmts.listApprovers.all(teamId).map((r) => ({ userId: r.user_id, name: r.name, grantedBy: r.granted_by, grantedAt: r.granted_at }));
+  }
+  revokeApprover(teamId, userId) { this._stmts.revokeApprover.run(teamId, userId); return { ok: true }; }
+
+  // ---- runtime pairing ----
+  pairRuntime(runtimeId, teamId, byUserId, runtimeToken) {
+    if (!runtimeToken) return null;
+    const credential = this._stmts.getRuntimeCredential.get(runtimeId);
+    if (credential && !this.runtimeCredentialMatches(runtimeId, runtimeToken)) return null;
+    if (!credential) this._stmts.setRuntimeCredential.run(runtimeId, this.runtimeTokenHash(runtimeToken));
+    this._stmts.insertPairing.run(runtimeId, teamId, byUserId, Date.now());
+    return { runtimeId, teamId, pairedBy: byUserId };
+  }
+  runtimePairing(runtimeId) {
+    const r = this._stmts.getPairing.get(runtimeId);
+    return r ? { runtimeId: r.runtime_id, teamId: r.team_id, pairedBy: r.paired_by, pairedAt: r.paired_at } : null;
+  }
+  runtimeTokenHash(token) {
+    return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+  }
+
+  runtimeCredentialMatches(runtimeId, token) {
+    if (!token) return false;
+    const row = this._stmts.getRuntimeCredential.get(runtimeId);
+    if (!row) return false;
+    const expected = Buffer.from(row.token_hash, 'hex');
+    const actual = Buffer.from(this.runtimeTokenHash(token), 'hex');
+    return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+  }
+
+  runtimeCredentialExists(runtimeId) {
+    return !!this._stmts.getRuntimeCredential.get(runtimeId);
+  }
+
+  unpairRuntime(runtimeId) {
+    this._stmts.deletePairing.run(runtimeId);
+    // A team detaches a host; it does not make that host identity claimable by another
+    // machine. The credential remains reserved so only the same installation can re-pair.
+    return { ok: true };
   }
 
   // ---- orgs & users ----
@@ -47,6 +221,10 @@ class HubStore {
 
   userByToken(token) {
     return this._stmts.getUserByToken.get(token) || null;
+  }
+
+  userById(id) {
+    return this._stmts.getUserById.get(id) || null;
   }
 
   // Lightweight identity for the prototype: a name within an org mints a bearer token.
@@ -68,6 +246,16 @@ class HubStore {
   // ---- runtimes (fleet) ----
   upsertRuntime(orgId, runtime) {
     this._stmts.upsertRuntime.run(runtime.id, orgId, JSON.stringify(runtime), Date.now());
+  }
+
+  getRuntime(id) {
+    const row = this._stmts.getRuntime.get(id);
+    return row ? { ...JSON.parse(row.json), orgId: row.org_id, lastSeen: row.last_seen } : null;
+  }
+
+  deleteRuntime(id) {
+    this._stmts.deleteRuntime.run(id);
+    return { ok: true };
   }
 
   listRuntimes(orgId) {

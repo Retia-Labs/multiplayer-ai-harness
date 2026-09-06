@@ -37,9 +37,9 @@ function runProcess(bin, args, { cwd, env, onOutput, timeoutMs = 120000, onChild
 
 class LocalExecutor {
   get id() { return 'local'; }
-  describe() { return { id: 'local', label: 'This machine' }; }
-  run(command, opts) {
-    return runProcess('/bin/bash', ['-c', command], opts);
+  describe() { return { id: 'local', label: 'Structured workspace tools', shell: false }; }
+  async run() {
+    return { code: -1, out: 'Arbitrary local shell is unavailable without a proven project-confined sandbox.' };
   }
 }
 
