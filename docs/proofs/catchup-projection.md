@@ -2,7 +2,7 @@
 
 Implementation for [issue #9](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/9),
 built on [#6](encrypted-task-replay.md)'s task log and [#8](teammate-enrollment.md)'s
-enrolment. It inherits #3's open review gate.
+enrolment. #3's review gate is closed (founder review, accepted).
 
 ## Design contract
 
@@ -126,13 +126,15 @@ Captures in `.artifacts/catchup/`: `catchup-current-1487.png`, `catchup-current-
   five freshness states, unresolvable sources, the late-join equality over a real encrypted
   log through the paired hub, and the approval pairing - outstanding, answered, expired, and
   a decision naming an unrelated request.
-- `npm run test:catchup:encrypted` - 11 checks in real Chromium against **the production
+- `npm run test:catchup:encrypted` - 13 checks in real Chromium against **the production
   app**: the browser opens a persistent endpoint and is enrolled, publishes only public keys,
   is shown the host's fingerprint and confirms it, starts an encrypted task, and then reads a
   task the host parked on an unanswered approval - objective, plan, blocker and source links
   all decrypted in the browser, with the relay holding none of it. It then forgets the host
-  and asserts the screen falls back to the ceremony with no task content, and finally answers
-  the approval and asserts the request is replaced by the attributed decision.
+  and asserts the screen falls back to the ceremony with no task content, answers the approval
+  and asserts the request is replaced by the attributed decision, and finally runs a second
+  task that writes a file so recent changes and a *recorded* completion status are read from a
+  real log rather than left unproven by a task that never finishes.
 - `npm run test:encrypted-real-task` - includes the approval round trip end to end: a real
   turn asks, a teammate reads the parked task from the log alone, answers it, and the same
   projection stops asking.

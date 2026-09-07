@@ -180,7 +180,12 @@ let hub, runtime, encrypted, browser, socket, running;
   assert.ok(facts.includes(runtime.id), 'the host is named: ' + facts);
   assert.match(facts, /Provider/);
   assert.ok(facts.includes('demo'), 'the provider the host ran is named on screen: ' + facts);
-  pass('responsible, execution host and provider are each named on screen', shown.facts.length + ' facts');
+  // Status is the fourth fact, and while the task is parked it is read off the log rather
+  // than stated by it - there is no completion event yet, so claiming "Recorded" would be
+  // this screen asserting something nobody wrote.
+  assert.match(facts, /Status.*in progress/);
+  assert.ok(facts.includes('Read from the log'), 'an unfinished status is marked as derived: ' + facts);
+  pass('responsible, execution host, provider and status are each named on screen', shown.facts.length + ' facts');
 
   await page.screenshot({ path: path.join(out, 'blocked-on-approval-1487.png') });
 
@@ -224,6 +229,51 @@ let hub, runtime, encrypted, browser, socket, running;
   pass('once answered, the screen shows the recorded decision instead of the request', answered.decisions.join(' / '));
   await page.screenshot({ path: path.join(out, 'approval-answered-1487.png') });
 
+  // ---- and one that changes a file, so the last two things criterion 1 names are shown ----
+  //
+  // The first task is blocked on a destructive command, so it records no file changes and
+  // never completes - which is honest, and leaves "recent changes" and a recorded status
+  // unproven. This one writes a file and finishes, so both are read from a real log.
+  const writing = await page.evaluate(async ({ runtimeId, projectId }) =>
+    window.__plexus.state.encrypted.createTask(runtimeId, projectId,
+      { title: 'Write the release notes', objective: 'create NOTES.md describing the release' }),
+  { runtimeId: runtime.id, projectId });
+
+  const writeTurn = async (emit, decrypted) => {
+    const turn = new TurnSession({
+      thread: { id: writing.id, cwd: project, settings: {} },
+      by: { userId: account.id, name: 'alex' },
+      input: [{ type: 'text', text: decrypted.objective }],
+      provider: { id: 'demo' },
+      settings: { approvalPolicy: 'on-request', sandboxPolicy: 'workspace-write' },
+      executor: runtime.executor, history: [], log: () => {}, emit
+    });
+    await turn.run();
+    return turn;
+  };
+  await encrypted.run(writing, { runTurn: writeTurn, provider: 'demo' });
+
+  await page.evaluate(() => window.__plexus.refreshEncrypted());
+  // Opening a specific task is the mapping the app already uses: the thread it is looking at.
+  await page.evaluate((id) => { window.__plexus.state.activeThreadId = id; window.__plexus.openCatchup(); }, writing.id);
+  await page.waitForSelector('#catchup-view .cu-file-path', { timeout: 30000 });
+
+  const finished = await page.evaluate(() => ({
+    changes: Array.from(document.querySelectorAll('#catchup-view .cu-file-path')).map((n) => n.textContent.trim()),
+    facts: Array.from(document.querySelectorAll('#catchup-view .cu-fact')).map((n) => n.textContent.trim()),
+    approvals: document.querySelectorAll('#catchup-view .cu-approval').length,
+    sources: document.querySelectorAll('#catchup-view .cu-source').length
+  }));
+  assert.ok(finished.changes.some((file) => /NOTES\.md/.test(file)),
+    'the file the agent wrote is on screen: ' + JSON.stringify(finished.changes));
+  pass('recent changes are read from the encrypted log and named on screen', finished.changes.join(', '));
+
+  const finishedFacts = finished.facts.join(' | ');
+  assert.match(finishedFacts, /Status.*completed/);
+  assert.ok(finishedFacts.includes('Recorded'), 'a finished status is marked as recorded: ' + finishedFacts);
+  assert.equal(finished.approvals, 0, 'a task nobody is waiting on shows no outstanding approval');
+  pass('a completed task reports its status as recorded, not read off the end of the log', 'completed · Recorded');
+  await page.screenshot({ path: path.join(out, 'completed-with-changes-1487.png') });
   // ---- issue #12: a teammate's question, in the app's inbox ----
   //
   // The question is asked from a second endpoint entirely, so what the browser renders is a
