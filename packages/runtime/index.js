@@ -154,6 +154,8 @@ class Runtime {
       if (msg.paired) {
         this.clearPairingChallenge();
         this.log(`registered runtime ${this.id} (${this.name}) with hub`);
+        // Reconcile before re-announcing, so nothing is published claiming to be running.
+        this.reconcileAfterRestart();
         for (const t of this.store.listThreads()) {
           if (!this.encryptedTasksOnly && t.orgId === this.teamId) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
         }
@@ -353,7 +355,8 @@ class Runtime {
           // Two different situations that used to give the same answer. If the host still
           // remembers asking, the answer is simply too late; if it has never heard of the
           // id, saying "stale after restart" would invent a history that did not happen.
-          const outstanding = (thread.openApprovals || {})[cmd.requestId];
+          const outstanding = (thread.openApprovals || {})[cmd.requestId]
+            || (thread.abandonedApprovals || {})[cmd.requestId];
           if (outstanding) throw new Error(Errors.APPROVAL_STALE_AFTER_RESTART + ': that request did not survive the host');
           throw new Error(Errors.APPROVAL_UNKNOWN + ': nothing is pending under that id');
         }
@@ -392,6 +395,46 @@ class Runtime {
         throw new Error(Errors.PROJECT_OPERATION_UNAVAILABLE + ': remote Git subprocesses require a project-confined sandbox');
       default: throw new Error('unknown command: ' + cmd.method);
     }
+  }
+
+  // What this host can and cannot account for after it restarts.
+  //
+  // A turn lives in a process. When that process ends the turn ends with it, and there is no
+  // sense in which it is still running - so a thread this host persisted as active, with no
+  // live session behind it, is a thread whose turn was abandoned. Saying so is different from
+  // saying it completed, and the difference is the whole point: nobody should read a crash as
+  // a result.
+  //
+  // Approvals that were outstanding go the same way. An answer to a request whose turn no
+  // longer exists cannot authorise anything, and #11 already refuses one with
+  // approval_stale_after_restart; this makes the thread stop advertising the prompt.
+  reconcileAfterRestart() {
+    const reconciled = [];
+    for (const thread of this.store.listThreads()) {
+      const running = thread.status && thread.status.type === 'active';
+      const outstanding = Object.keys(thread.openApprovals || {});
+      if (!running && !outstanding.length) continue;
+      if (this.sessions.get(thread.id)) continue;   // still alive; nothing to reconcile
+      const turnId = thread.activeTurnId || null;
+      thread.status = { type: 'idle' };
+      thread.activeTurnId = null;
+      // Remembered, not forgotten. #11 distinguishes "you are too late, that request did not
+      // survive" from "this host never asked anything under that id", and clearing the record
+      // would collapse the first into the second - telling somebody who answered a real
+      // question that they invented it.
+      thread.abandonedApprovals = { ...(thread.abandonedApprovals || {}), ...(thread.openApprovals || {}) };
+      thread.openApprovals = {};
+      this.store.upsertThread(thread);
+      // Recorded on the thread's own event stream, so a teammate reading the history later
+      // sees what happened rather than an unexplained gap between a turn starting and the
+      // next one beginning.
+      this.appendEvent(thread.id, { method: Events.TURN_ABANDONED, turnId, reason: 'host_restarted' });
+      reconciled.push({ threadId: thread.id, turnId, approvals: outstanding.length });
+    }
+    if (reconciled.length) {
+      this.log('reconciled ' + reconciled.length + ' thread(s) after restart: no turn survives a host that stopped');
+    }
+    return reconciled;
   }
 
   teammatesFor(thread) {

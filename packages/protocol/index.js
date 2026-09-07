@@ -11,6 +11,9 @@ const Events = {
   TURN_STARTED: 'turn/started',                   // { turnId, by }
   TURN_COMPLETED: 'turn/completed',               // { turnId, status: 'completed'|'interrupted'|'failed', usage?, error? }
   TURN_INTERRUPT_REQUESTED: 'turn/interrupt/requested', // { turnId, by } - asked for, not yet stopped
+  // The host is back and this turn is not. Not an outcome - an admission that there is no
+  // outcome to report, recorded so the thread stops claiming to be running.
+  TURN_ABANDONED: 'turn/abandoned',               // { turnId, reason: 'host_restarted' }
   // Accepted is not delivered. This fires when an instruction actually reaches the
   // model call, which is the first moment the agent can be said to have received it.
   TURN_STEER_DELIVERED: 'turn/steer/delivered',   // { turnId, seq, by }
@@ -51,10 +54,20 @@ const SandboxPolicy = { READ_ONLY: 'read-only', WORKSPACE_WRITE: 'workspace-writ
 const ApprovalDecision = { ACCEPT: 'accept', ACCEPT_FOR_SESSION: 'acceptForSession', DECLINE: 'decline', CANCEL: 'cancel' };
 
 // ---- Thread status as tracked by the hub ----
-//   { type: 'idle' } | { type: 'active', activeFlags: ['waitingOnApproval'] } | { type: 'systemError' }
+//   { type: 'idle' } | { type: 'active', activeFlags: ['waitingOnApproval'] }
+//   | { type: 'unknown', since, wasRunning } | { type: 'systemError' }
+//
+// `unknown` is the one that had to be added. A host that disappears mid-turn leaves a
+// question nobody can answer from here: the work may have finished, may still be running on a
+// machine that cannot reach the relay, or may have died with the process. Leaving the thread
+// `active` claims it is still going; moving it to `idle` claims it stopped. Both are guesses,
+// and the second one is the dangerous guess, because it reads as "done".
 const ThreadStatus = {
   idle: () => ({ type: 'idle' }),
   active: (flags = []) => ({ type: 'active', activeFlags: flags }),
+  // `wasRunning` keeps the turn id, so the answer when the host returns can be attached to
+  // the thing it is about rather than to the thread in general.
+  unknown: (wasRunning = null, since = Date.now()) => ({ type: 'unknown', since, wasRunning }),
   systemError: () => ({ type: 'systemError' })
 };
 
