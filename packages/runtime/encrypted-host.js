@@ -70,7 +70,21 @@ class EncryptedHost {
     const out = new Map();
     for (const row of state.endpoints || []) {
       if (row.state !== 'verified') continue;
-      out.set(row.userId, { user: matrixUser(row.userId), device: row.device, curve25519: row.curve25519, ed25519: row.ed25519 });
+      const identity = { user: matrixUser(row.userId), device: row.device, curve25519: row.curve25519, ed25519: row.ed25519 };
+      // The team's verdict is the trust decision; this records it in the host's own crypto
+      // store so the SDK will treat that device's envelopes as authenticated. The host is
+      // honouring a confirmation somebody else made, which is why it never sets one of its
+      // own - and why a key that does not match the one the team confirmed is dropped rather
+      // than trusted: the enrolment and the key directory disagreeing is a finding, not a
+      // detail to smooth over.
+      try {
+        await this.endpoint.confirmEndpoint(identity, { confirmed: true });
+      } catch (error) {
+        this.log('endpoint ' + row.userId + '/' + row.device + ' is enrolled as verified but its keys do not match the directory: '
+          + (error.message || error));
+        continue;
+      }
+      out.set(row.userId, identity);
     }
     return out;
   }

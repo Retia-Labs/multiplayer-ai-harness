@@ -69,6 +69,12 @@
     activity: { threads: [], overlaps: [] },
     pending: new Map(),   // command id -> {resolve,reject}
     diffOpen: false, diffFiles: [], diffSel: 0,
+    encrypted: null,          // the endpoint this browser holds; null until it opens
+    encryptedIdentity: null,  // its own keys, for somebody to compare out loud
+    encryptedState: null,     // what the team's enrolment says about it
+    encryptedTasks: [],       // tasks this account may fetch (not necessarily read)
+    catchup: null, catchupSnapshot: null, catchupTaskId: null,
+    catchupExplain: null, catchupHostPrompt: null,
     localRuntimeId: null,
     prefs: loadPrefs()
   };
@@ -151,19 +157,67 @@
     el.me.innerHTML = '';
     el.me.append(avatar(state.me, 'sm'), document.createTextNode(state.me.name + ' · ' + (team ? team.name : 'team')));
     renderEnrollment();
+    bootEncrypted();
     offerLocalHost();
     send({ type: 'team/approver/list', teamId: state.teamId });
     send({ type: 'threads.list' }); send({ type: 'runtimes.list' }); send({ type: 'users.list' }); send({ type: 'workspace.activity' });
     if (state.subscribedId) send({ type: 'thread.subscribe', threadId: state.subscribedId, afterSeq: state.lastSeq || 0 });
   }
 
-  // Being in the team is not the same as being able to read task content. Until endpoint
-  // enrollment ships (issue #3) that is pending for everyone, and saying so is the honest
-  // thing to put on screen.
+  // Being in the team is not the same as being able to read task content, and the badge says
+  // which of the two this browser has. The states are the enrolment's own, not a summary of
+  // them: announced is not verified, and a device nobody has confirmed can read nothing.
   function renderEnrollment() {
-    const enrolled = state.membership && state.membership.enrollment === 'enrolled';
-    el.enrollment.classList.toggle('hidden', !!enrolled);
-    el.enrollment.title = 'Team membership is not encryption access. Endpoint enrollment is not implemented yet.';
+    const enrolment = state.encryptedState;
+    if (!enrolment) {
+      el.enrollment.classList.remove('hidden');
+      el.enrollment.textContent = 'Encryption starting';
+      el.enrollment.title = 'This browser is opening its encrypted endpoint.';
+      return;
+    }
+    const verified = enrolment.state === 'verified';
+    el.enrollment.classList.toggle('hidden', verified);
+    el.enrollment.textContent = enrolment.state === 'announced' ? 'Awaiting confirmation'
+      : enrolment.state === 'revoked' ? 'Endpoint revoked' : 'Encryption pending';
+    el.enrollment.title = [
+      'Device ' + enrolment.device + (enrolment.fingerprint ? ' · ' + enrolment.fingerprint : ''),
+      verified ? 'Confirmed by ' + (enrolment.confirmedBy || 'a verified teammate') + '.'
+        : 'A teammate whose endpoint is already verified has to confirm this fingerprint before it can read task content.',
+      enrolment.durable ? '' : 'This browser has no persistent key store, so this identity ends with the tab.'
+    ].filter(Boolean).join('\n');
+  }
+
+  // ---- the encrypted endpoint this browser holds ----
+  //
+  // It opens, publishes its keys and announces itself, and then waits. Nothing here decides
+  // that it may read anything: that is a person confirming a fingerprint, which is #8's
+  // ceremony and is deliberately not something a client can do for itself.
+  async function bootEncrypted() {
+    if (!window.PlexusEncrypted || !state.me || !state.teamId) return;
+    if (state.encrypted) { await refreshEncrypted(); return; }
+    try {
+      const client = new window.PlexusEncrypted.EncryptedClient({
+        token: state.me.token, userId: state.me.id, teamId: state.teamId
+      });
+      state.encryptedIdentity = await client.open();
+      state.encrypted = client;
+      await client.announce();
+      await refreshEncrypted();
+    } catch (error) {
+      // A browser that cannot hold an endpoint still works for everything unencrypted, so
+      // this reports rather than blocks - but it does report.
+      state.encryptedState = { state: 'unavailable', device: null, durable: false };
+      renderEnrollment();
+      toast('⚠ Encrypted endpoint unavailable: ' + esc(error.message || String(error)));
+    }
+  }
+
+  async function refreshEncrypted() {
+    if (!state.encrypted) return;
+    const enrolment = await state.encrypted.enrolmentState();
+    state.encryptedState = { ...enrolment, fingerprint: state.encryptedIdentity && state.encryptedIdentity.fingerprint };
+    try { state.encryptedTasks = await state.encrypted.list(); } catch { state.encryptedTasks = []; }
+    renderEnrollment();
   }
 
   function showInvite(invitation) {
@@ -871,12 +925,13 @@
     state.diffSel = Math.min(state.diffSel, Math.max(state.diffFiles.length - 1, 0));
     renderDiff();
   }
-  // The catch-up screen renders a projection built on this endpoint. Until a task carries
-  // one, it renders the projection of an empty log - which is an honest screen saying
-  // nothing has been recorded, not a blank one implying there is nothing to know.
-  function openCatchup() {
-    const empty = { version: 1, scope: { taskId: null, projectId: null, title: state.activeThread?.title || null, from: 0, through: 0, events: 0 },
-      freshness: { state: 'unknown', through: 0, age: null, explain: 'This task has no verified event log on this endpoint yet.' },
+  // The catch-up screen renders a projection built on this endpoint - decrypted here, from
+  // the encrypted log, never handed over by the relay. Until this browser can read a task it
+  // renders the projection of an empty log, which is an honest screen saying nothing has
+  // been recorded rather than a blank one implying there is nothing to know.
+  function emptyProjection(explain) {
+    return { version: 1, scope: { taskId: null, projectId: null, title: state.activeThread?.title || null, from: 0, through: 0, events: 0 },
+      freshness: { state: 'unknown', through: 0, age: null, explain: explain || 'This task has no verified event log on this endpoint yet.' },
       responsible: { value: null, provenance: 'unavailable', reason: 'No responsible teammate is recorded for this task.' },
       host: { value: null, provenance: 'unavailable', reason: 'No execution host is recorded for this task.' },
       provider: { value: null, provenance: 'unavailable', reason: 'No provider is recorded for this task.' },
@@ -886,12 +941,28 @@
       currentStep: { value: null, provenance: 'unavailable', reason: 'No plan has been recorded for this task.' },
       changes: { value: null, provenance: 'unavailable', reason: 'No file changes have been recorded for this task.' },
       activity: [], outcome: { value: 'in-progress', provenance: 'derived', sources: [] },
-      pending: { approvals: { value: null, provenance: 'unavailable', reason: 'This task log records no approval requests.' },
+      pending: { approvals: [],
         blocker: { value: null, provenance: 'unavailable', reason: 'Nothing in the log identifies a blocker.' } } };
+  }
+
+  // Which encrypted task this screen is about. The thread id is used when it names one,
+  // because that is the only mapping that exists; a single readable task is used when it is
+  // the only candidate. Anything else is ambiguous and is left alone rather than guessed.
+  function catchupTask() {
+    const tasks = state.encryptedTasks || [];
+    return tasks.find((t) => t.id === state.activeThreadId) || (tasks.length === 1 ? tasks[0] : null);
+  }
+
+  function openCatchup() {
     state.catchupOpen = true;
     el.threadView.classList.add('hidden'); el.diffView.classList.add('hidden');
     el.catchupView.classList.remove('hidden'); el.catchupBtn.classList.add('active');
-    window.PlexusCatchup.renderCatchup(state.catchup || empty, el.catchupView, {
+    renderCatchupView();
+    loadCatchup().catch((error) => toast('⚠ ' + esc(error.message || String(error))));
+  }
+
+  function renderCatchupView() {
+    window.PlexusCatchup.renderCatchup(state.catchup || emptyProjection(state.catchupExplain), el.catchupView, {
       onOpenTranscript: closeCatchup,
       // A source link that does nothing is worse than no link: it says the claim is backed
       // when nothing has been checked. Resolving against the snapshot this endpoint accepted
@@ -908,7 +979,102 @@
         pane.scrollIntoView({ block: 'nearest' });
       }
     });
+    if (state.catchupHostPrompt) el.catchupView.appendChild(hostConfirmation(state.catchupHostPrompt));
   }
+
+  // The one thing this screen asks a person to do: compare a host's fingerprint with what
+  // that host prints, and say whether they match. Nothing is read from that host until they
+  // do, and the button does not decide - it records what the person decided.
+  function hostConfirmation({ runtimeId, endpoints }) {
+    const panel = document.createElement('aside');
+    panel.className = 'cu-source-pane';
+    panel.setAttribute('aria-label', 'Confirm the execution host');
+    const title = document.createElement('h4');
+    title.textContent = 'Confirm this execution host';
+    const why = document.createElement('p');
+    why.className = 'cu-explain';
+    why.textContent = 'This task was written by ' + runtimeId + '. Compare the key below with the one the host itself prints. '
+      + 'Nothing from this task is shown until they match, because a relay listing a key is not the same as a person recognising one.';
+    panel.append(title, why);
+    if (!endpoints.length) {
+      const none = document.createElement('p');
+      none.className = 'cu-missing';
+      none.textContent = 'That host has published no endpoint, so there is nothing to confirm yet.';
+      panel.appendChild(none);
+      return panel;
+    }
+    for (const endpoint of endpoints) {
+      const row = document.createElement('div');
+      row.className = 'cu-card';
+      const key = document.createElement('p');
+      key.className = 'cu-card-text mono';
+      key.textContent = endpoint.device + ' · ' + endpoint.fingerprint;
+      const confirm = document.createElement('button');
+      confirm.className = 'mini-btn';
+      confirm.type = 'button';
+      confirm.dataset.action = 'confirm-host';
+      confirm.textContent = 'These match';
+      confirm.addEventListener('click', async () => {
+        confirm.disabled = true;
+        try {
+          await state.encrypted.confirmHost(runtimeId, endpoint);
+          state.catchupHostPrompt = null;
+          await loadCatchup();
+        } catch (error) {
+          confirm.disabled = false;
+          toast('⚠ ' + esc(error.message || String(error)));
+        }
+      });
+      row.append(key, confirm);
+      panel.appendChild(row);
+    }
+    return panel;
+  }
+
+  // Replay the task on this endpoint and hand the screen what came back. Every way this can
+  // fail is a state worth showing, so none of them are swallowed into a blank screen.
+  async function loadCatchup() {
+    state.catchupHostPrompt = null;
+    if (!state.encrypted) { state.catchupExplain = 'This browser has no encrypted endpoint, so no task log can be read here.'; return renderIfOpen(); }
+    if (state.encryptedState && state.encryptedState.state !== 'verified') {
+      state.catchupExplain = 'This device is ' + state.encryptedState.state
+        + '. A teammate whose endpoint is already verified has to confirm it before task content can be read here.';
+      return renderIfOpen();
+    }
+    const task = catchupTask();
+    if (!task) { state.catchupExplain = 'No encrypted task on this team matches this view.'; return renderIfOpen(); }
+    const runtime = state.runtimes.find((r) => r.id === task.runtimeId);
+    const out = await state.encrypted.catchUp(task, {
+      responsible: (state.users.find((u) => u.userId === task.creatorUserId) || {}).name || null,
+      host: task.runtimeId,
+      // The log does not carry the provider - the creator picks one and the host runs it, so
+      // neither party's claim belongs in the other's record. Where the app knows it from the
+      // thread's own settings it is passed as context and marked as such; where it does not,
+      // the screen says so rather than naming a provider nobody recorded.
+      provider: (state.activeThread && state.activeThread.settings && state.activeThread.settings.provider) || null,
+      hostConnected: runtime ? !!runtime.online : null
+    });
+    if (out.error === 'host_unconfirmed') {
+      state.catchup = null; state.catchupSnapshot = null;
+      state.catchupExplain = 'The host that wrote this task has not been confirmed on this device.';
+      state.catchupHostPrompt = { runtimeId: task.runtimeId, endpoints: await state.encrypted.hostEndpoints(task.runtimeId) };
+      return renderIfOpen();
+    }
+    if (out.error) {
+      state.catchup = null; state.catchupSnapshot = null;
+      // A log that does not verify is a finding, not a loading failure.
+      state.catchupExplain = 'This task log did not verify on this endpoint (' + out.error + '), so nothing from it is shown.';
+      return renderIfOpen();
+    }
+    state.catchup = out.projection;
+    state.catchupSnapshot = out.snapshot;
+    state.catchupTaskId = task.id;
+    state.catchupExplain = null;
+    renderIfOpen();
+  }
+
+  function renderIfOpen() { if (state.catchupOpen) renderCatchupView(); }
+
   function closeCatchup() {
     if (!state.catchupOpen) return;
     state.catchupOpen = false; el.catchupView.classList.add('hidden'); el.catchupBtn.classList.remove('active');
@@ -1089,6 +1255,11 @@
   bind();
   el.loginHub.textContent = 'hub: ' + HUB_URL;
   const params = new URLSearchParams(location.search);
+  // A handle on this page's own state, so automated checks can drive the real app instead of
+  // a fixture of it. It exposes nothing a script on this origin could not already reach - the
+  // session token is in localStorage either way - and confers no authority the page lacks.
+  window.__plexus = { state, openCatchup, refreshEncrypted: () => refreshEncrypted() };
+
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem('harness.session') || 'null'); } catch {}
   // The saved token wins over a ?name= hint, so relaunching the desktop app returns to the

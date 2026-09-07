@@ -129,15 +129,38 @@ export function catchUp(snapshot, context = {}) {
     ? recorded(events[completedIndex].payload.outcome, events[completedIndex], completedIndex)
     : derived('in-progress', events.length ? [ref(events[events.length - 1], events.length - 1)] : []);
 
-  // Pending work is only ever what the log records as pending. There is no event vocabulary
-  // for an approval yet, so this reports that plainly instead of manufacturing one from a
-  // message that happens to end in a question mark.
-  const pending = {
-    approvals: unavailable('This task log records no approval requests; approvals arrive with the provider integration.'),
-    blocker: outcome.value === 'in-progress' && currentStep.value
+  // Pending work is only ever what the log records as pending, never a message that happens
+  // to end in a question mark.
+  //
+  // An approval is answered by a decision.recorded whose `basis` is its id - the same event
+  // that records who took responsibility - so pairing them needs no second event type and
+  // no clock. An approval nobody answered stays outstanding, including one that expired:
+  // "this expired unanswered" is a true statement about the log, whereas clearing it here
+  // would be this code deciding a request went away because time passed.
+  const answered = new Set(events
+    .filter((event) => event.type === 'decision.recorded' && typeof event.payload.basis === 'string')
+    .map((event) => event.payload.basis));
+  const approvals = events.map((event, index) => ({ event, index }))
+    .filter(({ event }) => event.type === 'approval.requested' && !answered.has(event.payload.id))
+    .map(({ event, index }) => recorded({
+      id: event.payload.id,
+      action: event.payload.action,
+      reason: event.payload.reason ?? null,
+      expiresAt: event.payload.expiresAt ?? null,
+      expired: typeof event.payload.expiresAt === 'number' ? event.payload.expiresAt < now : null
+    }, event, index));
+
+  // What the task is actually stopped on. An outstanding approval outranks a plan step,
+  // because a step in progress is work continuing and an unanswered approval is work that
+  // cannot continue. Both are derived: the log records a request, not a state of being
+  // blocked, and saying otherwise would put words in the writer's mouth.
+  const blocker = approvals.length
+    ? derived('Waiting for a decision on: ' + approvals[0].value.action, approvals.map((entry) => entry.source))
+    : outcome.value === 'in-progress' && currentStep.value
       ? derived(currentStep.value, currentStep.sources || [])
-      : unavailable('Nothing in the log identifies a blocker.')
-  };
+      : unavailable('Nothing in the log identifies a blocker.');
+
+  const pending = { approvals, blocker };
 
   const lastEventAt = typeof context.lastEventAt === 'number' ? context.lastEventAt : null;
 

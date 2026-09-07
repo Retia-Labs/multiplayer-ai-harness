@@ -53,7 +53,7 @@ function pureChecks() {
 
   // The message says something decisive. It is still a message.
   assert.deepEqual(view.decisions, []);
-  assert.equal(view.pending.approvals.provenance, 'unavailable');
+  assert.deepEqual(view.pending.approvals, []);
   pass('a decisive-sounding message is not promoted to a decision or an approval', 'decisions: 0');
 
   assert.equal(view.currentStep.provenance, 'derived');
@@ -83,6 +83,59 @@ function pureChecks() {
   assert.equal(missing.available, false);
   assert.equal(missing.reason, 'source_unavailable');
   pass('a source that does not resolve is reported, not silently dropped', 'source_unavailable');
+
+  // ---- what the task is stopped on ----
+  //
+  // Criterion 1 asks for "current blocker/pending approvals". Until an approval request was
+  // part of the log vocabulary the projection could only say it had none to report, which is
+  // a true statement about an empty vocabulary and a useless one about a blocked task.
+  const asked = [...events,
+    { type: 'approval.requested', payload: { id: 'req_1', action: 'Run: npm publish', reason: 'writes outside the workspace', expiresAt: 5000 } }];
+  const waiting = catchUp({ ...snapshot, events: asked, seq: 4 }, { now: 1000 });
+  assert.equal(waiting.pending.approvals.length, 1);
+  assert.equal(waiting.pending.approvals[0].provenance, 'recorded');
+  assert.equal(waiting.pending.approvals[0].value.action, 'Run: npm publish');
+  assert.equal(waiting.pending.approvals[0].value.reason, 'writes outside the workspace');
+  assert.deepEqual(waiting.pending.approvals[0].source, { seq: 4, type: 'approval.requested' });
+  pass('an unanswered approval is reported as outstanding, with the action it would authorise', 'seq 4');
+
+  // A step in progress is work continuing; an unanswered approval is work that cannot.
+  assert.equal(waiting.currentStep.value, 'Retry');
+  assert.equal(waiting.pending.blocker.provenance, 'derived');
+  assert.match(waiting.pending.blocker.value, /npm publish/);
+  pass('an outstanding approval outranks the plan step as the blocker', 'derived, not recorded');
+
+  // The answer is the decision that records who took responsibility - not a second event
+  // type, and not the passage of time.
+  const answered = catchUp({ ...snapshot, events: [...asked,
+    { type: 'decision.recorded', payload: { actor: 'maya', text: 'Approval accept', basis: 'req_1' } }], seq: 5 }, { now: 1000 });
+  assert.deepEqual(answered.pending.approvals, []);
+  assert.equal(answered.decisions.length, 1);
+  assert.equal(answered.decisions[0].actor, 'maya');
+  assert.equal(answered.pending.blocker.value, 'Retry');
+  pass('a recorded decision answers the request it names, and only that one', 'basis req_1');
+
+  // An expired request nobody answered is still unanswered. Clearing it would be this code
+  // deciding a request went away because a clock moved.
+  const expired = catchUp({ ...snapshot, events: asked, seq: 4 }, { now: 9000 });
+  assert.equal(expired.pending.approvals.length, 1);
+  assert.equal(expired.pending.approvals[0].value.expired, true);
+  pass('an expired approval stays outstanding and is marked expired', 'not silently cleared');
+
+  // A decision naming a request that was never asked for must not clear anything, and must
+  // not invent an approval either.
+  const foreign = catchUp({ ...snapshot, events: [...asked,
+    { type: 'decision.recorded', payload: { actor: 'mallory', text: 'Approval accept', basis: 'req_elsewhere' } }], seq: 5 }, { now: 1000 });
+  assert.equal(foreign.pending.approvals.length, 1);
+  pass('a decision naming an unrelated request answers nothing', 'req_1 stays outstanding');
+
+  // Every reference the pending section makes has to resolve like any other.
+  const refs = sourcesOf(waiting);
+  assert.ok(refs.some((r) => r.type === 'approval.requested'));
+  for (const source of refs) {
+    assert.equal(openSource({ events: asked, seq: 4 }, source).available, true, source.type);
+  }
+  pass('every source the pending section cites resolves to an accepted event', refs.length + ' references');
 }
 
 // ---------- and now the same projection over a real encrypted log ----------

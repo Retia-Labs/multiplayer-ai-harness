@@ -109,6 +109,15 @@ class Hub {
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ threads: this.store.listThreads(teamId) }));
     }
+    // Browser-side encryption needs two things this hub does not keep in apps/web: the
+    // crypto WASM, and the shared modules that already run in both Node and a browser.
+    //
+    // Both are served from an explicit allowlist rather than by exposing a directory.
+    // packages/ holds the hub's own store and server code, and a path-prefix rule that
+    // happened to serve those would be a very quiet way to publish them.
+    if (url.pathname.startsWith('/vendor/') || url.pathname.startsWith('/shared/')) {
+      return this.serveModule(res, url.pathname);
+    }
     if (!this.staticDir) { res.writeHead(404); return res.end('no ui'); }
     let p = url.pathname === '/' ? '/index.html' : url.pathname;
     const file = path.normalize(path.join(this.staticDir, p));
@@ -577,6 +586,39 @@ class Hub {
       this.pendingCommands.delete(id);
       this.send(ws, { type: 'command.result', id, ok: false, error: 'runtime offline' });
     }
+  }
+
+  // The only modules a browser may load from this process, named one by one.
+  static SHARED_MODULES = new Set([
+    'e2ee/endpoint-core.mjs',
+    'e2ee/task-log.mjs',
+    'e2ee/enrollment.mjs',
+    'e2ee/catchup.mjs',
+    'e2ee/hub-key-transport.mjs',
+    'protocol/encrypted-task.mjs'
+  ]);
+
+  serveModule(res, pathname) {
+    const deny = () => { res.writeHead(404); res.end('not found'); };
+    const root = path.join(__dirname, '..', '..');
+    let file = null;
+    if (pathname.startsWith('/shared/')) {
+      const rel = pathname.slice('/shared/'.length);
+      if (!Hub.SHARED_MODULES.has(rel)) return deny();
+      file = path.join(root, 'packages', rel);
+    } else {
+      // The SDK ships its own file layout, so this serves the package directory rather
+      // than an allowlist - but only that package, and only after normalising.
+      const base = path.join(root, 'node_modules', '@matrix-org', 'matrix-sdk-crypto-wasm');
+      const candidate = path.normalize(path.join(base, pathname.slice('/vendor/'.length)));
+      if (!candidate.startsWith(base)) return deny();
+      file = candidate;
+    }
+    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) return deny();
+    const type = file.endsWith('.wasm') ? 'application/wasm'
+      : file.endsWith('.mjs') || file.endsWith('.js') ? 'text/javascript' : 'application/octet-stream';
+    res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+    res.end(fs.readFileSync(file));
   }
 
   settleCommand(msg) {

@@ -67,10 +67,27 @@ function translate(event) {
   return null;
 }
 
-// A recorded decision, when a person actually made one. An approval is exactly that: someone
-// took responsibility for an action a machine was about to take, which is why it is the one
-// control event that belongs in the task history.
+// The two halves of an approval, and both belong in the history.
+//
+// The request half is what makes #9's catch-up view able to say a task is stopped waiting
+// for somebody rather than merely that nothing has happened lately - and it has to carry the
+// action, because an approval prompt with the action hidden is how people authorise things
+// they did not read. The answering half is a recorded decision: someone took responsibility
+// for what a machine was about to do, which is the one control event that is also history.
+//
+// They are paired by request id, so an approval nobody answered stays visibly outstanding.
 function translateApproval(event, actorName) {
+  if (event.method === Events.COMMAND_REQUEST_APPROVAL || event.method === Events.FILECHANGE_REQUEST_APPROVAL) {
+    const action = event.method === Events.COMMAND_REQUEST_APPROVAL
+      ? 'Run: ' + event.command
+      : 'Write ' + (event.changes || []).map((change) => change.path).join(', ');
+    return { type: 'approval.requested', payload: {
+      id: event.requestId,
+      action,
+      ...(event.reason ? { reason: event.reason } : {}),
+      ...(Number.isSafeInteger(event.expiresAt) ? { expiresAt: event.expiresAt } : {})
+    } };
+  }
   if (event.method !== Events.SERVER_REQUEST_RESOLVED) return null;
   return { type: 'decision.recorded', payload: {
     actor: actorName || (event.by && event.by.name) || 'unknown',
