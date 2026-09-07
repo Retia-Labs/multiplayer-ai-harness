@@ -176,6 +176,36 @@
     } else changes.appendChild(missing(projection.changes));
     root.appendChild(section('Recent changes', changes));
 
+    // --- records: the issue or PR this belongs to ---
+    //
+    // Rendered from the parsed host rather than the raw string, so a reader judges where a
+    // link goes by looking at where it goes. textContent throughout, and rel=noopener so the
+    // opened page cannot reach back into this one.
+    const related = el('div');
+    if (projection.links && projection.links.length) {
+      const list = el('ul', 'cu-files');
+      for (const entry of projection.links) {
+        const item = el('li', 'cu-file');
+        const anchor = document.createElement('a');
+        anchor.className = 'cu-link';
+        anchor.href = entry.value.url;
+        anchor.target = '_blank';
+        anchor.rel = 'noopener noreferrer nofollow';
+        anchor.textContent = entry.value.title || entry.value.url;
+        anchor.title = entry.value.url;
+        item.appendChild(anchor);
+        const where = el('span', 'cu-link-host', entry.value.host || 'unknown host');
+        if (entry.value.insecure) where.textContent += ' · not encrypted in transit';
+        item.appendChild(where);
+        item.appendChild(provenanceRow(entry, onOpenSource));
+        list.appendChild(item);
+      }
+      related.appendChild(list);
+    } else {
+      related.appendChild(el('p', 'cu-missing', 'No issue or pull request is linked to this task.'));
+    }
+    root.appendChild(section('Related work', related));
+
     // --- records: what the host reported doing ---
     const activity = el('div');
     if (projection.activity && projection.activity.length) {

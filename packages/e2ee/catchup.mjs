@@ -15,6 +15,8 @@
 // It runs on an endpoint that has already decrypted the log. Nothing about it belongs on a
 // relay, and nothing here should ever be given a reason to.
 
+import { describeLink } from '../protocol/related-work.mjs';
+
 export const CATCHUP_VERSION = 1;
 
 const ref = (event, index) => ({ seq: index + 1, type: event.type });
@@ -129,6 +131,20 @@ export function catchUp(snapshot, context = {}) {
   // The task's own outcome, which only a person records. Until somebody does, the work is
   // open - and "open" is derived, because the log does not say it, it merely fails to say
   // anything else. The last turn's result is reported next to it and never instead of it.
+  // Issues and PRs this work belongs to. Removed links leave the list rather than being
+  // struck through: the log still records that somebody added and removed one, and the
+  // source is there for anybody who wants to see that happen.
+  const links = events.map((event, index) => ({ event, index }))
+    .filter(({ event }) => event.type === 'link.added' &&
+      !events.some((other) => other.type === 'link.removed' && other.payload.id === event.payload.id))
+    .map(({ event, index }) => recorded({
+      id: event.payload.id,
+      url: event.payload.url,
+      title: event.payload.title ?? null,
+      by: event.payload.by,
+      ...describeLink(event.payload.url)
+    }, event, index));
+
   const outcome = completedIndex >= 0
     ? recorded(events[completedIndex].payload.outcome, events[completedIndex], completedIndex,
       { actor: events[completedIndex].payload.by })
@@ -221,6 +237,7 @@ export function catchUp(snapshot, context = {}) {
     currentStep,
     changes,
     activity,
+    links,
     outcome,
     turn,
     pending

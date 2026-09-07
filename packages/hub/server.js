@@ -119,7 +119,13 @@ class Hub {
       return this.serveModule(res, url.pathname);
     }
     if (!this.staticDir) { res.writeHead(404); return res.end('no ui'); }
-    let p = url.pathname === '/' ? '/index.html' : url.pathname;
+    // A private task link. The relay serves the same application shell it serves everybody -
+    // no task, no title, nothing that says whether that id even exists - and every check that
+    // matters happens afterwards, in the client, against an endpoint somebody confirmed.
+    // Answering differently for a real id than for an invented one would leak the one thing
+    // an unauthorized visitor could otherwise not find out.
+    let p = url.pathname === '/' || /^\/t\/[A-Za-z0-9_-]{1,80}$/.test(url.pathname)
+      ? '/index.html' : url.pathname;
     const file = path.normalize(path.join(this.staticDir, p));
     if (!file.startsWith(this.staticDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
       res.writeHead(404); return res.end('not found');
@@ -608,7 +614,8 @@ class Hub {
     'e2ee/catchup.mjs',
     'e2ee/hub-key-transport.mjs',
     'e2ee/task-control.mjs',
-    'protocol/encrypted-task.mjs'
+    'protocol/encrypted-task.mjs',
+    'protocol/related-work.mjs'
   ]);
 
   serveModule(res, pathname) {

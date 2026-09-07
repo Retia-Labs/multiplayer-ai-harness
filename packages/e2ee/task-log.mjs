@@ -48,6 +48,12 @@ function eventValid(e) {
     case 'turn.completed':return ['completed','failed','interrupted'].includes(p.status);
     // What a person decided about the work itself, and who decided it. Required, because an
     // outcome with nobody attached is exactly the inference #9 forbids.
+    // A link to the issue or PR this work belongs to. The URL is content - it names a repo,
+    // an issue number and often the shape of the problem - so it lives in the log with
+    // everything else rather than in a relay column somebody could read.
+    case 'link.added':return typeof p.id==='string' && typeof p.url==='string' &&
+      typeof p.by==='string' && (p.title===undefined||p.title===null||typeof p.title==='string');
+    case 'link.removed':return typeof p.id==='string' && typeof p.by==='string';
     case 'task.completed':return ['completed','cancelled'].includes(p.outcome) && typeof p.by==='string';
     // Responsibility moving, and who moved it. Nothing else travels with it - not approval
     // authority, not the host, not whose provider account pays.
@@ -92,6 +98,15 @@ function reduce(state,event) {
     state.outcome=p.outcome;state.completedBy=p.by;
   }
   if(event.type==='responsibility.changed') {state.responsible=p.to;state.handover=p;}
+  if(event.type==='link.added') {
+    if(state.links.some((l)=>l.id===p.id)) fail('task_item_conflict');
+    state.links.push(p);
+  }
+  if(event.type==='link.removed') {
+    const held=state.links.find((l)=>l.id===p.id);
+    if(!held) fail('unknown_task_link');
+    held.removedBy=p.by;
+  }
   state.events.push(structuredClone(event));
 }
 export class EncryptedTaskTransport {
@@ -134,7 +149,7 @@ export class EncryptedTaskReader {
       (this.floor.seq===0 ? this.floor.hash!==null : !/^[a-f0-9]{64}$/.test(this.floor.hash)))fail('invalid_local_checkpoint');
     this.floor=structuredClone(this.floor);
     this.seq=0;this.hash=null;this.hashes=new Map();this.ids=new Set();
-    this.state={title:null,objective:null,details:null,messages:[],plan:null,tools:[],diffs:[],activity:[],approvals:[],help:[],decisions:[],turn:null,responsible:null,handover:null,outcome:null,completedBy:null,events:[]};
+    this.state={title:null,objective:null,details:null,messages:[],plan:null,tools:[],diffs:[],activity:[],approvals:[],help:[],links:[],decisions:[],turn:null,responsible:null,handover:null,outcome:null,completedBy:null,events:[]};
     this.status={state:'idle',seq:0};this.queue=Promise.resolve();
   }
   setStatus(state,code) {this.status={state,seq:this.seq,...(code?{code}:{})};this.onStatus(this.status);}
