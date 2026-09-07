@@ -201,6 +201,9 @@ class Runtime {
   }
 
   stop() {
+    // Set before anything closes: an interrupted turn finishes asynchronously, and its
+    // completion must not try to write to a store that is on its way out.
+    this.stopped = true;
     for (const s of this.sessions.values()) s.interrupt();
     if (this.hub) this.hub.close();
     this.store.close();
@@ -272,15 +275,49 @@ class Runtime {
       case Commands.TURN_START: return this.turnStart(thread, cmd, by);
       case Commands.TURN_STEER: {
         const s = this.sessions.get(threadId);
-        if (!s || !s.running) throw new Error('no active turn to steer');
-        if (cmd.expectedTurnId && cmd.expectedTurnId !== s.turnId) throw new Error('expectedTurnId does not match the active turn');
-        const delivery = s.steer(cmd.input, by);
-        return { turnId: s.turnId, delivery };
+        if (!s || !s.running) throw new Error(Errors.TURN_NOT_ACTIVE + ': no active turn to steer');
+        // Naming the turn is mandatory. It used to be optional, which meant an instruction
+        // written for a turn that had since ended was silently applied to whatever was
+        // running instead - the exact confusion this binding exists to prevent.
+        if (!cmd.expectedTurnId) throw new Error(Errors.TURN_BINDING_REQUIRED + ': steering must name the turn it was written for');
+        if (cmd.expectedTurnId !== s.turnId) throw new Error(Errors.STALE_TURN + ': that turn is no longer the one running');
+        return { turnId: s.turnId, ...s.steer(cmd.input, by) };
       }
       case Commands.TURN_INTERRUPT: {
         const s = this.sessions.get(threadId);
-        if (s) s.interrupt();
-        return {};
+        if (!s || !s.running) throw new Error(Errors.TURN_NOT_ACTIVE + ': nothing is running to interrupt');
+        if (!cmd.turnId) throw new Error(Errors.TURN_BINDING_REQUIRED + ': interrupting must name the turn');
+        if (cmd.turnId !== s.turnId) throw new Error(Errors.STALE_TURN + ': that turn is no longer the one running');
+        return s.requestInterrupt(by);
+      }
+      // Help goes to a person. It is recorded and attributed, and there is deliberately no
+      // path from here into steerQueue or any provider call: the only way an agent ever sees
+      // text is TURN_START or TURN_STEER, both of which a human types on purpose.
+      case Commands.THREAD_HELP: {
+        // Help is about a piece of work, so it belongs to a thread. Without this a request
+        // addressed to nothing is recorded against a null thread and can never be answered.
+        if (!thread) throw new Error(Errors.UNKNOWN_THREAD + ': a help request belongs to a thread');
+        const text = typeof cmd.text === 'string' ? cmd.text.trim() : '';
+        if (!text) throw new Error(Errors.HELP_IS_NOT_INPUT + ': a help request needs text for a person to read');
+        const requestId = 'help_' + crypto.randomBytes(8).toString('hex');
+        // Kept on the thread so it survives a host restart, and so resolving one can be
+        // checked against something rather than believed.
+        thread.openHelp = [...(thread.openHelp || []), requestId];
+        this.store.upsertThread(thread);
+        this.appendEvent(threadId, { method: Events.HELP_REQUESTED, requestId, text, to: cmd.to || null, by });
+        return { requestId };
+      }
+      case Commands.THREAD_HELP_RESOLVE: {
+        if (!thread) throw new Error(Errors.UNKNOWN_THREAD + ': a help request belongs to a thread');
+        // Resolving something nobody asked for used to be accepted, which let an invented id
+        // clear a real request and put a resolution in the log for a question never posed.
+        if (typeof cmd.requestId !== 'string' || !(thread.openHelp || []).includes(cmd.requestId)) {
+          throw new Error(Errors.UNKNOWN_HELP_REQUEST + ': no such open help request on this thread');
+        }
+        thread.openHelp = (thread.openHelp || []).filter((id) => id !== cmd.requestId);
+        this.store.upsertThread(thread);
+        this.appendEvent(threadId, { method: Events.HELP_RESOLVED, requestId: cmd.requestId, by });
+        return { ok: true };
       }
       case Commands.APPROVAL_RESOLVE: {
         // Second check, on the machine that will actually run the command. The hub says who
@@ -415,6 +452,7 @@ class Runtime {
       }
     }
     session.run().then(() => {
+      if (this.stopped) return;
       thread.updatedAt = Date.now(); this.store.upsertThread(thread);
       if (this.sessions.get(thread.id) === session) this.sessions.delete(thread.id);
     });

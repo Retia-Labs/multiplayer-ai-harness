@@ -654,7 +654,12 @@ class Hub {
     else if (m === 'item/commandExecution/requestApproval' || m === 'item/fileChange/requestApproval') {
       patch = { status: { type: 'active', activeFlags: ['waitingOnApproval'] }, pendingApproval: { requestId: ev.requestId, itemId: ev.itemId, command: ev.command, changes: ev.changes, reason: ev.reason, availableDecisions: ev.availableDecisions, kind: m === 'item/fileChange/requestApproval' ? 'fileChange' : 'command' } };
     } else if (m === 'serverRequest/resolved') patch = { status: { type: 'active', activeFlags: [] }, pendingApproval: null };
-    else if (m === 'turn/completed') patch = { status: ev.status === 'failed' ? { type: 'systemError' } : { type: 'idle' }, activeTurnId: null, pendingApproval: null, lastTurnStatus: ev.status, lastTurnAt: Date.now() };
+    // Requested is not stopped. The turn keeps running until it ends, and whatever it
+    // already did stays done - the flag says a stop was asked for, nothing more.
+    else if (m === 'turn/interrupt/requested') patch = { status: { type: 'active', activeFlags: ['stopping'] }, interruptRequestedBy: ev.by || null };
+    else if (m === 'help/requested') patch = { openHelp: { requestId: ev.requestId, by: ev.by || null, to: ev.to || null, at: Date.now() } };
+    else if (m === 'help/resolved') patch = { openHelp: null };
+    else if (m === 'turn/completed') patch = { status: ev.status === 'failed' ? { type: 'systemError' } : { type: 'idle' }, activeTurnId: null, pendingApproval: null, interruptRequestedBy: null, lastTurnStatus: ev.status, lastTurnAt: Date.now() };
     else if (m === 'thread/name/updated') patch = { name: ev.name };
     else if (m === 'thread/settings/updated') patch = { settings: { ...(thread.settings || {}), ...(ev.settings || {}) } };
     if (patch) {
