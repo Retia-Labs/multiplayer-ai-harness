@@ -652,7 +652,7 @@ class Hub {
     let patch = null;
     if (m === 'turn/started') patch = { status: { type: 'active', activeFlags: [] }, activeTurnId: ev.turnId, pendingApproval: null, lastTurnBy: ev.by || null };
     else if (m === 'item/commandExecution/requestApproval' || m === 'item/fileChange/requestApproval') {
-      patch = { status: { type: 'active', activeFlags: ['waitingOnApproval'] }, pendingApproval: { requestId: ev.requestId, itemId: ev.itemId, command: ev.command, changes: ev.changes, reason: ev.reason, availableDecisions: ev.availableDecisions, kind: m === 'item/fileChange/requestApproval' ? 'fileChange' : 'command' } };
+      patch = { status: { type: 'active', activeFlags: ['waitingOnApproval'] }, pendingApproval: { requestId: ev.requestId, itemId: ev.itemId, command: ev.command, changes: ev.changes, reason: ev.reason, availableDecisions: ev.availableDecisions, turnId: ev.turnId, fingerprint: ev.fingerprint, expiresAt: ev.expiresAt, kind: m === 'item/fileChange/requestApproval' ? 'fileChange' : 'command' } };
     } else if (m === 'serverRequest/resolved') patch = { status: { type: 'active', activeFlags: [] }, pendingApproval: null };
     // Requested is not stopped. The turn keeps running until it ends, and whatever it
     // already did stays done - the flag says a stop was asked for, nothing more.

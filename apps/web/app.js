@@ -473,12 +473,12 @@
       if (canApprove()) {
         if (supported.has('accept')) {
           const approve = document.createElement('button'); approve.className = 'mini-btn primary'; approve.textContent = 'Approve';
-          approve.addEventListener('click', () => command(t.id, { method: 'approval/resolve', requestId: t.pendingApproval.requestId, decision: 'accept' }).catch((e) => toast('⚠ ' + esc(e.message))));
+          approve.addEventListener('click', () => command(t.id, { method: 'approval/resolve', requestId: t.pendingApproval.requestId, decision: 'accept', turnId: t.pendingApproval.turnId, fingerprint: t.pendingApproval.fingerprint }).catch((e) => toast('⚠ ' + esc(e.message))));
           row.appendChild(approve);
         }
         if (supported.has('decline')) {
           const decline = document.createElement('button'); decline.className = 'mini-btn danger'; decline.textContent = 'Decline';
-          decline.addEventListener('click', () => command(t.id, { method: 'approval/resolve', requestId: t.pendingApproval.requestId, decision: 'decline' }).catch((e) => toast('⚠ ' + esc(e.message))));
+          decline.addEventListener('click', () => command(t.id, { method: 'approval/resolve', requestId: t.pendingApproval.requestId, decision: 'decline', turnId: t.pendingApproval.turnId, fingerprint: t.pendingApproval.fingerprint }).catch((e) => toast('⚠ ' + esc(e.message))));
           row.appendChild(decline);
         }
         if (!supported.has('accept') && !supported.has('decline')) {
@@ -799,7 +799,7 @@
       return;
     }
     const supported = supportedApprovalDecisions(ev);
-    const mk = (label, decision, cls) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; b.dataset.decision = decision; b.addEventListener('click', () => command(state.activeThreadId, { method: 'approval/resolve', requestId: ev.requestId, decision }).catch((e) => toast('⚠ ' + esc(e.message)))); return b; };
+    const mk = (label, decision, cls) => { const b = document.createElement('button'); b.className = cls; b.textContent = label; b.dataset.decision = decision; b.addEventListener('click', () => command(state.activeThreadId, { method: 'approval/resolve', requestId: ev.requestId, decision, turnId: ev.turnId, fingerprint: ev.fingerprint }).catch((e) => toast('⚠ ' + esc(e.message)))); return b; };
     if (supported.has('accept')) actions.appendChild(mk('Approve', 'accept', 'approve'));
     if (supported.has('decline')) actions.appendChild(mk('Decline', 'decline', 'secondary'));
     if (supported.has('cancel')) actions.appendChild(mk('Cancel turn', 'cancel', 'secondary'));

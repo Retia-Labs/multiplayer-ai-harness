@@ -200,6 +200,12 @@ class Runtime {
     return this.projects.has(path.resolve(dir));
   }
 
+  // What a late answer is told: the code a client can branch on, and the fact a person needs.
+  describeSettled(record) {
+    const who = (record.by && record.by.name) || 'someone else';
+    return Errors.APPROVAL_SETTLED + ': ' + who + ' already answered ' + record.decision;
+  }
+
   stop() {
     // Set before anything closes: an interrupted turn finishes asynchronously, and its
     // completion must not try to write to a store that is on its way out.
@@ -323,9 +329,26 @@ class Runtime {
         // Second check, on the machine that will actually run the command. The hub says who
         // it thinks is allowed; the host is the one taking the risk, so it says no too.
         if (!by || !by.approver) throw new Error(Errors.NOT_APPROVER + ': this teammate has not been delegated approval authority');
+        // Somebody already answered. The late caller is refused - exactly one resolution is
+        // authoritative - but the refusal names who settled it and how, and the same record
+        // reaches every client as serverRequest/resolved.
+        const settledBefore = (thread.settledApprovals || {})[cmd.requestId];
+        if (settledBefore) throw new Error(this.describeSettled(settledBefore));
         const s = this.sessions.get(threadId);
-        if (!s || !s.resolveApproval(cmd.requestId, cmd.decision, by)) throw new Error('no such pending approval');
-        return {};
+        if (!s) {
+          // Two different situations that used to give the same answer. If the host still
+          // remembers asking, the answer is simply too late; if it has never heard of the
+          // id, saying "stale after restart" would invent a history that did not happen.
+          const outstanding = (thread.openApprovals || {})[cmd.requestId];
+          if (outstanding) throw new Error(Errors.APPROVAL_STALE_AFTER_RESTART + ': that request did not survive the host');
+          throw new Error(Errors.APPROVAL_UNKNOWN + ': nothing is pending under that id');
+        }
+        try {
+          return { settled: s.resolveApproval(cmd.requestId, cmd.decision, by, { turnId: cmd.turnId, fingerprint: cmd.fingerprint }) };
+        } catch (error) {
+          if (error.code === Errors.APPROVAL_SETTLED && error.settled) throw new Error(this.describeSettled(error.settled));
+          throw error;
+        }
       }
       case Commands.MODEL_LIST: {
         const p = this.provider(cmd.provider || 'demo');
@@ -440,7 +463,20 @@ class Runtime {
       thread, by, input: cmd.input, provider, model: settings.model, settings, executor: this.executor,
       history: this.store.listItems(thread.id), log: this.log,
       teammates: () => this.teammatesFor(thread),
-      emit: (event) => this.appendEvent(thread.id, event)
+      emit: (event) => this.appendEvent(thread.id, event),
+      // Settled answers outlive the turn that asked. Persisting them on the thread is what
+      // lets a restarted host say "Bob approved that" instead of "no such request".
+      settledApprovals: Object.entries(thread.settledApprovals || {}),
+      onApprovalRequested: (record) => {
+        thread.openApprovals = { ...(thread.openApprovals || {}), [record.requestId]: record };
+        if (!this.stopped) this.store.upsertThread(thread);
+      },
+      onApprovalSettled: (record) => {
+        const { [record.requestId]: _gone, ...stillOpen } = thread.openApprovals || {};
+        thread.openApprovals = stillOpen;
+        thread.settledApprovals = { ...(thread.settledApprovals || {}), [record.requestId]: record };
+        if (!this.stopped) this.store.upsertThread(thread);
+      }
     });
     this.sessions.set(thread.id, session);
     if (thread.name === 'New thread') {

@@ -183,8 +183,8 @@ async function controlPlane({ alice, bob, rt, project }) {
   await check(C2, 'single-authoritative-approval', async () => {
     const rid = approvalReq.requestId;
     const [a, b] = await Promise.all([
-      bob.raw(thread.id, { method: 'approval/resolve', requestId: rid, decision: 'accept' }),
-      alice.raw(thread.id, { method: 'approval/resolve', requestId: rid, decision: 'decline' })
+      bob.raw(thread.id, { method: 'approval/resolve', requestId: rid, decision: 'accept', turnId: approvalReq.turnId, fingerprint: approvalReq.fingerprint }),
+      alice.raw(thread.id, { method: 'approval/resolve', requestId: rid, decision: 'decline', turnId: approvalReq.turnId, fingerprint: approvalReq.fingerprint })
     ]);
     const winners = [a, b].filter((r) => r.ok);
     if (winners.length !== 1) throw new Error(`${winners.length} of 2 competing resolutions were accepted`);

@@ -9,7 +9,7 @@
     "runtime": "node packages/runtime/index.js",
     "desktop": "electron apps/desktop/main.js",
     "codex-clone": "electron src/main/main.js",
-    "test": "npm run test:protocol && npm run test:unit && npm run test:team && npm run test:codex && npm run test:e2e && npm run test:encrypted-task && npm run test:teammate-enrollment && npm run test:import-forgery && npm run test:key-exchange && npm run test:steering && npm run test:catchup && npm run test:catchup:view",
+    "test": "npm run test:protocol && npm run test:unit && npm run test:team && npm run test:codex && npm run test:e2e && npm run test:encrypted-task && npm run test:teammate-enrollment && npm run test:import-forgery && npm run test:key-exchange && npm run test:steering && npm run test:approvals && npm run test:catchup && npm run test:catchup:view",
     "test:protocol": "node test/protocol-smoke.js",
     "test:unit": "node test/unit.js",
     "test:e2e": "node test/e2e-multiplayer.js",
@@ -41,6 +41,7 @@
     "test:import-forgery": "node test/e2ee-import-forgery.js",
     "test:key-exchange": "node test/hub-key-exchange.js",
     "test:steering": "node test/shared-steering.js",
+    "test:approvals": "node test/approval-grants.js",
     "test:catchup": "node test/catchup.js",
     "test:catchup:view": "node test/catchup-view.js"
   },
