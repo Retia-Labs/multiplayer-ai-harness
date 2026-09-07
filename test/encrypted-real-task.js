@@ -28,12 +28,18 @@ const { EncryptedTaskReader, EncryptedTaskTransport, createEncryptedTask, newId 
 const { matrixUser } = require('../packages/protocol/encrypted-task.mjs');
 const { EnrollmentTransport, announcement, confirmTeammateEndpoint } = require('../packages/e2ee/enrollment.mjs');
 const { catchUp } = require('../packages/e2ee/catchup.mjs');
-const { TeamOps } = require('../packages/protocol');
+const { TeamOps, Events, ApprovalDecision } = require('../packages/protocol');
 
 const results = [];
 const pass = (name, detail) => { results.push({ name, status: 'pass' }); console.log('  PASS ' + name + (detail ? ' - ' + detail : '')); };
 const waitFor = async (fn, label = '') => {
   for (let n = 0; n < 400; n++) { const v = fn(); if (v) return v; await new Promise((r) => setTimeout(r, 25)); }
+  throw new Error('timeout: ' + label);
+};
+// The sync waitFor above cannot poll something that has to be awaited, and an approval
+// landing in an encrypted log is exactly that: drain, decrypt, replay, look.
+const until = async (fn, label = '') => {
+  for (let n = 0; n < 400; n++) { if (await fn()) return; await new Promise((r) => setTimeout(r, 25)); }
   throw new Error('timeout: ' + label);
 };
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-real-task-'));
@@ -130,6 +136,88 @@ let hub, runtime, encrypted, socket;
   assert.equal(view.objective.value, objective.objective);
   assert.equal(view.objective.provenance, 'recorded');
   pass('the catch-up projection reads the real task', '#9 reading #7 through the log');
+
+  // ---- criterion 1: a blocker a teammate can actually see, and answer ----
+  //
+  // This is the clause the projection could not satisfy before: "current blocker/pending
+  // approvals". The demo agent drives the real approval pipeline, so the request here is
+  // produced the same way a provider's would be, and answered the same way a teammate's
+  // would be. What is being checked is that a joining endpoint can see the task is stopped
+  // and on what, from the log alone, while it is still stopped.
+  // Something for the risky command to be risky about: the workspace tool refuses a path
+  // that is not there before policy is ever consulted, so an absent directory would produce
+  // a declined command and no approval at all.
+  fs.mkdirSync(path.join(project, 'build'), { recursive: true });
+  fs.writeFileSync(path.join(project, 'build', 'out.txt'), 'built');
+
+  const blocked = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId, creatorUserId: account.id };
+  await createEncryptedTask(client, tasks, { task: blocked, writer: hostIdentity,
+    payload: { title: 'Clear the build directory', objective: 'delete the build directory' } });
+
+  const blockedReader = new EncryptedTaskReader({ endpoint: client, task: blocked, writer: hostIdentity });
+  let session;
+  let requested = null;
+  let midFlight = null;
+  const approvalTurn = async (emit, decrypted) => {
+    session = new TurnSession({
+      thread: { id: blocked.id, cwd: project, settings: {} },
+      by: { userId: account.id, name: 'alice' },
+      input: [{ type: 'text', text: decrypted.objective }],
+      provider: { id: 'demo' },
+      // on-request escalates a risky command rather than running it, which is the whole
+      // point: an approval nobody configured is not an approval anybody asked for.
+      settings: { approvalPolicy: 'on-request', sandboxPolicy: 'workspace-write' },
+      executor: runtime.executor, history: [], log: () => {},
+      emit: (event) => {
+        emit(event);
+        if (event.method !== Events.COMMAND_REQUEST_APPROVAL || requested) return;
+        requested = event;
+        // Answer it the way a teammate would - after reading, from the log, what is being
+        // asked. The turn stays parked here until this resolves it.
+        (async () => {
+          await until(async () => {
+            await client.open(await client.transport.drain());
+            try { await blockedReader.reconnect(tasks); } catch { return false; }
+            return blockedReader.state.approvals.length > 0;
+          }, 'the approval request reaches the encrypted log');
+          midFlight = catchUp(blockedReader.snapshot(), { responsible: 'alice', host: runtime.id, provider: 'demo', hostConnected: true, taskId: blocked.id, projectId });
+          session.resolveApproval(event.requestId, ApprovalDecision.ACCEPT, { userId: account.id, name: 'alice' },
+            { turnId: session.turnId, fingerprint: event.fingerprint });
+        })().catch((error) => { requested = { failed: error }; });
+      }
+    });
+    await session.run();
+    return session;
+  };
+  await encrypted.run(blocked, { runTurn: approvalTurn });
+  assert.ok(requested && !requested.failed, 'the turn asked for an approval: ' + (requested && requested.failed && requested.failed.message));
+
+  assert.equal(midFlight.pending.approvals.length, 1, 'the parked task shows one approval outstanding');
+  assert.match(midFlight.pending.approvals[0].value.action, /rm -rf build/);
+  assert.equal(midFlight.pending.approvals[0].provenance, 'recorded');
+  assert.match(midFlight.pending.blocker.value, /rm -rf build/);
+  assert.equal(midFlight.pending.blocker.provenance, 'derived');
+  pass('a teammate reading a parked task sees what it is blocked on, from the log alone',
+    midFlight.pending.approvals[0].value.action);
+
+  // And once somebody answers, the same projection stops asking - because a decision names
+  // the request it answers, not because the turn moved on.
+  await client.open(await client.transport.drain());
+  await blockedReader.reconnect(tasks);
+  const answered = catchUp(blockedReader.snapshot(), { responsible: 'alice', host: runtime.id, provider: 'demo', hostConnected: true, taskId: blocked.id, projectId });
+  assert.deepEqual(answered.pending.approvals, [], 'the answered request is no longer outstanding');
+  assert.equal(answered.decisions.length, 1);
+  assert.equal(answered.decisions[0].actor, 'alice');
+  assert.equal(answered.decisions[0].value, 'Approval accept');
+  assert.equal(answered.decisions[0].basis, requested.requestId);
+  pass('the recorded decision clears the request it names and is attributed to who made it',
+    'alice, basis ' + requested.requestId);
+
+  // Nobody invented the approval: the request and the answer are both in the log, and the
+  // answer carries the person who gave it.
+  const approvalEvents = blockedReader.state.events.filter((e) => e.type === 'approval.requested' || e.type === 'decision.recorded');
+  assert.equal(approvalEvents.length, 2);
+  pass('both halves of the approval are in the encrypted log', approvalEvents.map((e) => e.type).join(' then '));
 
   // ---- criterion 2: the relay never sees content or credentials ----
   const relay = JSON.stringify({

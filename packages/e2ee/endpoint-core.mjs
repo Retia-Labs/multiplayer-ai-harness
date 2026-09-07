@@ -98,6 +98,24 @@ class Endpoint {
     return this.machine.getDevice(userId(user), deviceId(device), timeoutSecs);
   }
 
+  // The endpoints a user or an execution host has published, as identities a person can
+  // compare against a fingerprint shown on the machine itself. The relay supplies these, so
+  // nothing here is trusted by being listed: confirmEndpoint() is still the act that makes
+  // one readable, and this only gives a client something to put in front of a human.
+  async peerEndpoints(user) {
+    await this.track([user]);
+    const held = await this.machine.getUserDevices(userId(user), 5);
+    return held.devices()
+      .map((device) => ({
+        user,
+        device: device.deviceId.toString(),
+        curve25519: device.curve25519Key ? device.curve25519Key.toBase64() : null,
+        ed25519: device.ed25519Key ? device.ed25519Key.toBase64() : null,
+        verified: device.isVerified()
+      }))
+      .filter((endpoint) => endpoint.curve25519 && endpoint.ed25519);
+  }
+
   // Establish sessions with any of `users`' devices we have not talked to yet.
   async ensureSessions(users) {
     const missing = await this.machine.getMissingSessions(users.map(userId));

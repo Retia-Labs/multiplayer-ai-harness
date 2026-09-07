@@ -188,7 +188,26 @@
       pending.appendChild(el('p', 'cu-blocker', blocker.value));
       pending.appendChild(provenanceRow(blocker, onOpenSource));
     } else pending.appendChild(missing(blocker));
-    pending.appendChild(el('p', 'cu-missing', projection.pending.approvals.reason || 'No approvals are pending.'));
+    // Each outstanding approval is shown with the action it would authorise, because
+    // "approve?" with the action hidden is how people approve things they did not read.
+    const approvals = projection.pending.approvals || [];
+    if (approvals.length) {
+      const list = el('ul', 'cu-cards');
+      for (const entry of approvals) {
+        const card = el('li', 'cu-card cu-approval');
+        card.appendChild(el('p', 'cu-approval-action', entry.value.action));
+        if (entry.value.reason) card.appendChild(el('p', 'cu-approval-reason', entry.value.reason));
+        // An expired request is still outstanding. Saying so is the difference between
+        // "nobody has answered" and "this can no longer be answered".
+        if (entry.value.expired) card.appendChild(el('p', 'cu-approval-expired', 'This request expired before anyone answered it.'));
+        card.appendChild(provenanceRow(entry, onOpenSource));
+        list.appendChild(card);
+      }
+      pending.appendChild(list);
+    } else {
+      pending.appendChild(el('p', 'cu-missing',
+        'No approval on this task is waiting for an answer. A decision recorded against a request is what answers it.'));
+    }
     root.appendChild(section('Waiting on', pending));
 
     // --- followup ---

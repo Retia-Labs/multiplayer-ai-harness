@@ -18,6 +18,14 @@ function eventValid(e) {
     // catch-up view could only infer decisions from messages, which is exactly what #9
     // forbids: never attribute a decision or an approval to a person who did not make one.
     case 'decision.recorded':return typeof p.text==='string' && typeof p.actor==='string' && (p.basis===undefined||typeof p.basis==='string');
+    // An approval request is the one pending thing a task log can carry. Without it #9's
+    // catch-up view can say what was decided but never that the task is stopped waiting for
+    // somebody - and "blocked on you" is the single most useful thing a teammate arriving
+    // at an unfamiliar task can be told. Resolution is not a second event type: a
+    // decision.recorded whose basis is this id is what answers it, so an approval nobody
+    // answered stays visibly outstanding rather than being quietly cleared.
+    case 'approval.requested':return typeof p.id==='string' && typeof p.action==='string' &&
+      (p.reason===undefined||typeof p.reason==='string') && (p.expiresAt===undefined||integer(p.expiresAt));
     case 'task.completed':return ['completed','failed','cancelled'].includes(p.outcome);
     default:return false;
   }
@@ -37,6 +45,10 @@ function reduce(state,event) {
   if(event.type==='tool.completed')state.tools.push(p);
   if(event.type==='diff.updated')state.diffs=p.files;
   if(event.type==='activity.recorded')state.activity.push(p);
+  if(event.type==='approval.requested') {
+    if(state.approvals.some((a)=>a.id===p.id)) fail('task_item_conflict');
+    state.approvals.push(p);
+  }
   if(event.type==='decision.recorded')state.decisions.push(p);
   if(event.type==='task.completed')state.outcome=p.outcome;
   state.events.push(structuredClone(event));
@@ -81,7 +93,7 @@ export class EncryptedTaskReader {
       (this.floor.seq===0 ? this.floor.hash!==null : !/^[a-f0-9]{64}$/.test(this.floor.hash)))fail('invalid_local_checkpoint');
     this.floor=structuredClone(this.floor);
     this.seq=0;this.hash=null;this.hashes=new Map();this.ids=new Set();
-    this.state={title:null,objective:null,details:null,messages:[],plan:null,tools:[],diffs:[],activity:[],decisions:[],outcome:null,events:[]};
+    this.state={title:null,objective:null,details:null,messages:[],plan:null,tools:[],diffs:[],activity:[],approvals:[],decisions:[],outcome:null,events:[]};
     this.status={state:'idle',seq:0};this.queue=Promise.resolve();
   }
   setStatus(state,code) {this.status={state,seq:this.seq,...(code?{code}:{})};this.onStatus(this.status);}
