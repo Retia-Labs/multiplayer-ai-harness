@@ -38,6 +38,10 @@ class KeyExchange {
         seq INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, device_id TEXT NOT NULL,
         envelope TEXT NOT NULL, created_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS e2ee_mailbox_box ON e2ee_mailbox(user_id, device_id, seq);
+      CREATE TABLE IF NOT EXISTS e2ee_recovery(
+        user_id TEXT NOT NULL, scope TEXT NOT NULL, ciphertext TEXT NOT NULL,
+        version TEXT NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY(user_id, scope));
     `);
   }
 
@@ -52,11 +56,11 @@ class KeyExchange {
     if (runtimeId) {
       const pairing = this.store.runtimePairing(runtimeId);
       if (!pairing || !this.store.runtimeCredentialMatches(runtimeId, token)) throw problem('runtime_authentication_failed', 401);
-      return { id: runtimeId, user: matrixUser(runtimeId), teams: [pairing.teamId] };
+      return { kind: 'runtime', id: runtimeId, user: matrixUser(runtimeId), teams: [pairing.teamId] };
     }
     const account = this.store.userByToken(token);
     if (!account) throw problem('unauthenticated', 401);
-    return { id: account.id, user: matrixUser(account.id), teams: this.store.teamsFor(account.id).map((team) => team.id) };
+    return { kind: 'account', id: account.id, user: matrixUser(account.id), teams: this.store.teamsFor(account.id).map((team) => team.id) };
   }
 
   // An endpoint the caller may legitimately learn about: themselves, a teammate's account,
@@ -144,6 +148,39 @@ class KeyExchange {
     return rows.map((row) => JSON.parse(row.envelope));
   }
 
+  // ---- customer-held recovery ----
+  //
+  // The relay stores a blob it cannot open and does not know the shape of. That is the whole
+  // arrangement: an operator who wanted to read a customer's history from here would need the
+  // recovery key, and the recovery key is the one thing that never arrives.
+  //
+  // A recovery blob is readable only by the account that stored it - not by a teammate, not by
+  // a team owner. History is shared through #8's grants and handoffs, which are somebody
+  // deciding; a backup is somebody's own copy, and widening that would turn "the operator
+  // cannot read your history" into "anybody on your team can restore it".
+  putRecovery(principal, scope, ciphertext, version, now = Date.now()) {
+    if (!/^[A-Za-z0-9_:.-]{1,120}$/.test(String(scope || ''))) throw problem('invalid_recovery_scope');
+    if (typeof ciphertext !== 'string' || !ciphertext.length) throw problem('invalid_recovery_material');
+    if (ciphertext.length > 4 * 1024 * 1024) throw problem('record_too_large', 413);
+    this.db.prepare(`INSERT INTO e2ee_recovery VALUES (?,?,?,?,?)
+      ON CONFLICT(user_id, scope) DO UPDATE SET ciphertext=excluded.ciphertext, version=excluded.version, updated_at=excluded.updated_at`)
+      .run(principal.id, scope, ciphertext, String(version || '1'), now);
+    return { stored: true, scope, bytes: ciphertext.length };
+  }
+
+  getRecovery(principal, scope) {
+    const row = this.db.prepare('SELECT ciphertext, version, updated_at FROM e2ee_recovery WHERE user_id=? AND scope=?')
+      .get(principal.id, String(scope || ''));
+    if (!row) throw problem('no_recovery_material', 404);
+    return { ciphertext: row.ciphertext, version: row.version, updatedAt: row.updated_at };
+  }
+
+  listRecovery(principal) {
+    return this.db.prepare('SELECT scope, version, updated_at, LENGTH(ciphertext) AS bytes FROM e2ee_recovery WHERE user_id=?')
+      .all(principal.id)
+      .map((row) => ({ scope: row.scope, version: row.version, updatedAt: row.updated_at, bytes: row.bytes }));
+  }
+
   // ---- HTTP ----
 
   async handle(req, res, url) {
@@ -173,6 +210,15 @@ class KeyExchange {
         // moving without pretending the hub stores an identity it does not.
         if (['SigningKeysUpload', 'SignatureUpload', 'ToDevice', 'RoomMessage', 'KeysBackup'].includes(value.type)) return reply(200, {});
         throw problem('unsupported_key_request');
+      }
+      if (route === 'recovery') {
+        // An execution host has no customer recovery material and never will: what it holds
+        // is a log it wrote, not a person's history to restore.
+        if (principal.kind !== 'account') throw problem('client_required', 403);
+        if (value.op === 'put') return reply(200, this.putRecovery(principal, value.scope, value.ciphertext, value.version));
+        if (value.op === 'get') return reply(200, this.getRecovery(principal, value.scope));
+        if (value.op === 'list') return reply(200, { backups: this.listRecovery(principal) });
+        throw problem('unsupported_recovery_request');
       }
       if (route === 'deliver') return reply(200, this.deliver(principal, String(value.user || ''), String(value.device || ''), value.envelope));
       if (route === 'drain') {

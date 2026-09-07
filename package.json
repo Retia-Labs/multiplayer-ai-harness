@@ -45,6 +45,7 @@
     "test:help-inbox": "node test/help-inbox.js",
     "test:handover": "node test/handover.js",
     "test:related-work": "node test/related-work.js",
+    "test:recovery": "node test/recovery.js",
     "test:encrypted-real-task": "node test/encrypted-real-task.js",
     "test:encrypted-codex-task": "node test/encrypted-codex-task.js",
     "test:codex-confinement": "node test/codex-confinement.js",

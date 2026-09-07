@@ -614,6 +614,7 @@ class Hub {
     'e2ee/catchup.mjs',
     'e2ee/hub-key-transport.mjs',
     'e2ee/task-control.mjs',
+    'e2ee/recovery.mjs',
     'protocol/encrypted-task.mjs',
     'protocol/related-work.mjs'
   ]);
