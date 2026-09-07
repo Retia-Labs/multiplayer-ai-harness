@@ -6,6 +6,7 @@ on:
       - 'test/encrypted-task*.js'
       - 'test/teammate-enrollment*.js'
       - 'test/e2ee-import-forgery.js'
+      - 'test/hub-key-exchange.js'
       - 'test/codex*.js'
       - 'test/fixtures/encrypted-task*'
       - 'package*.json'
@@ -34,6 +35,7 @@ jobs:
       - run: npm run test:encrypted-task
       - run: npm run test:teammate-enrollment
       - run: npm run test:import-forgery
+      - run: npm run test:key-exchange
       - run: npm run test:protocol
       - run: npm run test:unit
       - run: npm run test:team

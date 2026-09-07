@@ -10,6 +10,7 @@ const { WebSocketServer } = require('ws');
 const { HubStore, uid } = require('./store');
 const { EncryptedTasks } = require('./encrypted-tasks');
 const { Enrollment } = require('./enrollment');
+const { KeyExchange } = require('./key-exchange');
 const { TeamOps, Errors, Roles, Commands } = require('../protocol');
 
 // Authorization failures carry a code so a caller can tell them apart. `fail` is used for
@@ -29,6 +30,7 @@ class Hub {
   constructor({ dbFile = ':memory:', staticDir = null, log = () => {} } = {}) {
     this.store = new HubStore(dbFile);
     this.enrollment = new Enrollment(this.store);
+    this.keyExchange = new KeyExchange(this.store);
     this.encryptedTasks = new EncryptedTasks(this.store, this.enrollment);
     this.staticDir = staticDir;
     this.log = log;
@@ -69,6 +71,9 @@ class Hub {
 
   handleHttp(req, res) {
     const url = new URL(req.url, 'http://x');
+    if (url.pathname.startsWith('/api/e2ee/')) {
+      return this.keyExchange.handle(req, res, url);
+    }
     if (url.pathname === '/api/enrollment' || url.pathname.startsWith('/api/enrollment/')) {
       return this.enrollment.handle(req, res, url);
     }
