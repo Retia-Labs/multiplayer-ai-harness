@@ -65,7 +65,9 @@ function fixtureEvents(payload) {
     {type:'diff.updated',payload:{files:[{path:payload.fixture.path,patch:payload.fixture.diff}]}},
     {type:'activity.recorded',payload:{description:payload.fixture.activity,paths:[payload.fixture.path]}},
     {type:'message.added',payload:{id:'answer',role:'assistant',text:payload.fixture.answer}},
-    {type:'task.completed',payload:{outcome:'completed'}}
+    // The fixture ends with a turn finishing, not with the task being declared done: only a
+    // person records the second, and this history has no person in it.
+    {type:'turn.completed',payload:{status:'completed'}}
   ];
 }
 const fixtureEventId=(taskId,index)=>'ev_'+createHash('sha256').update(taskId+':fixture:'+index).digest('hex').slice(0,32);

@@ -37,9 +37,12 @@ function translate(event) {
     return { type: 'plan.updated', payload: { steps } };
   }
   if (method === Events.TURN_COMPLETED) {
-    const outcome = event.status === TurnStatus.COMPLETED ? 'completed'
-      : event.status === 'interrupted' ? 'cancelled' : 'failed';
-    return { type: 'task.completed', payload: { outcome } };
+    // This used to write task.completed, which meant a task was finished the moment an agent
+    // stopped talking - before anybody had looked at what it did. The task's own outcome is
+    // somebody's decision and arrives on its own event; this records only what the turn did.
+    const status = event.status === TurnStatus.COMPLETED ? 'completed'
+      : event.status === 'interrupted' ? 'interrupted' : 'failed';
+    return { type: 'turn.completed', payload: { status } };
   }
   if (method !== Events.ITEM_COMPLETED || !event.item) return null;
   const item = event.item;
@@ -120,7 +123,10 @@ class EncryptedTaskRun {
     // reading this task later actually has.
     this.provider = provider;
     this.log = log;
-    this.written = 0;
+    // Continue the log rather than restarting it. Ids are derived from a running count, so a
+    // second turn on the same task starting from zero would collide with the first turn's
+    // events - which is what happens the moment anybody corrects an agent's work.
+    this.written = opened.reader.seq;
     this.dropped = new Map();
   }
 
