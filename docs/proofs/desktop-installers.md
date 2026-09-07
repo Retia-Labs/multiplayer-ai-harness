@@ -121,10 +121,23 @@ Artifacts from `npm run dist:win`, rebuilt from `80217ad` on 2026-09-07 and hash
 
 Read that table before handing anyone a build. `npm run dist:win` emits **four** installers,
 not three: declaring `nsis` for `x64` and `arm64` makes electron-builder produce a per-arch
-installer for each *and* a combined one carrying both. Only `Plexus-0.1.0-win-x64-setup.exe`
-has been installed and exercised; the arm64 and combined installers are built but untested,
-and which of the four is the artifact to distribute is an open decision, not a fact this
-record can settle. This table previously listed three files and a `latest.yml`; the rebuild
+installer for each *and* a combined one carrying both.
+
+**The artifact to hand out is `Plexus-0.1.0-win-setup.exe`, the combined one.** It installs
+the right architecture on either machine, so nobody has to know what they are running before
+they download, and there is no way to hand somebody the wrong file. That failure has already
+happened once on this slice, when a naming collision meant every "installer" was actually the
+portable binary - the cost of getting it wrong is not hypothetical. The price is size: 209 MB
+against 107 MB, because it carries both builds.
+
+The per-arch installers stay in the output for anyone who needs a smaller download and knows
+which they want; they are not what an internal tester is given. Only the x64 setup has been
+installed and exercised by hand, and the CI proof installs the per-arch build for the runner's
+own architecture - so the combined installer is assembled from exercised parts but has not
+itself been installed end to end. That is the one gap in this decision, and it closes the
+first time somebody installs it on a real machine.
+
+This is a distribution choice, not a finding. Reverse it by naming a different row here. This table previously listed three files and a `latest.yml`; the rebuild
 produced no `latest.yml` at all.
 
 The hashes name these exact files. They are not a claim of a deterministic build -
