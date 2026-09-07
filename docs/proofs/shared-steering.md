@@ -69,6 +69,13 @@ The separation is structural rather than a check. Text reaches an agent only thr
 provider call, and the test asserts the help text never enters that queue and never takes a
 place in the instruction order.
 
+Two holes in this feature were found by probing it rather than by the checks that were
+already passing, and both are fixed. A request sent with no thread was recorded against a
+null thread, so it could never be answered; help now belongs to a thread. And a resolution
+naming any invented id was accepted, which put an answer in the log for a question nobody
+asked and cleared a real open request while doing it. Open ids are now kept on the thread -
+so they survive a host restart - and a resolution is checked against them.
+
 ## Authority is current
 
 The host checks authority when the instruction arrives, not when the session began: a
@@ -88,11 +95,17 @@ shutdown. The completion now returns early if the runtime is stopping.
 
 ## Reproduce
 
-`npm run test:steering` - 19 checks: near-simultaneous ordering and outcomes, attribution,
-queued that never becomes delivered, duplicate retries, unbound and stale instructions, help
-never becoming agent input, an empty help request, interrupt binding and lifecycle, the
-stopping flag, **an interrupt while a command is executing**, no claim of undone effects,
-removal taking effect immediately, and an interrupt to a disconnected host.
+`npm run test:steering` - 22 checks: near-simultaneous ordering and outcomes, attribution,
+queued that never becomes delivered, a retry the host accepts exactly once, unbound and stale
+instructions, help never becoming agent input, an empty help request, a help request with no
+thread, a resolution for a request never made, interrupt binding and lifecycle, the stopping
+flag appearing and clearing, an interrupt while a command is executing, no claim of undone
+effects, removal taking effect immediately, and an interrupt to a disconnected host.
+
+Two of those checks assert things the earlier ones only appeared to. A retry matching its
+original reply does not prove the host refused it, so the host's accepted count is asserted
+directly; and a stopping flag that is allowed to be absent proves nothing, so it is asserted
+to appear and then clear.
 
 Regressions on this branch: protocol smoke, 16 unit, 68 team boundary, 10 codex acceptance
 and multiplayer browser e2e all pass.

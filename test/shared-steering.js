@@ -159,7 +159,10 @@ class Client {
   const again = await alice.command(threadId, { method: Commands.TURN_STEER, expectedTurnId: retryTurn, input: [{ type: 'text', text: 'only once' }] }, retryId);
   assert.equal(again.duplicate, true, 'the retry is answered as a duplicate');
   assert.equal(again.result.seq, first.result.seq, 'and it did not take a new place in the order');
-  pass('a retried instruction is answered, not delivered twice', 'seq ' + first.result.seq + ' both times');
+  // The reply matching is not enough: the host must never have accepted it a second time.
+  const acceptedAfterRetry = runtime.sessions.get(threadId)?.acceptedSteers ?? 0;
+  assert.equal(acceptedAfterRetry, first.result.seq, 'the host accepted it exactly once');
+  pass('a retried instruction is answered, not delivered twice', 'accepted once, seq ' + first.result.seq);
 
   await refused('steering without naming a turn is refused', Errors.TURN_BINDING_REQUIRED,
     () => alice.command(threadId, { method: Commands.TURN_STEER, input: [{ type: 'text', text: 'unbound' }] }));
@@ -191,6 +194,14 @@ class Client {
   await refused('a help request with no text for a person to read is refused', Errors.HELP_IS_NOT_INPUT,
     () => bob.command(threadId, { method: Commands.THREAD_HELP, text: '   ' }));
 
+  await refused('a help request addressed to no thread is refused', Errors.UNKNOWN_THREAD,
+    () => bob.op({ type: 'command', runtimeId: runtime.id, command: { method: Commands.THREAD_HELP, text: 'orphan' } }));
+
+  // Resolving something nobody asked for would put an answer in the log for a question that
+  // was never posed, and clear a real request while doing it.
+  await refused('resolving a help request that was never made is refused', Errors.UNKNOWN_HELP_REQUEST,
+    () => bob.command(threadId, { method: Commands.THREAD_HELP_RESOLVE, requestId: 'help_' + randomBytes(8).toString('hex') }));
+
   await alice.command(threadId, { method: Commands.THREAD_HELP_RESOLVE, requestId: help.result.requestId });
   assert.ok(events().some((e) => (e.method || '') === Events.HELP_RESOLVED), 'resolution is recorded too');
   pass('help is resolved by a person and recorded as such', help.result.requestId);
@@ -219,6 +230,12 @@ class Client {
   pass('the thread shows stopping until the turn actually ends', thread.status.activeFlags?.join(',') || thread.status.type);
 
   const completed = await waitFor(() => events().find((e) => e.method === Events.TURN_COMPLETED && e.turnId === liveTurn), 'turn ended');
+  const settledThread = await waitFor(() => {
+    const t = hub.store.getThread(threadId);
+    return t && !(t.status?.activeFlags || []).includes('stopping') ? t : null;
+  }, 'stopping cleared');
+  assert.equal(settledThread.interruptRequestedBy, null, 'and the request is no longer outstanding');
+  pass('stopping clears once the turn actually ends', 'status ' + settledThread.status.type);
   assert.ok(['interrupted', 'completed', 'failed'].includes(completed.status));
   const text = JSON.stringify(events());
   assert.equal(/undone|reverted|rolled back/i.test(text), false, 'nothing claims the work was undone');

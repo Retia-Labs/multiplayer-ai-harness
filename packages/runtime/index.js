@@ -294,14 +294,28 @@ class Runtime {
       // path from here into steerQueue or any provider call: the only way an agent ever sees
       // text is TURN_START or TURN_STEER, both of which a human types on purpose.
       case Commands.THREAD_HELP: {
+        // Help is about a piece of work, so it belongs to a thread. Without this a request
+        // addressed to nothing is recorded against a null thread and can never be answered.
+        if (!thread) throw new Error(Errors.UNKNOWN_THREAD + ': a help request belongs to a thread');
         const text = typeof cmd.text === 'string' ? cmd.text.trim() : '';
         if (!text) throw new Error(Errors.HELP_IS_NOT_INPUT + ': a help request needs text for a person to read');
         const requestId = 'help_' + crypto.randomBytes(8).toString('hex');
+        // Kept on the thread so it survives a host restart, and so resolving one can be
+        // checked against something rather than believed.
+        thread.openHelp = [...(thread.openHelp || []), requestId];
+        this.store.upsertThread(thread);
         this.appendEvent(threadId, { method: Events.HELP_REQUESTED, requestId, text, to: cmd.to || null, by });
         return { requestId };
       }
       case Commands.THREAD_HELP_RESOLVE: {
-        if (typeof cmd.requestId !== 'string' || !cmd.requestId) throw new Error(Errors.UNKNOWN_HELP_REQUEST);
+        if (!thread) throw new Error(Errors.UNKNOWN_THREAD + ': a help request belongs to a thread');
+        // Resolving something nobody asked for used to be accepted, which let an invented id
+        // clear a real request and put a resolution in the log for a question never posed.
+        if (typeof cmd.requestId !== 'string' || !(thread.openHelp || []).includes(cmd.requestId)) {
+          throw new Error(Errors.UNKNOWN_HELP_REQUEST + ': no such open help request on this thread');
+        }
+        thread.openHelp = (thread.openHelp || []).filter((id) => id !== cmd.requestId);
+        this.store.upsertThread(thread);
         this.appendEvent(threadId, { method: Events.HELP_RESOLVED, requestId: cmd.requestId, by });
         return { ok: true };
       }
