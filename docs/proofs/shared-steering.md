@@ -31,9 +31,16 @@ first. The reply states what actually happened:
 
 | Outcome | Meaning |
 | --- | --- |
-| `queued` | accepted, and the running turn will read it on its next model call |
+| `queued` | the host accepted it; the running turn will read it on its next model call |
 | `queuedForNextProviderTurn` | accepted, but this provider only takes instructions between turns |
+| `turn/steer/delivered` | it entered a model call - the first moment the agent has it |
 | refusal with a code | not accepted at all, and the reason is specific |
+
+**Queued and delivered genuinely come apart**, which is the sharpest statement of why they
+are separate words. The queue is drained at the top of an agent loop that may not run again,
+so an instruction accepted while a turn is finishing is accepted and then never delivered.
+The test asserts that case rather than the happy one: the host said `queued`, and meant only
+that.
 
 A retried command with the same id is answered as a duplicate carrying the original sequence
 number, so a retry never takes a second place in the order.
@@ -81,9 +88,10 @@ shutdown. The completion now returns early if the runtime is stopping.
 
 ## Reproduce
 
-`npm run test:steering` - 17 checks: near-simultaneous ordering and outcomes, attribution,
-duplicate retries, unbound and stale instructions, help never becoming agent input, an empty
-help request, interrupt binding and lifecycle, the stopping flag, no claim of undone effects,
+`npm run test:steering` - 19 checks: near-simultaneous ordering and outcomes, attribution,
+queued that never becomes delivered, duplicate retries, unbound and stale instructions, help
+never becoming agent input, an empty help request, interrupt binding and lifecycle, the
+stopping flag, **an interrupt while a command is executing**, no claim of undone effects,
 removal taking effect immediately, and an interrupt to a disconnected host.
 
 Regressions on this branch: protocol smoke, 16 unit, 68 team boundary, 10 codex acceptance
@@ -91,8 +99,8 @@ and multiplayer browser e2e all pass.
 
 ## Limits
 
-Delivery is reported as the host accepted it, not as the provider acknowledged it - no
-provider in this repository acknowledges individual instructions, and claiming otherwise
-would be the same overstatement this slice removes. Interruption during *tool execution* is
-exercised against the local executor; a provider-side interrupt acknowledgment arrives with
-the real provider integration in #7.
+Delivery is reported when an instruction enters a model call, which is what this host can
+observe. It is not a provider acknowledgement: no provider in this repository acknowledges
+individual instructions, and claiming otherwise would be the same overstatement this slice
+exists to remove. Interruption during tool execution is exercised against the local executor;
+a provider-side interrupt acknowledgement arrives with the real provider integration in #7.

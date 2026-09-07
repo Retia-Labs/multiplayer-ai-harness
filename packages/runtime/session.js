@@ -377,6 +377,9 @@ class TurnSession {
       while (this.steerQueue.length) {
         const s = this.steerQueue.shift();
         messages.push({ role: 'user', content: s.input.filter((i) => i.type === 'text').map((i) => i.text).join('\n') });
+        // The instruction is in the request now, so this is where queued becomes delivered.
+        // Anything earlier would be the host reporting its own intentions as the agent's.
+        this.emit(Events.TURN_STEER_DELIVERED, { seq: s.seq, by: s.by });
       }
       let msgItem = null, rsnItem = null;
       const calls = [];
