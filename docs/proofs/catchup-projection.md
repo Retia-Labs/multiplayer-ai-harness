@@ -97,9 +97,22 @@ Captures in `.artifacts/catchup/`: `catchup-current-1487.png`, `catchup-current-
 - `npm run test:catchup` - 12 checks: empty projection, sourcing, recorded vs derived, the
   five freshness states, unresolvable sources, and the late-join equality over a real
   encrypted log through the paired hub.
-- `npm run test:catchup:view` - 6 checks in real Chromium at both viewports: required slots,
-  recorded/derived visibly distinct, unknown, stale and empty states, source open and source
-  unavailable, and no horizontal clipping.
+- `npm run test:catchup:view` - 7 checks in real Chromium at both viewports: required slots,
+  recorded/derived visibly distinct, outcome and activity rendered, unknown, stale and empty
+  states, source open and source unavailable, no horizontal clipping, and agreement between
+  the browser's source resolver and the projection's `openSource`.
+
+The browser does not load the ESM projection module, so `resolveSource` in
+`apps/web/catchup.js` mirrors `openSource`. Two implementations of one rule is a drift risk,
+so the view test probes both with the same references and asserts they agree.
+
+## What the screen shows
+
+Scope row: freshness, covered range, responsible, execution host, provider, and the task's
+status with its provenance. Then objective, recorded decisions, current plan, recent changes,
+what the host reported doing, and what the task is waiting on. Every claim that came from an
+event carries a source link that opens that event; a reference that does not resolve renders
+as unavailable.
 
 ## Limits
 

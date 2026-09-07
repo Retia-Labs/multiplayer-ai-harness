@@ -98,6 +98,13 @@
       if (!field.value) item.title = field.reason;
       meta.appendChild(item);
     }
+    const outcome = projection.outcome || {};
+    const status = el('span', 'cu-fact');
+    status.appendChild(el('span', 'cu-fact-k', 'Status'));
+    status.appendChild(el('span', 'cu-fact-v', String(outcome.value || 'unknown').replace(/-/g, ' ')));
+    status.appendChild(el('span', outcome.provenance === 'recorded' ? 'cu-tag cu-tag-recorded' : 'cu-tag cu-tag-derived',
+      outcome.provenance === 'recorded' ? 'Recorded' : 'Read from the log'));
+    meta.appendChild(status);
     scope.appendChild(meta);
     scope.appendChild(el('p', 'cu-explain', projection.freshness.explain));
     root.appendChild(scope);
@@ -160,6 +167,20 @@
     } else changes.appendChild(missing(projection.changes));
     root.appendChild(section('Recent changes', changes));
 
+    // --- records: what the host reported doing ---
+    const activity = el('div');
+    if (projection.activity && projection.activity.length) {
+      const list = el('ul', 'cu-files');
+      for (const entry of projection.activity) {
+        const item = el('li', 'cu-activity');
+        item.appendChild(el('span', 'cu-activity-text', entry.value));
+        item.appendChild(provenanceRow(entry, onOpenSource));
+        list.appendChild(item);
+      }
+      activity.appendChild(list);
+    } else activity.appendChild(el('p', 'cu-missing', 'The host has recorded no activity on this task.'));
+    root.appendChild(section('What happened', activity));
+
     // --- records: what is outstanding ---
     const pending = el('div');
     const blocker = projection.pending.blocker;
@@ -205,5 +226,14 @@
     return root;
   }
 
-  global.PlexusCatchup = { renderCatchup, renderSource, FRESHNESS };
+  // Mirrors openSource() in packages/e2ee/catchup.mjs. The browser build does not load that
+  // module, so the rule lives in both places and the view test asserts they still agree.
+  function resolveSource(snapshot, source) {
+    const events = snapshot && Array.isArray(snapshot.events) ? snapshot.events : [];
+    const event = events[(source && source.seq) - 1];
+    if (!event || event.type !== source.type) return { available: false, reason: 'source_unavailable', source };
+    return { available: true, source, event };
+  }
+
+  global.PlexusCatchup = { renderCatchup, renderSource, resolveSource, FRESHNESS };
 })(typeof window !== 'undefined' ? window : globalThis);

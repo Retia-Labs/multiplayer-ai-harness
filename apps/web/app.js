@@ -892,7 +892,21 @@
     el.threadView.classList.add('hidden'); el.diffView.classList.add('hidden');
     el.catchupView.classList.remove('hidden'); el.catchupBtn.classList.add('active');
     window.PlexusCatchup.renderCatchup(state.catchup || empty, el.catchupView, {
-      onOpenTranscript: closeCatchup
+      onOpenTranscript: closeCatchup,
+      // A source link that does nothing is worse than no link: it says the claim is backed
+      // when nothing has been checked. Resolving against the snapshot this endpoint accepted
+      // means an absent record shows as absent.
+      onOpenSource: (source) => {
+        const opened = window.PlexusCatchup.resolveSource(state.catchupSnapshot, source);
+        const pane = document.createElement('aside');
+        pane.className = 'cu-source-pane';
+        pane.setAttribute('aria-label', 'Source record');
+        window.PlexusCatchup.renderSource(opened, pane);
+        const held = el.catchupView.querySelector('.cu-source-pane');
+        if (held) held.remove();
+        el.catchupView.appendChild(pane);
+        pane.scrollIntoView({ block: 'nearest' });
+      }
     });
   }
   function closeCatchup() {

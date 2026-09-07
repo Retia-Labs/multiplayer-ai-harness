@@ -73,6 +73,9 @@ const base = { responsible: 'Alex', host: "Alex's Mac", provider: 'Codex · Alex
   assert.ok(text.includes('Recover failed checkouts'), 'objective');
   assert.ok(text.includes('Maya'), 'decision actor');
   assert.ok(text.includes("Alex's Mac"), 'execution host');
+  assert.ok(text.includes('Ran the retry suite'), 'activity is rendered, not projected and dropped');
+  assert.ok(text.includes('Status'), 'outcome is shown');
+  assert.ok(text.includes('in progress'), 'outcome value');
   assert.equal((await page.$$('.cu-tag-recorded')).length >= 4, true);
   assert.equal((await page.$$('.cu-tag-derived')).length >= 1, true);
   await capture('catchup-current', DESKTOP);
@@ -114,6 +117,19 @@ const base = { responsible: 'Alex', host: "Alex's Mac", provider: 'Codex · Alex
   assert.equal(await page.evaluate((o) => fixture.renderSource(o), openSource(snapshot, { seq: 99, type: 'task.created' })), 'unavailable');
   assert.ok((await page.textContent('#source-pane')).includes('not available'));
   pass('an unresolvable source renders as unavailable, not as an empty panel', 'source-unavailable');
+
+  // The browser resolver and the projection's openSource must not drift apart.
+  const probes = [{ seq: 1, type: 'task.created' }, { seq: 4, type: 'decision.recorded' }, { seq: 99, type: 'task.created' }, { seq: 2, type: 'plan.updated' }];
+  for (const probe of probes) {
+    const inBrowser = await page.evaluate(([snap, p]) => {
+      const r = window.PlexusCatchup.resolveSource(snap, p);
+      return { available: r.available, type: r.event ? r.event.type : null };
+    }, [snapshot, probe]);
+    const inNode = openSource(snapshot, probe);
+    assert.equal(inBrowser.available, inNode.available, 'resolver disagreement on ' + JSON.stringify(probe));
+    assert.equal(inBrowser.type, inNode.event ? inNode.event.type : null);
+  }
+  pass('the browser resolver agrees with the projection on every probe', probes.length + ' references');
 
   fs.writeFileSync(path.join(out, 'view.json'), JSON.stringify({
     ranAt: new Date().toISOString(), browser: await page.evaluate(() => navigator.userAgent),

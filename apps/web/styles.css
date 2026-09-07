@@ -388,3 +388,6 @@ tr.hunk td { background: var(--bg-raised); color: var(--text-faint); padding: 3p
   .cu-meta { gap: 6px 10px; }
   .cu-step { flex-direction: column; gap: 2px; }
 }
+.cu-activity { display: flex; flex-direction: column; gap: 2px; }
+.cu-activity-text { font-size: 13px; }
+.cu-source-pane { border-top: 1px solid var(--border-soft); margin-top: 20px; padding-top: 16px; }
