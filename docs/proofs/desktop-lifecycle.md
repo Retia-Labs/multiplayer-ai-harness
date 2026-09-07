@@ -74,6 +74,16 @@ the host process is gone according to the OS.
 
 `npm run test:desktop` (the existing smoke) still passes.
 
+## What this broke, and why that was the right kind of breakage
+
+The installed-app CI job was cancelled on both platforms and had to terminate orphan Plexus
+processes. Playwright's `app.close()` relies on an app exiting when its windows close, and a
+tray app legitimately does not - which is exactly the behaviour this issue asked for.
+
+So the three desktop tests now quit explicitly, the same way a person does by choosing Quit
+from the tray. Nothing about the product changed to accommodate them; what changed is that the
+tests stopped depending on a behaviour the product no longer has.
+
 ## Limits, stated rather than implied
 
 **The tray icon itself was not clicked.** No platform this is built for exposes a tray click to
