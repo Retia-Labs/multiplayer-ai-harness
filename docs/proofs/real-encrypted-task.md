@@ -47,22 +47,27 @@ someone reading a gap in a history.
 ## The criteria
 
 **1 · a real provider task, file changes, meaningful state through the encrypted path** -
-**partly met, and the missing half is evidenced.** A real Codex 0.153.4 turn runs on the host
-and reaches the log: 6 encrypted events in 17 seconds, replayed by the creator, read by #9's
-projection, with the agent quoting a file only the authorized workspace contains. **File
-changes are not produced**, because the only mode with measured project confinement is
-read-only. See [the confinement evidence](codex-confinement.md); enabling `workspace-write`
-would satisfy this clause by shipping an agent that can write outside the project a teammate
-authorised.
+met. A real Codex 0.153.4 turn runs on the host and reaches the log: 7 encrypted events,
+replayed by the creator, read by #9's projection, with the agent quoting a file only the
+authorized workspace contains **and producing one** - it proposed `WINDOW.md` and the host
+wrote it, recorded as `diff.updated`.
+
+The file changes are the host's, not the provider's, and that is deliberate. The provider is
+pinned to `read-only`, the only mode whose confinement was measured; the contents it proposes
+go through `TurnSession.writeFile`, which refuses paths outside the project, refuses symlinks
+out of it, and consults the approval policy. Enabling `workspace-write` instead would have
+satisfied this clause by shipping an agent that can write outside the project a teammate
+authorised. See [the confinement evidence](codex-confinement.md).
 
 **2 · credentials stay in the provider/host relationship** - met. Canary and token scans over
 everything the relay serves and stores, after a real provider run.
 
 **3 · workspace restrictions and provider capabilities enforced locally and shown
 accurately** - met, and the accuracy is the point. The provider gate stays closed by default;
-what an operator can open is pinned to read-only, reports `writes: false`, and appears in the
-fleet list as "Codex CLI (read-only)" with its reason. `codex-app-server` and `claude-code`
-stay closed entirely.
+what an operator can open is pinned to read-only and reports **both** halves of what that
+means: `providerWrites: false` and `writes: true`, with `writesVia: 'host-applied-edits'`. It
+appears in the fleet list as "Codex CLI (read-only, host-applied edits)" with the reason
+spelled out. `codex-app-server` and `claude-code` stay closed entirely.
 
 **4 · product identifiers separate from provider ones; solo start** - met. The fleet
 descriptor carries no workspace path and no task id, a solo creator starts a task with no
@@ -74,8 +79,12 @@ other teammate present, and Codex's own session identity stays inside the host a
   runs the same way everywhere: endpoint publication, solo creation, an unmapped project left
   alone, a real turn written and replayed, the catch-up projection reading it, and the relay
   canary scans.
-- `npm run test:encrypted-codex-task` - 7 checks with the actual CLI. Skips loudly without an
+- `npm run test:encrypted-codex-task` - 9 checks with the actual CLI, including the file it
+  changed and the fact that every changed path is inside the project. Skips loudly without an
   authenticated Codex.
+- `npm run test:confined-writes` - 10 checks with no Codex at all: parsing a proposal, applying
+  it through the host's writer, refusing a path outside the project, refusing one routed
+  through a symlink, and a cancelled turn writing nothing.
 - `npm run test:codex-confinement` - the sandbox evidence. Also skips loudly.
 
 ## Limits
