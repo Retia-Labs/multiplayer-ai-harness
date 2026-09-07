@@ -12,7 +12,9 @@ function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.
   const port = 7800 + Math.floor(Math.random() * 100);
   const launchEnv = { ...process.env, ELECTRON_DISABLE_SANDBOX: '1', HUB_PORT: String(port), HARNESS_USER: 'dana' };
   delete launchEnv.ELECTRON_RUN_AS_NODE;
-  if (process.env.DESKTOP_EXECUTABLE && process.platform === 'win32') launchEnv.PATH = process.env.SystemRoot + '/system32;' + process.env.SystemRoot;
+  if (process.env.DESKTOP_EXECUTABLE) launchEnv.PATH = process.platform === 'win32'
+    ? process.env.SystemRoot + '/system32;' + process.env.SystemRoot
+    : '/usr/bin:/bin';
   const app = await electron.launch({
     executablePath: process.env.DESKTOP_EXECUTABLE || undefined,
     args: [...(process.env.DESKTOP_EXECUTABLE ? [] : ['apps/desktop/main.js']), '--user-data-dir=' + path.join(tmp, 'ud'), '--no-sandbox'],

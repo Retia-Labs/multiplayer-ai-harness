@@ -19,6 +19,13 @@ async function capture(page, name) {
   }
   await page.setViewportSize({ width: 1360, height: 860 });
 }
+// DESKTOP_EXECUTABLE points these same checks at an installed copy instead of the checkout.
+const packaged = process.env.DESKTOP_EXECUTABLE || null;
+const launch = (dataDir, env) => electron.launch({
+  executablePath: packaged || undefined,
+  args: [...(packaged ? [] : ['apps/desktop/main.js']), '--user-data-dir=' + dataDir, '--no-sandbox'],
+  cwd: root, env
+});
 (async () => {
   const unavailable = http.createServer((_req, res) => { res.writeHead(503); res.end(); });
   await new Promise((resolve) => unavailable.listen(0, '127.0.0.1', resolve));
@@ -29,8 +36,9 @@ async function capture(page, name) {
   delete env.ELECTRON_RUN_AS_NODE;
   // Verify the app's services require no system Node on PATH.
   if (process.platform === 'win32') env.PATH = `${process.env.SystemRoot}\\system32;${process.env.SystemRoot}`;
+  else if (packaged) env.PATH = '/usr/bin:/bin';
   try {
-    app = await electron.launch({ cwd: root, args: ['apps/desktop/main.js', '--user-data-dir=' + temp, '--no-sandbox'], env });
+    app = await launch(temp, env);
     const page = await app.firstWindow();
     await page.waitForSelector('#step-hub.working');
     await capture(page, 'starting');
@@ -61,7 +69,7 @@ async function capture(page, name) {
     const runtimeConfig = path.join(failureData, 'harness', 'runtime.json');
     fs.mkdirSync(path.dirname(runtimeConfig), { recursive: true });
     fs.writeFileSync(runtimeConfig, JSON.stringify({ maxPreset: 'invalid-preset' }));
-    app = await electron.launch({ cwd: root, args: ['apps/desktop/main.js', '--user-data-dir=' + failureData, '--no-sandbox'], env });
+    app = await launch(failureData, env);
     const failedPage = await app.firstWindow();
     await failedPage.waitForSelector('#step-ui.failed', { timeout: 20000 });
     assert.match(await failedPage.textContent('#detail-runtime'), /unknown max preset/);
