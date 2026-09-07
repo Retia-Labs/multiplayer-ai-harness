@@ -1,10 +1,12 @@
-name: Encrypted task replay and teammate enrolment
+name: Encrypted task, enrolment and catch-up
 on:
   pull_request:
     paths:
       - 'packages/**'
       - 'test/encrypted-task*.js'
       - 'test/teammate-enrollment*.js'
+      - 'test/catchup*.js'
+      - 'apps/web/catchup.js'
       - 'test/e2ee-import-forgery.js'
       - 'test/hub-key-exchange.js'
       - 'test/codex*.js'
@@ -36,6 +38,8 @@ jobs:
       - run: npm run test:teammate-enrollment
       - run: npm run test:import-forgery
       - run: npm run test:key-exchange
+      - run: npm run test:catchup
+      - run: npm run test:catchup:view
       - run: npm run test:protocol
       - run: npm run test:unit
       - run: npm run test:team
@@ -47,4 +51,5 @@ jobs:
           path: |
             .artifacts/encrypted-task/*.json
             .artifacts/teammate-enrollment/*.json
+            .artifacts/catchup/*.json
           if-no-files-found: warn

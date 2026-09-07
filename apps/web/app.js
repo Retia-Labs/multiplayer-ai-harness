@@ -6,7 +6,7 @@
     app: $('#app'), threadList: $('#thread-list'), threadSearch: $('#thread-search'), newThread: $('#btn-new-thread'), navFleet: $('#nav-fleet'),
     me: $('#me'), settingsBtn: $('#btn-settings'),
     topbarTitle: $('#topbar-title'), topbarBranch: $('#topbar-branch'), topbarWorktree: $('#topbar-worktree'), topbarRuntime: $('#topbar-runtime'),
-    presence: $('#presence'), changesBtn: $('#btn-changes'), assignBtn: $('#btn-assign'), assignLabel: $('#assign-label'), auditBtn: $('#btn-audit'),
+    presence: $('#presence'), changesBtn: $('#btn-changes'), assignBtn: $('#btn-assign'), assignLabel: $('#assign-label'), auditBtn: $('#btn-audit'), catchupBtn: $('#btn-catchup'), catchupView: $('#catchup-view'),
     activityPanel: $('#activity-panel'),
     assignModal: $('#assign-modal'), closeAssign: $('#btn-close-assign'), assignUser: $('#assign-user'), assignNote: $('#assign-note'), doAssign: $('#btn-do-assign'), unassign: $('#btn-unassign'),
     fleetView: $('#fleet-view'), fleetRuntime: $('#fleet-runtime'), fleetProject: $('#fleet-project'), addProject: $('#btn-add-project'), fleetWorktree: $('#fleet-worktree'),
@@ -568,10 +568,10 @@
   function updateTopbar() {
     const t = state.activeThread;
     if (!t) {
-      el.topbarTitle.textContent = 'Fleet'; el.topbarBranch.classList.add('hidden'); el.topbarWorktree.classList.add('hidden'); el.topbarRuntime.classList.add('hidden'); el.changesBtn.classList.add('hidden'); el.assignBtn.classList.add('hidden'); el.auditBtn.classList.add('hidden');
+      el.topbarTitle.textContent = 'Fleet'; el.topbarBranch.classList.add('hidden'); el.topbarWorktree.classList.add('hidden'); el.topbarRuntime.classList.add('hidden'); el.changesBtn.classList.add('hidden'); el.assignBtn.classList.add('hidden'); el.auditBtn.classList.add('hidden'); el.catchupBtn.classList.add('hidden'); closeCatchup();
       return;
     }
-    el.assignBtn.classList.remove('hidden'); el.auditBtn.classList.remove('hidden');
+    el.assignBtn.classList.remove('hidden'); el.auditBtn.classList.remove('hidden'); el.catchupBtn.classList.remove('hidden');
     el.assignLabel.innerHTML = '';
     if (t.assignee) { el.assignLabel.append(avatar(t.assignee, 'sm'), document.createTextNode(' ' + t.assignee.name)); el.assignLabel.parentElement.title = 'Assigned to ' + t.assignee.name + (t.handoffNote ? ' — ' + t.handoffNote : ''); }
     else el.assignLabel.textContent = 'Hand off';
@@ -871,6 +871,49 @@
     state.diffSel = Math.min(state.diffSel, Math.max(state.diffFiles.length - 1, 0));
     renderDiff();
   }
+  // The catch-up screen renders a projection built on this endpoint. Until a task carries
+  // one, it renders the projection of an empty log - which is an honest screen saying
+  // nothing has been recorded, not a blank one implying there is nothing to know.
+  function openCatchup() {
+    const empty = { version: 1, scope: { taskId: null, projectId: null, title: state.activeThread?.title || null, from: 0, through: 0, events: 0 },
+      freshness: { state: 'unknown', through: 0, age: null, explain: 'This task has no verified event log on this endpoint yet.' },
+      responsible: { value: null, provenance: 'unavailable', reason: 'No responsible teammate is recorded for this task.' },
+      host: { value: null, provenance: 'unavailable', reason: 'No execution host is recorded for this task.' },
+      provider: { value: null, provenance: 'unavailable', reason: 'No provider is recorded for this task.' },
+      hostConnected: null,
+      objective: { value: null, provenance: 'unavailable', reason: 'This log has no creation event, so the objective is unknown.' },
+      decisions: [], plan: { value: null, provenance: 'unavailable', reason: 'No plan has been recorded for this task.' },
+      currentStep: { value: null, provenance: 'unavailable', reason: 'No plan has been recorded for this task.' },
+      changes: { value: null, provenance: 'unavailable', reason: 'No file changes have been recorded for this task.' },
+      activity: [], outcome: { value: 'in-progress', provenance: 'derived', sources: [] },
+      pending: { approvals: { value: null, provenance: 'unavailable', reason: 'This task log records no approval requests.' },
+        blocker: { value: null, provenance: 'unavailable', reason: 'Nothing in the log identifies a blocker.' } } };
+    state.catchupOpen = true;
+    el.threadView.classList.add('hidden'); el.diffView.classList.add('hidden');
+    el.catchupView.classList.remove('hidden'); el.catchupBtn.classList.add('active');
+    window.PlexusCatchup.renderCatchup(state.catchup || empty, el.catchupView, {
+      onOpenTranscript: closeCatchup,
+      // A source link that does nothing is worse than no link: it says the claim is backed
+      // when nothing has been checked. Resolving against the snapshot this endpoint accepted
+      // means an absent record shows as absent.
+      onOpenSource: (source) => {
+        const opened = window.PlexusCatchup.resolveSource(state.catchupSnapshot, source);
+        const pane = document.createElement('aside');
+        pane.className = 'cu-source-pane';
+        pane.setAttribute('aria-label', 'Source record');
+        window.PlexusCatchup.renderSource(opened, pane);
+        const held = el.catchupView.querySelector('.cu-source-pane');
+        if (held) held.remove();
+        el.catchupView.appendChild(pane);
+        pane.scrollIntoView({ block: 'nearest' });
+      }
+    });
+  }
+  function closeCatchup() {
+    if (!state.catchupOpen) return;
+    state.catchupOpen = false; el.catchupView.classList.add('hidden'); el.catchupBtn.classList.remove('active');
+    if (state.activeThreadId) el.threadView.classList.remove('hidden'); else el.fleetView.classList.remove('hidden');
+  }
   function closeDiff() {
     if (!state.diffOpen) return;
     state.diffOpen = false; el.diffView.classList.add('hidden'); el.changesBtn.classList.remove('active');
@@ -979,6 +1022,7 @@
       } catch (e) { toast('⚠ ' + esc(e.message)); }
     });
     el.changesBtn.addEventListener('click', () => (state.diffOpen ? closeDiff() : openDiff()));
+    el.catchupBtn.addEventListener('click', () => (state.catchupOpen ? closeCatchup() : openCatchup()));
     el.closeDiff.addEventListener('click', closeDiff);
     el.commitBtn.addEventListener('click', async () => {
       const msg = el.commitMsg.value.trim() || 'Changes from harness';
