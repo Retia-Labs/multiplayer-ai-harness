@@ -21,7 +21,7 @@ const { HttpKeyTransport } = require('../packages/e2ee/http-transport.mjs');
 const { EncryptedTaskTransport, createEncryptedTask, newId } = require('../packages/e2ee/task-log.mjs');
 const { matrixUser } = require('../packages/protocol/encrypted-task.mjs');
 const { EncryptedTaskState, EncryptedFixtureHost, fixtureEvents, fixtureEventId } = require('../packages/runtime/encrypted-task');
-const { EnrollmentTransport, announcement, confirmTeammateEndpoint, grantProjectAccess } = require('../packages/e2ee/enrollment.mjs');
+const { EnrollmentTransport, announcement, confirmTeammateEndpoint, grantProjectAccess, handOffHistory } = require('../packages/e2ee/enrollment.mjs');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-enrolment-browser-'));
 const root = path.join(__dirname, '..');
@@ -114,10 +114,12 @@ const pass = (name, detail) => { checks.push({ name, status: 'pass' }); console.
   pass('an account and a task id read nothing from the browser', blind.error);
 
   await confirmTeammateEndpoint(owner, ownerEnroll, team.id, { userId: mate.id, ...identity, device: 'BROWSER' }, { confirmed: true });
-  const handoff = await grantProjectAccess(owner, ownerEnroll, { teamId: team.id, projectId: task.projectId, member: { userId: mate.id, device: 'BROWSER' }, taskIds: [task.id] });
+  await grantProjectAccess(owner, ownerEnroll, { teamId: team.id, projectId: task.projectId, member: { userId: mate.id, device: 'BROWSER' }, taskIds: [task.id] });
+  await host.confirmEndpoint({ ...identity, user: matrixUser(mate.id), device: 'BROWSER' }, { confirmed: true });
+  const handoff = await handOffHistory(host, { teamId: team.id, projectId: task.projectId, member: { userId: mate.id, device: 'BROWSER' }, taskIds: [task.id] });
   await page.evaluate((id) => fixture.confirm(id), owner.identity());
   await page.evaluate((id) => fixture.confirm(id), host.identity());
-  const accepted = await page.evaluate((h) => fixture.accept(h), handoff);
+  const accepted = await page.evaluate(([h, w]) => fixture.accept(h, w), [handoff, host.identity()]);
   assert.ok(accepted.sessions.length > 0);
   const view = await page.evaluate(() => fixture.reconnect());
   assert.equal(view.seq, events.length);
@@ -153,10 +155,12 @@ const pass = (name, detail) => { checks.push({ name, status: 'pass' }); console.
   pass('the rebuilt browser still holds the grant and still cannot read', afterWipe.error);
 
   await confirmTeammateEndpoint(owner, ownerEnroll, team.id, { userId: mate.id, ...rebuilt.identity, device: 'BROWSER2' }, { confirmed: true });
-  const rehandoff = await grantProjectAccess(owner, ownerEnroll, { teamId: team.id, projectId: task.projectId, member: { userId: mate.id, device: 'BROWSER2' }, taskIds: [task.id] });
+  await grantProjectAccess(owner, ownerEnroll, { teamId: team.id, projectId: task.projectId, member: { userId: mate.id, device: 'BROWSER2' }, taskIds: [task.id] });
+  await host.confirmEndpoint({ ...rebuilt.identity, user: matrixUser(mate.id), device: 'BROWSER2' }, { confirmed: true });
+  const rehandoff = await handOffHistory(host, { teamId: team.id, projectId: task.projectId, member: { userId: mate.id, device: 'BROWSER2' }, taskIds: [task.id] });
   await page.evaluate((id) => fixture.confirm(id), owner.identity());
   await page.evaluate((id) => fixture.confirm(id), host.identity());
-  await page.evaluate((h) => fixture.accept(h), rehandoff);
+  await page.evaluate(([h, w]) => fixture.accept(h, w), [rehandoff, host.identity()]);
   const recovered = await page.evaluate(() => fixture.reconnect());
   assert.equal(recovered.seq, events.length);
   assert.deepEqual(recovered.events, events);

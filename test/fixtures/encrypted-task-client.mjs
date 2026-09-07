@@ -26,8 +26,8 @@ globalThis.fixture={
   identity(){return endpoint.identity();},
   announce(teamId){return announceEndpoint(endpoint,enrollment,teamId);},
   // The handoff is what makes an imported session readable, and only its own session ids.
-  async accept(handoff){
-    const accepted=await acceptProjectAccess(endpoint,handoff);
+  async accept(handoff,writer){
+    const accepted=await acceptProjectAccess(endpoint,{history:handoff},{writer});
     for(const id of accepted.sessions)reader.admittedSessions.add(id);
     localStorage.setItem(config.task.id+':admitted',JSON.stringify([...reader.admittedSessions]));
     return {imported:accepted.imported,sessions:accepted.sessions};
