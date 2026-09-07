@@ -169,4 +169,37 @@ class CodexExecBackend {
   }
 }
 
-module.exports = { CodexExecBackend, translate, available, sandboxFlags, buildArgs, MAX_STEER_FOLLOWUPS };
+// The only Codex configuration with evidence behind it on every supported platform.
+//
+// Measured on win32 with CLI 0.153.4: under `--sandbox workspace-write` the patch tool
+// refuses to write outside the project, but a shell command does not - PowerShell wrote a
+// file one directory above the workspace and exited 0. Under `--sandbox read-only` the same
+// write is refused by the operating system. So read-only is confined and workspace-write is
+// not, and a wrapper that could be talked into the second one would undo the point of the
+// first. Session settings are ignored here on purpose.
+//
+// See docs/proofs/codex-confinement.md for the reproduction.
+class ConfinedCodexExecBackend extends CodexExecBackend {
+  constructor(options = {}) {
+    super(options);
+    this.id = 'codex-cli';
+    this.label = 'Codex CLI (read-only)';
+    this.confinedTo = 'read-only';
+  }
+  capabilities() {
+    return { ...super.capabilities(), writes: false, sandbox: this.confinedTo, approvals: false };
+  }
+  runOnce(session, state, prompt) {
+    // A fresh view of the session with the sandbox pinned. Mutating the caller's settings
+    // would leave the rest of the host believing it had asked for something it had not.
+    const confined = Object.create(session);
+    confined.settings = { ...(session.settings || {}), sandboxPolicy: this.confinedTo };
+    const result = super.runOnce(confined, state, prompt);
+    // The child is spawned against the derived view, so hand the real session its handle
+    // back or an interrupt would have nothing to kill.
+    if (confined.child) session.child = confined.child;
+    return result;
+  }
+}
+
+module.exports = { CodexExecBackend, ConfinedCodexExecBackend, translate, available, sandboxFlags, buildArgs, MAX_STEER_FOLLOWUPS };

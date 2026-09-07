@@ -48,10 +48,13 @@ function writeOwnerFileAtomic(file, contents) {
 const PRESET_ORDER = ['read-only', 'agent-untrusted', 'agent', 'full-access'];
 
 class Runtime {
-  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, maxPreset = 'agent', encryptedTasksOnly = false, log = () => {} }) {
+  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, maxPreset = 'agent', encryptedTasksOnly = false, codexReadOnly = false, log = () => {} }) {
     this.hubUrl = hubUrl;
     this.org = org;
     this.encryptedTasksOnly = encryptedTasksOnly;
+    // Off unless an operator asks for it. Even then it is the read-only Codex, because that
+    // is the only mode whose project confinement has been measured rather than assumed.
+    this.codexReadOnly = codexReadOnly === true;
     this.userName = userName || os.userInfo().username;
     this.dataDir = dataDir || path.join(os.homedir(), '.harness');
     fs.mkdirSync(this.dataDir, { recursive: true });
@@ -97,13 +100,21 @@ class Runtime {
       list.push({ id, label: { openai: 'OpenAI', anthropic: 'Anthropic', openrouter: 'OpenRouter' }[id], configured: !!(cfg && cfg.apiKey), models: DEFAULT_MODELS[id] || [] });
     }
     list.push({ id: 'ollama', label: 'Ollama / local', configured: true, models: DEFAULT_MODELS.ollama });
-    list.push({ id: 'codex-cli', label: 'Codex CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
+    list.push(this.codexReadOnly
+      ? { id: 'codex-cli', label: 'Codex CLI (read-only)', configured: true, reason: 'confined to read-only: workspace-write does not confine shell commands', writes: false, models: [] }
+      : { id: 'codex-cli', label: 'Codex CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
     list.push({ id: 'claude-code', label: 'Claude Code CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
     return list;
   }
 
   provider(id) {
     if (id === 'demo') return { id: 'demo' };
+    if (id === 'codex-cli' && this.codexReadOnly) {
+      // Opened for the one configuration measured to hold. Writes are not available, which
+      // is a real limitation and is reported as one rather than hidden behind a label.
+      const { ConfinedCodexExecBackend } = require('./codex-exec');
+      return new ConfinedCodexExecBackend({ bin: process.env.CODEX_BIN || 'codex' });
+    }
     if (id === 'codex-cli' || id === 'codex-app-server' || id === 'claude-code') {
       throw new Error(Errors.PROVIDER_NOT_ISOLATED + ': this CLI adapter is hidden until project-confined reads and writes are proven');
     }

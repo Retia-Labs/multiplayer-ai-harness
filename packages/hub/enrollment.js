@@ -219,11 +219,30 @@ class Enrollment {
 
   // ---- HTTP ----
 
-  user(req) {
+  // An account, or a paired execution host reading its own team.
+  //
+  // The host has to know which endpoints are verified: it decides whose task requests to
+  // open and whose devices may be handed a key, and both of those are enrolment questions.
+  // It may only ever read. Confirming an endpoint or granting project access stays with
+  // accounts, because a host that could vouch for endpoints could admit itself an audience.
+  principal(req) {
     const header = req.headers.authorization || '';
-    const account = this.store.userByToken(header.startsWith('Bearer ') ? header.slice(7) : '');
+    const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+    const runtimeId = req.headers['x-plexus-runtime'];
+    if (runtimeId) {
+      const pairing = this.store.runtimePairing(runtimeId);
+      if (!pairing || !this.store.runtimeCredentialMatches(runtimeId, token)) throw problem('runtime_authentication_failed', 401);
+      return { runtimeId, teamId: pairing.teamId };
+    }
+    const account = this.store.userByToken(token);
     if (!account) throw problem('unauthenticated', 401);
-    return account;
+    return { account };
+  }
+
+  user(req) {
+    const principal = this.principal(req);
+    if (!principal.account) throw problem('client_required', 403);
+    return principal.account;
   }
 
   async handle(req, res, url) {
@@ -232,8 +251,12 @@ class Enrollment {
       res.end(JSON.stringify(value));
     };
     try {
-      const account = this.user(req);
+      const principal = this.principal(req);
       const parts = url.pathname.split('/').filter(Boolean).slice(2); // after /api/enrollment
+      // A host reads; it does not decide. Every route below that changes a verdict needs an
+      // account, and this is where that line is drawn rather than in each handler.
+      if (principal.runtimeId && req.method !== 'GET') throw problem('client_required', 403);
+      const account = principal.account;
       let body;
       if (req.method === 'POST') {
         let size = 0; const chunks = [];
@@ -241,15 +264,19 @@ class Enrollment {
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { throw problem('invalid_enrollment_request'); }
       }
       const teamId = String((body && body.teamId) || url.searchParams.get('team') || '');
-      if (!this.store.membership(teamId, account.id)) throw problem('not_a_member', 403);
+      if (principal.runtimeId) {
+        if (teamId !== principal.teamId) throw problem('foreign_runtime', 403);
+      } else if (!this.store.membership(teamId, account.id)) throw problem('not_a_member', 403);
 
       if (req.method === 'GET' && parts.length === 0) {
         const projectId = url.searchParams.get('project');
         return reply(200, {
           teamId,
-          me: { userId: account.id, role: this.store.membership(teamId, account.id).role },
+          me: principal.runtimeId
+            ? { runtimeId: principal.runtimeId, role: 'execution-host' }
+            : { userId: account.id, role: this.store.membership(teamId, account.id).role },
           endpoints: this.endpoints(teamId),
-          projects: this.projectsFor(teamId, account.id),
+          projects: principal.runtimeId ? [] : this.projectsFor(teamId, account.id),
           ...(projectId ? { participants: this.participants(teamId, projectId) } : {})
         });
       }
