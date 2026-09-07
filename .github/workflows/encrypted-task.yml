@@ -26,7 +26,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -44,6 +44,7 @@ jobs:
       - run: npm run test:key-exchange
       - run: npm run test:catchup
       - run: npm run test:catchup:view
+      - run: npm run test:catchup:encrypted
       - run: npm run test:protocol
       - run: npm run test:unit
       - run: npm run test:team
