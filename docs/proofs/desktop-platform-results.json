@@ -1,0 +1,86 @@
+{
+  "testedCommit": "b574cb34f2b6fd3fd1c33f99b3f817991e953d30",
+  "workflow": "https://github.com/Retia-Labs/multiplayer-ai-harness/actions/runs/34049107661",
+  "platforms": {
+    "darwin-arm64": {
+      "testedCommit": "b574cb34f2b6fd3fd1c33f99b3f817991e953d30",
+      "workflow": "https://github.com/Retia-Labs/multiplayer-ai-harness/actions/runs/34049107661",
+      "ranAt": "2026-09-06T17:38:13.149Z",
+      "platform": "darwin",
+      "arch": "arm64",
+      "os": "macOS 15.7.9",
+      "electron": "44.2.0",
+      "installer": {
+        "file": "Plexus-0.1.0-mac-arm64.dmg",
+        "bytes": 130482184,
+        "sha256": "89ea5812c0ae2e1ba20ac247c12bfc439dced500c987288eace23d6b6b05c515"
+      },
+      "installedTo": "/var/folders/bl/vzjcvbz95c3dk19cb0fw46180000gn/T/plexus-install-proof/Plexus.app/Contents/MacOS/Plexus",
+      "systemNode": "present on the machine, excluded from the launched app: PATH=/usr/bin:/bin",
+      "results": [
+        {
+          "name": "the packaged installer builds for this platform and architecture",
+          "status": "pass",
+          "detail": "Plexus-0.1.0-mac-arm64.dmg"
+        },
+        {
+          "name": "installing outside a checkout produces a runnable app",
+          "status": "pass",
+          "detail": "/var/folders/bl/vzjcvbz95c3dk19cb0fw46180000gn/T/plexus-install-proof/Plexus.app/Contents/MacOS/Plexus"
+        },
+        {
+          "name": "the installed copy starts its services, selects a project and runs an agent with no Node on PATH",
+          "status": "pass"
+        },
+        {
+          "name": "the installed copy reports readiness, holds a failed start and recovers on retry",
+          "status": "pass"
+        },
+        {
+          "name": "uninstalling removes the installed copy",
+          "status": "pass"
+        }
+      ]
+    },
+    "win32-x64": {
+      "testedCommit": "b574cb34f2b6fd3fd1c33f99b3f817991e953d30",
+      "workflow": "https://github.com/Retia-Labs/multiplayer-ai-harness/actions/runs/34049107661",
+      "ranAt": "2026-09-06T17:41:04.429Z",
+      "platform": "win32",
+      "arch": "x64",
+      "os": "Microsoft Windows [Version 10.0.26100.33296]",
+      "electron": "44.2.0",
+      "installer": {
+        "file": "Plexus-0.1.0-win-x64-setup.exe",
+        "bytes": 112141112,
+        "sha256": "b9e8cd62657d6bd4bc743f9b2b38fbd6430dd9e6c58f294421f8df664c19b234"
+      },
+      "installedTo": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\plexus-install-proof\\Plexus.exe",
+      "systemNode": "present on the machine, excluded from the launched app: PATH=C:\\Windows\\system32;C:\\Windows",
+      "results": [
+        {
+          "name": "the packaged installer builds for this platform and architecture",
+          "status": "pass",
+          "detail": "Plexus-0.1.0-win-x64-setup.exe"
+        },
+        {
+          "name": "installing outside a checkout produces a runnable app",
+          "status": "pass",
+          "detail": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\plexus-install-proof\\Plexus.exe"
+        },
+        {
+          "name": "the installed copy starts its services, selects a project and runs an agent with no Node on PATH",
+          "status": "pass"
+        },
+        {
+          "name": "the installed copy reports readiness, holds a failed start and recovers on retry",
+          "status": "pass"
+        },
+        {
+          "name": "uninstalling removes the installed copy",
+          "status": "pass"
+        }
+      ]
+    }
+  }
+}

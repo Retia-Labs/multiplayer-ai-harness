@@ -1,0 +1,70 @@
+name: Desktop installers
+# Builds the installer, installs it, and drives the *installed* copy - on machines that have
+# never held this checkout. That is the part a developer box cannot prove, and it is the last
+# open criterion on #4.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'apps/desktop/**'
+      - 'packages/hub/**'
+      - 'packages/runtime/**'
+      - 'scripts/desktop-install-proof.js'
+      - 'test/desktop-*.js'
+      - 'build/**'
+      - 'package*.json'
+      - '.github/workflows/desktop-installers.yml'
+permissions:
+  contents: read
+jobs:
+  installed-app:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15 is arm64. There is no macos-13 runner any more, so CI cannot exercise the
+        # macOS 13 floor itself - that rests on LSMinimumSystemVersion in the Electron binary.
+        os: [windows-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      # npm 11 blocks install scripts, so npm ci leaves node_modules/electron with no binary.
+      - run: node node_modules/electron/install.js
+      - run: npm run test:desktop:install
+        env:
+          # Internal builds are unsigned; without this electron-builder hunts for an identity.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-install-evidence-${{ matrix.os }}
+          path: |
+            .artifacts/desktop-install/*.json
+            .artifacts/desktop-bootstrap/*.png
+          if-no-files-found: warn
+          retention-days: 14
+
+  record:
+    # Runs even when a platform fails: a failed run is evidence too, and the merged record
+    # names which platform failed rather than going missing.
+    needs: installed-app
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: .artifacts/downloaded
+      - run: node scripts/desktop-install-proof.js --merge .artifacts/downloaded
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-platform-results
+          path: docs/proofs/desktop-platform-results.json
+          retention-days: 90
