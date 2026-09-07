@@ -38,12 +38,14 @@
         import('/shared/e2ee/catchup.mjs'),
         import('/shared/e2ee/task-control.mjs'),
         import('/shared/protocol/encrypted-task.mjs'),
-        import('/shared/protocol/related-work.mjs')
-      ]).then(([sdk, core, keys, log, enrol, view, control, protocol, links]) => {
+        import('/shared/protocol/related-work.mjs'),
+        import('/shared/e2ee/recovery.mjs')
+      ]).then(([sdk, core, keys, log, enrol, view, control, protocol, links, recovery]) => {
         const api = core.createEndpointAPI(sdk);
         return {
           Endpoint: api.Endpoint, HubKeyTransport: keys.HubKeyTransport,
-          matrixUser: protocol.matrixUser, ...log, ...enrol, ...view, ...control, ...links
+          matrixUser: protocol.matrixUser, roomFor: protocol.roomFor,
+          ...log, ...enrol, ...view, ...control, ...links, ...recovery
         };
       });
     }
@@ -95,6 +97,7 @@
         transport: new m.HubKeyTransport({ url: location.origin, token: this.token, device: this.device })
       });
       this.tasks = new m.EncryptedTaskTransport({ url: location.origin, token: this.token });
+      this.recovery = new m.RecoveryTransport({ url: location.origin, token: this.token });
       this.enrolment = new m.EnrollmentTransport({ url: location.origin, token: this.token });
       const identity = this.endpoint.identity();
       return { ...identity, fingerprint: fingerprint(identity), durable: this.support.persistent };
@@ -279,6 +282,48 @@
         task, action: 'help.settle', payload: { id, outcome: outcome === 'cancelled' ? 'cancelled' : 'resolved' }
       });
       return { id, outcome };
+    }
+
+    // ---- recovery ----
+    //
+    // The key is generated here and shown once. It is never sent anywhere and never stored by
+    // this app: what reaches the relay is history encrypted to it, and the relay cannot open
+    // that. Which is why the drill exists - a key displayed once and not written down is not
+    // recovery, and the only moment anybody will check is before it is needed.
+
+    async recoveryState() {
+      try {
+        const listed = await this.recovery.list();
+        return { backups: listed.backups || [], limits: this.m.RECOVERY_LIMITS };
+      } catch (error) {
+        return { backups: [], limits: this.m.RECOVERY_LIMITS, error: error.code || 'recovery_unavailable' };
+      }
+    }
+
+    // Step one: issue a key. Nothing is backed up yet, because nothing should be relied on
+    // until somebody has proved they can reproduce it.
+    async beginRecoverySetup() {
+      const issued = await this.endpoint.enableRecovery();
+      return { recoveryKey: issued.recoveryKey };
+    }
+
+    // Step two: they type it back, and only then is anything stored.
+    async completeRecoverySetup(issuedKey, typed, { scope, taskIds }) {
+      this.m.confirmRecoveryDrill(issuedKey, typed);
+      return this.m.backupHistory(this.endpoint, this.recovery, {
+        scope, taskIds, recoveryKey: issuedKey, roomFor: this.m.roomFor
+      });
+    }
+
+    async replaceRecoveryKey({ scope, taskIds }) {
+      return this.m.rotateRecovery(this.endpoint, this.recovery, { scope, taskIds, roomFor: this.m.roomFor });
+    }
+
+    // On a clean device: the customer's key, and nothing from the operator.
+    async restoreFromRecovery({ scope, taskIds, recoveryKey }) {
+      return this.m.restoreHistory(this.endpoint, this.recovery, {
+        scope, taskIds, recoveryKey, roomFor: this.m.roomFor
+      });
     }
 
     // ---- related work ----

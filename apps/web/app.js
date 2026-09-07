@@ -8,6 +8,7 @@
     topbarTitle: $('#topbar-title'), topbarBranch: $('#topbar-branch'), topbarWorktree: $('#topbar-worktree'), topbarRuntime: $('#topbar-runtime'),
     presence: $('#presence'), changesBtn: $('#btn-changes'), assignBtn: $('#btn-assign'), assignLabel: $('#assign-label'), auditBtn: $('#btn-audit'), catchupBtn: $('#btn-catchup'), catchupView: $('#catchup-view'),
     inboxBtn: $('#btn-inbox'), inboxView: $('#inbox-view'), inboxCount: $('#inbox-count'),
+    recoveryBtn: $('#btn-recovery'), recoveryView: $('#recovery-view'),
     activityPanel: $('#activity-panel'),
     assignModal: $('#assign-modal'), closeAssign: $('#btn-close-assign'), assignUser: $('#assign-user'), assignNote: $('#assign-note'), doAssign: $('#btn-do-assign'), unassign: $('#btn-unassign'),
     fleetView: $('#fleet-view'), fleetRuntime: $('#fleet-runtime'), fleetProject: $('#fleet-project'), addProject: $('#btn-add-project'), fleetWorktree: $('#fleet-worktree'),
@@ -77,6 +78,7 @@
     catchup: null, catchupSnapshot: null, catchupTaskId: null,
     catchupExplain: null, catchupHostPrompt: null,
     inbox: [], inboxOpen: false,
+    recoveryOpen: false, recoveryState: null, recoveryDrill: null,
     // Set from the address bar before anything is connected, acted on once an endpoint exists.
     linkedTaskId: (/^\/t\/([A-Za-z0-9_-]{1,80})$/.exec(location.pathname) || [])[1] || null,
     localRuntimeId: null,
@@ -244,6 +246,7 @@
       try { state.inbox = await state.encrypted.inbox(); } catch { state.inbox = []; }
     } else state.inbox = [];
     renderInbox();
+    renderRecovery();
   }
 
   function showInvite(invitation) {
@@ -1182,6 +1185,144 @@
     return member ? member.name : null;
   }
 
+  // ---- recovery ----
+  //
+  // Three things this screen has to do without softening any of them: hand over a key exactly
+  // once, refuse to call it done until somebody proves they wrote it down, and say plainly
+  // what happens if it and every device are lost. The last one is not a warning banner; it is
+  // the honest answer to the question everybody asks second.
+  function renderRecovery() {
+    el.recoveryBtn.classList.toggle('hidden', !state.encrypted);
+    if (!state.recoveryOpen) return;
+    const view = el.recoveryView;
+    view.innerHTML = '';
+    const head = document.createElement('h3');
+    head.textContent = 'Recovery';
+    view.appendChild(head);
+
+    const backups = (state.recoveryState && state.recoveryState.backups) || [];
+    const limits = (state.recoveryState && state.recoveryState.limits) || {};
+
+    if (state.recoveryDrill) {
+      // The one moment the key exists anywhere outside this person's own notes.
+      const explain = document.createElement('p');
+      explain.className = 'rec-limit';
+      explain.textContent = 'Write this down somewhere outside this machine. It is shown once, '
+        + 'it is never sent anywhere, and nobody else has a copy - including us.';
+      const key = document.createElement('div');
+      key.className = 'rec-key';
+      key.textContent = state.recoveryDrill.recoveryKey;
+      const ask = document.createElement('p');
+      ask.className = 'rec-limit';
+      ask.textContent = 'Now type it back. Nothing is backed up until you do, because a key you '
+        + 'did not actually store is not recovery.';
+      const input = document.createElement('input');
+      input.className = 'rec-input';
+      input.type = 'text';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.placeholder = 'Paste or type the key';
+      const confirm = document.createElement('button');
+      confirm.className = 'mini-btn';
+      confirm.type = 'button';
+      confirm.dataset.action = 'confirm-recovery';
+      confirm.textContent = 'I have stored it';
+      confirm.addEventListener('click', async () => {
+        confirm.disabled = true;
+        try {
+          const scope = 'account:' + state.me.id;
+          const taskIds = (state.encryptedTasks || []).map((task) => task.id);
+          if (!taskIds.length) throw Object.assign(new Error('nothing_to_back_up'), { code: 'nothing_to_back_up' });
+          await state.encrypted.completeRecoverySetup(state.recoveryDrill.recoveryKey, input.value, { scope, taskIds });
+          state.recoveryDrill = null;
+          toast('Recovery is set up.');
+          await refreshRecovery();
+        } catch (error) {
+          confirm.disabled = false;
+          toast('⚠ ' + esc(error.code || error.message || String(error)));
+        }
+      });
+      view.append(explain, key, ask, input, confirm);
+      return;
+    }
+
+    const status = document.createElement('p');
+    status.className = 'rec-limit';
+    if (backups.length) {
+      const when = new Date(backups[0].updatedAt);
+      status.textContent = 'Backed up ' + when.toLocaleString() + ' · ' + backups[0].bytes + ' bytes of ciphertext. '
+        + limits.operatorView;
+    } else {
+      status.textContent = 'No backup yet. Without one, losing this device means losing the history it can read.';
+    }
+    view.appendChild(status);
+
+    const start = document.createElement('button');
+    start.className = 'mini-btn';
+    start.type = 'button';
+    start.dataset.action = backups.length ? 'replace-recovery' : 'start-recovery';
+    start.textContent = backups.length ? 'Replace the key' : 'Set up recovery';
+    start.addEventListener('click', async () => {
+      start.disabled = true;
+      try {
+        if (backups.length) {
+          const scope = 'account:' + state.me.id;
+          const taskIds = (state.encryptedTasks || []).map((task) => task.id);
+          const rotated = await state.encrypted.replaceRecoveryKey({ scope, taskIds });
+          state.recoveryDrill = { recoveryKey: rotated.recoveryKey, rotated: true };
+          toast(rotated.caveat);
+        } else {
+          state.recoveryDrill = await state.encrypted.beginRecoverySetup();
+        }
+        renderRecovery();
+      } catch (error) {
+        start.disabled = false;
+        toast('⚠ ' + esc(error.code || error.message || String(error)));
+      }
+    });
+    view.appendChild(start);
+
+    const limitsHead = document.createElement('h4');
+    limitsHead.textContent = 'What recovery cannot do';
+    view.appendChild(limitsHead);
+    for (const key of ['everythingLost', 'siteDataCleared', 'storageLocked']) {
+      if (!limits[key]) continue;
+      const line = document.createElement('p');
+      line.className = 'rec-limit' + (key === 'everythingLost' ? ' rec-warn' : '');
+      line.textContent = limits[key];
+      view.appendChild(line);
+    }
+    if (state.encryptedState && state.encryptedState.durable === false) {
+      const fragile = document.createElement('p');
+      fragile.className = 'rec-limit rec-warn';
+      fragile.textContent = 'This browser has no persistent key store, so this device\'s identity ends with the tab. '
+        + 'Set up recovery before that happens.';
+      view.appendChild(fragile);
+    }
+  }
+
+  async function refreshRecovery() {
+    if (!state.encrypted) return;
+    state.recoveryState = await state.encrypted.recoveryState();
+    renderRecovery();
+  }
+
+  function openRecovery() {
+    state.recoveryOpen = true;
+    el.threadView.classList.add('hidden'); el.diffView.classList.add('hidden');
+    el.catchupView.classList.add('hidden'); el.inboxView.classList.add('hidden'); el.fleetView.classList.add('hidden');
+    el.recoveryView.classList.remove('hidden'); el.recoveryBtn.classList.add('active');
+    renderRecovery();
+    refreshRecovery().catch(() => {});
+  }
+
+  function closeRecovery() {
+    if (!state.recoveryOpen) return;
+    state.recoveryOpen = false;
+    el.recoveryView.classList.add('hidden'); el.recoveryBtn.classList.remove('active');
+    if (state.activeThreadId) el.threadView.classList.remove('hidden'); else el.fleetView.classList.remove('hidden');
+  }
+
   function openInbox() {
     state.inboxOpen = true;
     el.threadView.classList.add('hidden'); el.diffView.classList.add('hidden');
@@ -1381,8 +1522,12 @@
   // A handle on this page's own state, so automated checks can drive the real app instead of
   // a fixture of it. It exposes nothing a script on this origin could not already reach - the
   // session token is in localStorage either way - and confers no authority the page lacks.
-  window.__plexus = { state, openCatchup, openInbox, refreshEncrypted: () => refreshEncrypted() };
+  window.__plexus = {
+    state, openCatchup, openInbox, openRecovery,
+    refreshEncrypted: () => refreshEncrypted(), refreshRecovery: () => refreshRecovery()
+  };
   el.inboxBtn.addEventListener('click', () => (state.inboxOpen ? closeInbox() : openInbox()));
+  el.recoveryBtn.addEventListener('click', () => (state.recoveryOpen ? closeRecovery() : openRecovery()));
 
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem('harness.session') || 'null'); } catch {}
