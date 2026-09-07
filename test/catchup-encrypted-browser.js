@@ -20,6 +20,11 @@ const { Runtime } = require('../packages/runtime');
 const { TurnSession } = require('../packages/runtime/session');
 const { EncryptedHost } = require('../packages/runtime/encrypted-host');
 const { TeamOps, Events, ApprovalDecision } = require('../packages/protocol');
+const { Endpoint } = require('../packages/e2ee/endpoint');
+const { HubKeyTransport } = require('../packages/e2ee/hub-key-transport.mjs');
+const { EnrollmentTransport, announcement } = require('../packages/e2ee/enrollment.mjs');
+const { sendTaskControl } = require('../packages/e2ee/task-control.mjs');
+const { matrixUser } = require('../packages/protocol/encrypted-task.mjs');
 
 const root = path.join(__dirname, '..');
 const out = path.join(root, '.artifacts', 'catchup-encrypted');
@@ -269,6 +274,79 @@ let hub, runtime, encrypted, browser, socket, running;
   assert.equal(finished.approvals, 0, 'a task nobody is waiting on shows no outstanding approval');
   pass('a completed task reports its status as recorded, not read off the end of the log', 'completed · Recorded');
   await page.screenshot({ path: path.join(out, 'completed-with-changes-1487.png') });
+  // ---- issue #12: a teammate's question, in the app's inbox ----
+  //
+  // The question is asked from a second endpoint entirely, so what the browser renders is a
+  // record it decrypted rather than one it wrote. Nothing here is addressed to the asker.
+  const dana = new WebSocket(url.replace('http', 'ws'));
+  const danaMsgs = [];
+  let danaWelcome;
+  dana.onopen = () => dana.send(JSON.stringify({ type: 'hello', role: 'client', name: 'dana' }));
+  dana.onmessage = ({ data }) => { const m = JSON.parse(data); danaMsgs.push(m); if (m.type === 'welcome') danaWelcome = m; };
+  await waitFor(() => danaWelcome, 'dana connected');
+  const invite = await new Promise((resolve) => {
+    const id = 'op_invite';
+    const onMsg = ({ data }) => { const m = JSON.parse(data); if (m.ref === id) { socket.removeEventListener('message', onMsg); resolve(m); } };
+    socket.addEventListener('message', onMsg);
+    socket.send(JSON.stringify({ type: TeamOps.INVITE_CREATE, teamId: team.id, inviteeUserId: danaWelcome.user.id, ttlMs: 60000, id }));
+  });
+  dana.send(JSON.stringify({ type: TeamOps.INVITE_ACCEPT, code: invite.invitation.code, id: 'op_join' }));
+  await waitFor(() => danaMsgs.some((m) => m.type === 'team'), 'dana joined');
+  const danaAccount = hub.store.userById(danaWelcome.user.id);
+
+  const danaEndpoint = await Endpoint.create({
+    user: matrixUser(danaAccount.id), device: 'DANADEV',
+    transport: new HubKeyTransport({ url, token: danaAccount.token, device: 'DANADEV' })
+  });
+  await new EnrollmentTransport({ url, token: danaAccount.token }).announce(team.id, announcement(danaEndpoint));
+  // The browser account is the team owner, so it is the one that confirms her - through the
+  // same client that has been reading tasks all along.
+  await page.evaluate(async (target) => window.__plexus.state.encrypted.confirmTeammate(target),
+    { userId: danaAccount.id, ...announcement(danaEndpoint) });
+  await new EnrollmentTransport({ url, token: account.token }).grant(team.id, projectId, danaAccount.id, 'participant');
+  await encrypted.admitParticipants(writing);
+  await danaEndpoint.confirmEndpoint(hostIdentity, { confirmed: true });
+  await danaEndpoint.open(await danaEndpoint.transport.drain());
+
+  const question = 'Should the release notes mention the retry change?';
+  await sendTaskControl(danaEndpoint, hostIdentity, {
+    task: writing, action: 'help.request',
+    payload: { id: 'help_browsercheck01', question, recipient: account.id }
+  });
+  const gathered = await encrypted.collect();
+  assert.equal(gathered.applied.length, 1, 'the host recorded the question: ' + JSON.stringify(gathered));
+
+  await page.evaluate(() => window.__plexus.openInbox());
+  await page.waitForSelector('#inbox-view .cu-help', { timeout: 30000 });
+  const shownInbox = await page.evaluate(() => ({
+    count: document.querySelector('#inbox-count').textContent,
+    questions: Array.from(document.querySelectorAll('#inbox-view .cu-help-question')).map((n) => n.textContent.trim()),
+    who: Array.from(document.querySelectorAll('#inbox-view .cu-help-who')).map((n) => n.textContent.trim())
+  }));
+  assert.deepEqual(shownInbox.questions, [question]);
+  assert.equal(shownInbox.count, '1');
+  assert.ok(shownInbox.who[0].includes('asked you'), shownInbox.who[0]);
+  pass('a teammate\'s question is decrypted in the browser and shown in the inbox', shownInbox.questions[0]);
+  await page.screenshot({ path: path.join(out, 'inbox-1487.png') });
+
+  // Resolving goes back through the host, and the inbox clears only once the host has
+  // recorded it - not because the button was pressed.
+  await page.click('#inbox-view button[data-action="resolve-help"]');
+  // The host picks control messages up when it next looks, so this looks repeatedly rather
+  // than once - the same poll a running host performs, and the reason the inbox count is not
+  // cleared optimistically in the first place.
+  let settledBrowser = { applied: [] };
+  for (let n = 0; n < 200 && !settledBrowser.applied.length; n++) {
+    settledBrowser = await encrypted.collect();
+    if (!settledBrowser.applied.length) await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(settledBrowser.applied.length, 1, JSON.stringify(settledBrowser));
+  await page.evaluate(() => window.__plexus.refreshEncrypted());
+  await page.waitForFunction(() => document.querySelector('#inbox-count').textContent === '0', null, { timeout: 30000 });
+  pass('resolving from the inbox is recorded by the host and clears the count', 'inbox back to 0');
+
+  try { dana.close(); } catch {}
+  try { danaEndpoint.close(); } catch {}
 
   fs.writeFileSync(path.join(out, 'results.json'),
     JSON.stringify({ ranAt: new Date().toISOString(), checks }, null, 2) + '\n');

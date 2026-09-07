@@ -371,6 +371,9 @@ class Runtime {
         // else's disk. The host operator adds projects with --project or runtime.json.
         throw new Error(Errors.PROJECT_ADD_LOCAL_ONLY + ': a project must be authorized on the host itself');
       case Commands.THREAD_ASSIGN: {
+        // Responsibility belongs to a piece of work. Without this an assignment for a thread
+        // that does not exist failed with a TypeError instead of an answer.
+        if (!thread) throw new Error(Errors.UNKNOWN_THREAD + ': responsibility belongs to a thread');
         thread.assignee = cmd.assignee || null; thread.handoffNote = cmd.note || null; this.store.upsertThread(thread);
         this.appendEvent(threadId, { method: Events.THREAD_ASSIGNEE_UPDATED, assignee: thread.assignee, note: thread.handoffNote, by });
         return { assignee: thread.assignee };

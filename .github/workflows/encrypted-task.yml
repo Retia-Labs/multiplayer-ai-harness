@@ -45,6 +45,7 @@ jobs:
       - run: npm run test:catchup
       - run: npm run test:catchup:view
       - run: npm run test:catchup:encrypted
+      - run: npm run test:help-inbox
       - run: npm run test:protocol
       - run: npm run test:unit
       - run: npm run test:team
