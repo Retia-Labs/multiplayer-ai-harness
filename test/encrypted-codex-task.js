@@ -108,7 +108,7 @@ let hub, runtime, encrypted, socket;
     return session;
   };
   const started = Date.now();
-  const outcome = await encrypted.run(task, { runTurn });
+  const outcome = await encrypted.run(task, { runTurn, provider: 'codex-cli' });
   assert.ok(outcome.events >= 2, 'the real provider produced a history');
   pass('a real Codex turn runs on the host and reaches the encrypted log',
     outcome.events + ' events in ' + Math.round((Date.now() - started) / 1000) + 's');
@@ -128,9 +128,11 @@ let hub, runtime, encrypted, socket;
       'the run completed but the reply did not include the canary; the encrypted path is unaffected');
   }
 
-  const view = catchUp(reader.snapshot(), { responsible: 'alice', host: runtime.id, provider: 'codex-cli', hostConnected: true, taskId: task.id, projectId });
+  const view = catchUp(reader.snapshot(), { responsible: 'alice', host: runtime.id, hostConnected: true, taskId: task.id, projectId });
   assert.ok(view.objective.value.includes('maintenance window'));
-  pass('the catch-up projection reads a real provider task', 'objective recorded, provenance ' + view.objective.provenance);
+  assert.equal(view.provider.provenance, 'recorded');
+  assert.equal(view.provider.value, 'codex-cli');
+  pass('the catch-up projection reads a real provider task', 'objective and provider both recorded');
 
   // Criterion 2: nothing about the account reaches the relay.
   const relay = JSON.stringify({

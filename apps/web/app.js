@@ -1047,10 +1047,9 @@
     const out = await state.encrypted.catchUp(task, {
       responsible: (state.users.find((u) => u.userId === task.creatorUserId) || {}).name || null,
       host: task.runtimeId,
-      // The log does not carry the provider - the creator picks one and the host runs it, so
-      // neither party's claim belongs in the other's record. Where the app knows it from the
-      // thread's own settings it is passed as context and marked as such; where it does not,
-      // the screen says so rather than naming a provider nobody recorded.
+      // The host records which provider it ran, and that wins. This is only the fallback for
+      // a log written before hosts asserted one, and it is marked as context so nobody reads
+      // the screen's own guess as something somebody wrote down.
       provider: (state.activeThread && state.activeThread.settings && state.activeThread.settings.provider) || null,
       hostConnected: runtime ? !!runtime.online : null
     });

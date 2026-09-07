@@ -129,6 +129,22 @@ function pureChecks() {
   assert.equal(foreign.pending.approvals.length, 1);
   pass('a decision naming an unrelated request answers nothing', 'req_1 stays outstanding');
 
+  // The provider is the one operational fact the log can carry, because the host asserts it.
+  // A caller passing a different one must not override what the host wrote down.
+  const withProvider = catchUp({ ...snapshot, events: [
+    { type: 'task.created', payload: { title: 'T', objective: 'Recover failed checkouts', provider: 'codex-cli' } },
+    ...events.slice(1)
+  ], seq: 3 }, { provider: 'something-else', host: 'host-1' });
+  assert.equal(withProvider.provider.provenance, 'recorded');
+  assert.equal(withProvider.provider.value, 'codex-cli');
+  assert.equal(withProvider.host.provenance, 'context');
+  pass('a provider the host recorded outranks one a caller passed in', 'recorded beats context');
+
+  const noProvider = catchUp(snapshot, { provider: 'demo' });
+  assert.equal(noProvider.provider.provenance, 'context');
+  assert.equal(catchUp(snapshot, {}).provider.provenance, 'unavailable');
+  pass('without one in the log the provider stays context, or absent and says so', 'context/unavailable');
+
   // Every reference the pending section makes has to resolve like any other.
   const refs = sourcesOf(waiting);
   assert.ok(refs.some((r) => r.type === 'approval.requested'));

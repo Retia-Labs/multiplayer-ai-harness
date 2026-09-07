@@ -118,7 +118,7 @@ let hub, runtime, encrypted, socket;
     await session.run();
     return session;
   };
-  const outcome = await encrypted.run(task, { runTurn });
+  const outcome = await encrypted.run(task, { runTurn, provider: 'demo' });
   assert.ok(outcome.events >= 4, 'the turn produced a history, not a stub');
   pass('a real turn is executed and written to the encrypted log', outcome.events + ' events');
 
@@ -132,10 +132,15 @@ let hub, runtime, encrypted, socket;
   assert.ok(state.events.some((e) => e.type === 'task.completed'), 'the log says how it ended');
   pass('the creator replays the task the host actually ran', reader.seq + ' events, outcome ' + state.outcome);
 
-  const view = catchUp(reader.snapshot(), { responsible: 'alice', host: runtime.id, provider: 'demo', hostConnected: true, taskId: task.id, projectId });
+  // The provider is passed as context here deliberately, and deliberately loses: the log
+  // says which provider the host ran, and a recorded fact outranks a caller's claim.
+  const view = catchUp(reader.snapshot(), { responsible: 'alice', host: runtime.id, provider: 'something-else', hostConnected: true, taskId: task.id, projectId });
   assert.equal(view.objective.value, objective.objective);
   assert.equal(view.objective.provenance, 'recorded');
-  pass('the catch-up projection reads the real task', '#9 reading #7 through the log');
+  assert.equal(view.provider.provenance, 'recorded');
+  assert.equal(view.provider.value, 'demo', 'the log names the provider the host actually ran');
+  assert.deepEqual(view.provider.source, { seq: 1, type: 'task.created' });
+  pass('the catch-up projection reads the real task, provider included', 'provider recorded by the host, not by the caller');
 
   // ---- criterion 1: a blocker a teammate can actually see, and answer ----
   //
@@ -189,7 +194,7 @@ let hub, runtime, encrypted, socket;
     await session.run();
     return session;
   };
-  await encrypted.run(blocked, { runTurn: approvalTurn });
+  await encrypted.run(blocked, { runTurn: approvalTurn, provider: 'demo' });
   assert.ok(requested && !requested.failed, 'the turn asked for an approval: ' + (requested && requested.failed && requested.failed.message));
 
   assert.equal(midFlight.pending.approvals.length, 1, 'the parked task shows one approval outstanding');

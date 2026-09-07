@@ -60,6 +60,17 @@ would put words in the writer's mouth.
 
 The requests themselves are `recorded`, each pointing at the event that asked.
 
+## Which provider touched the code
+
+A creator picks a provider and a host runs one, so a creator naming one is a preference and a
+host naming one is a fact. `task.created` is written by the **host** - it quotes the creator's
+sealed objective - so the provider is asserted there, as an optional field, and the projection
+reports it as `recorded` pointing at that event.
+
+A provider passed in as context loses to one in the log, and the tests assert exactly that by
+passing a different one. Without either, the screen says the provider is not recorded rather
+than naming one nobody wrote down.
+
 ## Freshness
 
 `caught-up` means "through the head the relay advertised", which is not the same as "up to
@@ -111,7 +122,7 @@ Captures in `.artifacts/catchup/`: `catchup-current-1487.png`, `catchup-current-
 
 ## Reproduce
 
-- `npm run test:catchup` - 18 checks: empty projection, sourcing, recorded vs derived, the
+- `npm run test:catchup` - 20 checks: empty projection, sourcing, recorded vs derived, the
   five freshness states, unresolvable sources, the late-join equality over a real encrypted
   log through the paired hub, and the approval pairing - outstanding, answered, expired, and
   a decision naming an unrelated request.
@@ -173,13 +184,6 @@ locally - and drops any endpoint whose directory keys disagree with what the enr
 recorded, because that disagreement is a finding rather than a detail to smooth over.
 
 ## Limits
-
-**The provider is not in the log, and is not invented into it.** A creator picks a provider
-and a host runs one, so neither party's claim belongs in the other's record. Where the app
-knows it from a thread's own settings it is passed as `context` and marked as such; where it
-does not, the screen says the provider is not recorded rather than naming one nobody wrote
-down. Putting it in the log properly means the host asserting it, which is a change to #7's
-translation rather than to this projection.
 
 Generated summaries are not implemented. The issue makes them optional and non-blocking, and
 the projection is deterministic without one; adding a model-written summary would need the

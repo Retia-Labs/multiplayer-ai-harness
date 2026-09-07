@@ -8,7 +8,10 @@ function eventValid(e) {
   if(!exact(e,['type','payload']) || !e.payload || typeof e.payload!=='object' || Array.isArray(e.payload)) return false;
   const p=e.payload;
   switch(e.type) {
-    case 'task.created':return typeof p.title==='string' && typeof p.objective==='string';
+    // The provider is optional and is asserted by the host, which is the party that knows:
+    // a creator picks one and a host runs one, and the host writes this event.
+    case 'task.created':return typeof p.title==='string' && typeof p.objective==='string' &&
+      (p.provider===undefined||typeof p.provider==='string');
     case 'message.added':return typeof p.text==='string' && typeof p.id==='string';
     case 'plan.updated':return Array.isArray(p.steps);
     case 'tool.completed':return typeof p.id==='string' && typeof p.name==='string' && Object.hasOwn(p,'arguments') && Object.hasOwn(p,'result');
