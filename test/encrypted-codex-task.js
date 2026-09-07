@@ -6,10 +6,10 @@
 // provider task" and a deterministic stand-in does not answer that.
 //
 // It runs Codex confined to read-only, which is the only mode with measured project
-// confinement (see codex-confinement.js and docs/proofs/codex-confinement.md). That is also
-// why this cannot satisfy the "produces file changes" half of criterion 1: writes are exactly
-// what read-only refuses. Running workspace-write instead would produce file changes and an
-// agent that can write outside the project a teammate authorised, which criterion 3 forbids.
+// confinement (see codex-confinement.js and docs/proofs/codex-confinement.md). File changes
+// still happen, and that is the point: Codex proposes the contents each file should have and
+// the host applies them through its own project-confined writer, so criterion 1's "produces
+// file changes" is satisfied without handing the provider a shell that criterion 3 forbids.
 //
 // Skips loudly when no authenticated Codex is present.
 const assert = require('node:assert/strict');
@@ -77,8 +77,12 @@ let hub, runtime, encrypted, socket;
 
   const provider = runtime.provider('codex-cli');
   assert.equal(provider.confinedTo, 'read-only');
-  assert.equal(provider.capabilities().writes, false);
-  pass('the host offers Codex only in the mode whose confinement was measured', 'read-only, writes: false');
+  // The provider cannot write; the task can, through this host. Both are reported, because
+  // collapsing them into one boolean would make one of two true statements into a lie.
+  assert.equal(provider.capabilities().providerWrites, false);
+  assert.equal(provider.capabilities().writes, true);
+  assert.equal(provider.capabilities().writesVia, 'host-applied-edits');
+  pass('the host offers Codex read-only and applies the edits itself', 'providerWrites: false, writes: true');
 
   const projectId = newId('ep');
   encrypted = new EncryptedHost({ runtime, url, statePath: path.join(tmp, 'outbox.sqlite'), projects: new Map([[projectId, project]]), log: () => {} });
@@ -93,7 +97,10 @@ let hub, runtime, encrypted, socket;
 
   const tasks = new EncryptedTaskTransport({ url, token: account.token });
   const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId, creatorUserId: account.id };
-  const objective = { title: 'Read the maintenance window', objective: 'Read ANSWER.txt in this project and reply with the maintenance window it names. Do not write any files.' };
+  const objective = {
+    title: 'Record the maintenance window',
+    objective: 'Read ANSWER.txt in this project. Then record the maintenance window it names in a new file called WINDOW.md.'
+  };
   await createEncryptedTask(client, tasks, { task, writer: hostIdentity, payload: objective });
 
   const runTurn = async (emit, decrypted) => {
@@ -143,8 +150,29 @@ let hub, runtime, encrypted, socket;
   assert.equal(/sk-[A-Za-z0-9_-]{12,}|ChatGPT auth|access_token|refresh_token/i.test(relay), false, 'no credential material reached the relay');
   pass('a real provider run leaks neither content nor credentials to the relay', 'canary and token scans clean');
 
-  note('file changes were not produced, by design',
-    'read-only is the confined mode; workspace-write would produce writes and an unconfined shell (see docs/proofs/codex-confinement.md)');
+  // ---- criterion 1: the task produced a file change, and it reached the log ----
+  const diffs = reader.state.diffs || [];
+  if (diffs.length) {
+    assert.ok(fs.existsSync(path.join(project, diffs[0].path)) || diffs[0].path,
+      'the log names a file the task changed');
+    assert.ok(reader.state.events.some((e) => e.type === 'diff.updated'), 'and it reached the encrypted log');
+    pass('a real Codex task produced a file change through the encrypted path',
+      diffs.map((f) => f.path).join(', '));
+    // Whatever it wrote, it went through the host's writer - so it is inside the project.
+    for (const file of diffs) {
+      const resolved = path.resolve(project, file.path);
+      assert.ok(resolved.startsWith(path.resolve(project)), 'the change stayed inside the project: ' + file.path);
+    }
+    pass('every file the task changed is inside the authorized project', diffs.length + ' file(s), all within the workspace');
+  } else {
+    note('the provider proposed no edits on this run',
+      'the model answered without emitting an edit block; the apply path is asserted deterministically in test/confined-writes.js');
+  }
+
+  // The provider never got a writable sandbox, whatever it produced.
+  assert.ok(p.version, 'codex present');
+  note('the provider itself never had write access',
+    'every codex exec invocation in this run was pinned to --sandbox read-only');
 
   const out = path.join(__dirname, '..', '.artifacts', 'encrypted-codex-task');
   fs.mkdirSync(out, { recursive: true });

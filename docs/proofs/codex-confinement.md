@@ -100,3 +100,36 @@ One platform, one CLI version. macOS and Linux use different sandbox mechanisms 
 been measured; the gate is closed everywhere regardless, and this document should not be read
 as evidence about them. Read-only confinement was demonstrated for filesystem writes, not for
 network egress or for reads outside the project.
+
+## How the product changes files anyway
+
+The finding above closes one door and the product needed the other one open: issue #7's first
+criterion asks for a real provider task that **produces file changes**. Two ways to get there,
+and only one of them is honest.
+
+Turning on `workspace-write` would produce file changes and an agent that can write outside the
+project a teammate authorised. That is the thing this page measured happening.
+
+So the provider stays read-only and never gets a writable shell. It proposes the contents it
+thinks each file should have, in a fenced `plexus-edits` block, and **the host applies them** -
+through `TurnSession.writeFile`, the same workspace writer the demo agent and every tool call
+goes through. That path refuses a path outside the project, refuses one routed through a
+symlink, consults the approval policy, and emits a file change the encrypted log records as
+`diff.updated`.
+
+The result is stronger than trusting a provider sandbox would have been. The writes are the
+host's, made under rules the host enforces and tests, rather than a provider's made under rules
+that did not hold on win32.
+
+Reported accordingly, because criterion 3 is about accuracy: `providerWrites: false` and
+`writes: true`, with `writesVia: 'host-applied-edits'`. Collapsing those into one boolean would
+turn one of two true statements into a lie.
+
+**Measured end to end** with Codex 0.153.4: the task read a file only the authorized workspace
+contains, proposed a new `WINDOW.md`, and the host wrote it — 7 encrypted events, the change
+recorded as `diff.updated`, every changed path inside the project, and every `codex exec`
+invocation pinned to `--sandbox read-only`.
+
+Reproduce: `npm run test:confined-writes` (10 checks, no Codex needed — parsing, applying,
+the boundary refusals including a symlink, and a cancelled turn writing nothing) and
+`npm run test:encrypted-codex-task` (skips loudly without an authenticated CLI).

@@ -47,6 +47,7 @@ jobs:
       - run: npm run test:catchup:encrypted
       - run: npm run test:help-inbox
       - run: npm run test:handover
+      - run: npm run test:confined-writes
       - run: npm run test:protocol
       - run: npm run test:unit
       - run: npm run test:team

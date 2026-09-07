@@ -169,8 +169,59 @@ class CodexExecBackend {
   }
 }
 
-// The only Codex configuration with evidence behind it on every supported platform.
+// How a confined provider still changes files.
 //
+// The block below is the whole point, so it is stated once and then relied on: Codex is run
+// read-only, which is the only mode whose project confinement was measured, and it never gets
+// a writable shell. It proposes the contents it thinks each file should have, and the host
+// applies those through the same workspace writer every other tool goes through - project
+// confined, symlink-refusing, policy-checked, and approval-gated when the write is anything
+// but ordinary.
+//
+// So the writes are the host's, made under rules the host enforces, rather than a provider's
+// made under rules nobody could verify. That is a stronger position than trusting
+// `--sandbox workspace-write` would have been, not a weaker one, and it is why this can
+// produce file changes without reopening the hole the confinement evidence found.
+const EDIT_FENCE = /```plexus-edits\s*\n([\s\S]*?)```/g;
+const MAX_EDITS = 20;
+const MAX_EDIT_BYTES = 256 * 1024;
+
+const EDIT_PROTOCOL = [
+  '',
+  'You are running with a read-only view of this project and cannot write to it.',
+  'When you have decided what a file should contain, output its complete new contents in a',
+  'fenced block tagged plexus-edits, one JSON object per line, paths relative to the project',
+  'root:',
+  '',
+  '```plexus-edits',
+  '{"path": "notes/README.md", "contents": "the entire new file, not a patch"}',
+  '```',
+  '',
+  'Do not attempt to run a command that writes. Emit the block instead; the host applies it.'
+].join('\n');
+
+// Every proposal in the agent's own words, parsed and bounded. A malformed line is dropped
+// rather than guessed at: a half-understood edit applied to somebody's file is worse than no
+// edit, and the turn still reports what it did and did not do.
+function parseProposedEdits(text) {
+  const edits = [];
+  const rejected = [];
+  for (const match of String(text || '').matchAll(EDIT_FENCE)) {
+    for (const line of match[1].split('\n')) {
+      if (!line.trim()) continue;
+      if (edits.length >= MAX_EDITS) { rejected.push({ reason: 'too_many_edits' }); break; }
+      let value;
+      try { value = JSON.parse(line); } catch { rejected.push({ reason: 'unparsable_edit' }); continue; }
+      if (!value || typeof value.path !== 'string' || typeof value.contents !== 'string') {
+        rejected.push({ reason: 'incomplete_edit' }); continue;
+      }
+      if (Buffer.byteLength(value.contents) > MAX_EDIT_BYTES) { rejected.push({ reason: 'edit_too_large', path: value.path }); continue; }
+      edits.push({ path: value.path, contents: value.contents });
+    }
+  }
+  return { edits, rejected };
+}
+
 // Measured on win32 with CLI 0.153.4: under `--sandbox workspace-write` the patch tool
 // refuses to write outside the project, but a shell command does not - PowerShell wrote a
 // file one directory above the workspace and exited 0. Under `--sandbox read-only` the same
@@ -183,23 +234,77 @@ class ConfinedCodexExecBackend extends CodexExecBackend {
   constructor(options = {}) {
     super(options);
     this.id = 'codex-cli';
-    this.label = 'Codex CLI (read-only)';
+    this.label = 'Codex CLI (read-only, host-applied edits)';
     this.confinedTo = 'read-only';
+    this.said = [];
   }
   capabilities() {
-    return { ...super.capabilities(), writes: false, sandbox: this.confinedTo, approvals: false };
+    return {
+      ...super.capabilities(),
+      // The provider cannot write; the task can. Reporting a single boolean would make one
+      // of those two true statements into a lie, so both are named.
+      writes: true,
+      providerWrites: false,
+      writesVia: 'host-applied-edits',
+      sandbox: this.confinedTo,
+      approvals: false
+    };
   }
   runOnce(session, state, prompt) {
     // A fresh view of the session with the sandbox pinned. Mutating the caller's settings
     // would leave the rest of the host believing it had asked for something it had not.
     const confined = Object.create(session);
     confined.settings = { ...(session.settings || {}), sandboxPolicy: this.confinedTo };
+    // Everything the agent says, kept so the proposal can be read out of it afterwards.
+    confined.emit = (method, payload) => {
+      if (method === Events.ITEM_COMPLETED && payload && payload.item &&
+          payload.item.type === ItemTypes.AGENT_MESSAGE) {
+        this.said.push(payload.item.text || '');
+      }
+      return session.emit(method, payload);
+    };
     const result = super.runOnce(confined, state, prompt);
     // The child is spawned against the derived view, so hand the real session its handle
     // back or an interrupt would have nothing to kill.
     if (confined.child) session.child = confined.child;
     return result;
   }
+
+  // Apply what the agent proposed, through the host's own writer. Each edit takes the same
+  // path a demo-agent write takes: workspace boundary, then policy, then approval if the
+  // policy asks for one. Nothing here can write outside the project, whatever was proposed.
+  async applyProposedEdits(session, text) {
+    const { edits, rejected } = parseProposedEdits(text);
+    const applied = [];
+    for (const edit of edits) {
+      const { item, result } = await session.writeFile(edit.path, edit.contents);
+      applied.push({ path: edit.path, status: item.status, result });
+      if (session.cancelled) break;
+    }
+    return { applied, rejected };
+  }
+
+  async run(session) {
+    // The protocol is appended rather than replacing the objective: the agent is being asked
+    // to do its own work and then say what it changed, not to do something different.
+    const original = session.input;
+    this.said = [];
+    session.input = [...original, { type: 'text', text: EDIT_PROTOCOL }];
+    try {
+      await super.run(session);
+    } finally {
+      session.input = original;
+    }
+    // Applied after the provider has finished, and never for a turn somebody interrupted:
+    // an interrupt that still wrote the files would make cancelling meaningless.
+    if (session.cancelled) return { applied: [], rejected: [] };
+    const outcome = await this.applyProposedEdits(session, this.said.join('\n'));
+    session.appliedEdits = outcome;
+    return outcome;
+  }
 }
 
-module.exports = { CodexExecBackend, ConfinedCodexExecBackend, translate, available, sandboxFlags, buildArgs, MAX_STEER_FOLLOWUPS };
+module.exports = {
+  CodexExecBackend, ConfinedCodexExecBackend, translate, available, sandboxFlags, buildArgs,
+  parseProposedEdits, EDIT_PROTOCOL, MAX_STEER_FOLLOWUPS
+};

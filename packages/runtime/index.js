@@ -101,7 +101,9 @@ class Runtime {
     }
     list.push({ id: 'ollama', label: 'Ollama / local', configured: true, models: DEFAULT_MODELS.ollama });
     list.push(this.codexReadOnly
-      ? { id: 'codex-cli', label: 'Codex CLI (read-only)', configured: true, reason: 'confined to read-only: workspace-write does not confine shell commands', writes: false, models: [] }
+      ? { id: 'codex-cli', label: 'Codex CLI (read-only, host-applied edits)', configured: true,
+          reason: 'the provider runs read-only, the only mode whose confinement was measured; file changes it proposes are applied by this host through its own project-confined writer',
+          writes: true, providerWrites: false, models: [] }
       : { id: 'codex-cli', label: 'Codex CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
     list.push({ id: 'claude-code', label: 'Claude Code CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
     return list;
@@ -110,8 +112,9 @@ class Runtime {
   provider(id) {
     if (id === 'demo') return { id: 'demo' };
     if (id === 'codex-cli' && this.codexReadOnly) {
-      // Opened for the one configuration measured to hold. Writes are not available, which
-      // is a real limitation and is reported as one rather than hidden behind a label.
+      // Opened for the one configuration measured to hold. The provider still cannot write -
+      // it never gets a writable shell - and the file changes it proposes are applied by this
+      // host, through the same workspace writer every other tool goes through.
       const { ConfinedCodexExecBackend } = require('./codex-exec');
       return new ConfinedCodexExecBackend({ bin: process.env.CODEX_BIN || 'codex' });
     }
