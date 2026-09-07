@@ -66,8 +66,11 @@ export async function createEncryptedTask(endpoint,transport,{task,writer,payloa
   return transport.create({...wire,request});
 }
 export class EncryptedTaskReader {
-  constructor({endpoint,task,writer,onStatus=()=>{},checkpoint}) {
+  constructor({endpoint,task,writer,onStatus=()=>{},checkpoint,admittedSessions}) {
     this.endpoint=endpoint;this.task=routing(task);this.writer=structuredClone(writer);this.onStatus=onStatus;
+    // Sessions handed over by an authenticated enrollment handoff, and only those, may be
+    // read despite arriving as imports. Empty for a reader that was there from the start.
+    this.admittedSessions=new Set(admittedSessions||[]);
     this.floor=checkpoint || {seq:0,hash:null};
     if(!exact(this.floor,['seq','hash']) || !integer(this.floor.seq) ||
       (this.floor.seq===0 ? this.floor.hash!==null : !/^[a-f0-9]{64}$/.test(this.floor.hash)))fail('invalid_local_checkpoint');
@@ -87,7 +90,8 @@ export class EncryptedTaskReader {
     if(this.ids.has(record.id))fail('event_id_conflict');
     let opened;
     try {opened=await this.endpoint.decryptVerifiedTask(roomFor(this.task.id),{...record.envelope,
-      event_id:'$'+record.id,origin_server_ts:record.seq},this.writer);} catch {fail('task_integrity_failed');}
+      event_id:'$'+record.id,origin_server_ts:record.seq},this.writer,
+      {admittedSessions:this.admittedSessions});} catch {fail('task_integrity_failed');}
     const p=opened.content;
     if(opened.type!=='plexus.task.event.v1'||!exact(p,['version','task','seq','eventId','previous','event'])||
       p.version!==VERSION||canonical(p.task)!==canonical(this.task)||p.seq!==record.seq||p.eventId!==record.id||p.previous!==this.hash)fail('task_integrity_failed');

@@ -4,6 +4,7 @@
 const {DatabaseSync}=require('node:sqlite');
 const {createHash}=require('node:crypto');
 const {EncryptedTaskReader,EncryptedTaskWriter,routing}=require('../e2ee/task-log.mjs');
+const {handOffHistory}=require('../e2ee/enrollment.mjs');
 const {canonical,roomFor}=require('../protocol/encrypted-task.mjs');
 class EncryptedTaskState {
   constructor(file) {
@@ -37,6 +38,22 @@ class EncryptedFixtureHost {
       await this.endpoint.shareVerifiedTaskKey(roomFor(task.id),[this.endpoint.identity(),expected]);
     } else objective=reader.state.details;
     return {reader,writer,objective};
+  }
+  // The host writes the log, so the host owns the group session. A project grant made
+  // on a client is only half of joining: until the writing host re-shares to the new
+  // member set, a newly granted reader can replay history it was handed and nothing
+  // written afterwards. Rotating here is what makes removal mean something too.
+  // Handing a joining teammate the history of a task this host wrote. Only the writer
+  // may do this: an exported session states its sender keys as claimed metadata, so a
+  // handoff from anyone else is a forgery waiting to be believed.
+  async handOff(task,member) {
+    if(this.runtime.teamId!==task.teamId||this.runtime.id!==task.runtimeId)throw new Error('foreign_runtime');
+    return handOffHistory(this.endpoint,{teamId:task.teamId,projectId:task.projectId,member,taskIds:[task.id]});
+  }
+  async admit(task,members,{rotate=false}={}) {
+    if(!Array.isArray(members)||!members.length)throw new Error('task_members_required');
+    if(this.runtime.teamId!==task.teamId||this.runtime.id!==task.runtimeId)throw new Error('foreign_runtime');
+    return this.endpoint.shareVerifiedTaskKey(roomFor(task.id),[this.endpoint.identity(),...members],{rotate});
   }
 }
 function fixtureEvents(payload) {

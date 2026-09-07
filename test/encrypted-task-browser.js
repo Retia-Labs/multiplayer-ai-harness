@@ -11,7 +11,7 @@ const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'plexus-task-browser-')),root=pat
 let hub,keyRelay,runtime,host,browser,state,socket;
 const waitFor=async(fn)=>{for(let n=0;n<200;n++){if(fn())return;await new Promise(r=>setTimeout(r,25));}throw new Error('fixture_timeout');};
 (async()=>{
-  for(const name of['packages/e2ee/endpoint-core.mjs','packages/e2ee/http-transport.mjs','packages/e2ee/task-log.mjs','packages/protocol/encrypted-task.mjs']){
+  for(const name of['packages/e2ee/endpoint-core.mjs','packages/e2ee/http-transport.mjs','packages/e2ee/task-log.mjs','packages/e2ee/enrollment.mjs','packages/protocol/encrypted-task.mjs']){
     fs.mkdirSync(path.dirname(path.join(web,name)),{recursive:true});fs.copyFileSync(path.join(root,name),path.join(web,name));
   }
   fs.cpSync(path.join(root,'node_modules/@matrix-org/matrix-sdk-crypto-wasm'),path.join(web,'vendor'),{recursive:true});

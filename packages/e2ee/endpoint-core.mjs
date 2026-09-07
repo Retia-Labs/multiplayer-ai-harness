@@ -187,14 +187,18 @@ class Endpoint {
   // The complete experiment uses an exact, already-confirmed endpoint set. SDK user
   // discovery alone must never enroll another device into a project's key recipients.
   // Rotate on every membership share, including re-adding a previously excluded device.
-  async shareVerifiedTaskKey(roomId, members) {
+  // `rotate` is the difference between adding someone and removing someone. Sharing the
+  // session as it stands lets a new reader open what was already written with it, which is
+  // what joining a task in progress means. Rotating first denies exactly that, which is what
+  // removing someone means. Defaulting to rotation keeps the safer act the unmarked one.
+  async shareVerifiedTaskKey(roomId, members, { rotate = true } = {}) {
     if (!Array.isArray(members) || members.length === 0) throw new Error('task_members_required');
     for (const member of members) {
       const target = await this.getDevice(member.user, member.device);
       if (!target?.isVerified() || target.curve25519Key?.toBase64() !== member.curve25519 ||
           target.ed25519Key?.toBase64() !== member.ed25519) throw new Error('endpoint_unverified');
     }
-    await this.rotateTaskKey(roomId);
+    if (rotate) await this.rotateTaskKey(roomId);
     return this.shareTaskKey(roomId, [...new Set(members.map((member) => member.user))], { members });
   }
 
@@ -221,15 +225,36 @@ class Endpoint {
   // Task replay trusts an explicitly confirmed device, not merely a relay's sender
   // field or an imported session's claimed keys. Cross-signing an entire account is
   // not required for the device-fingerprint enrollment used by this adapter.
-  async decryptVerifiedTask(roomId, event, expected) {
+  // `admittedSessions` is the enrollment contract #6 left open, made explicit.
+  //
+  // A session that arrived as an import cannot prove its own provenance - the SDK says
+  // AuthenticityNotGuaranteed and it is right to, because an export is exactly what an
+  // attacker would also hand you. Refusing every import outright was #6's position, and it
+  // makes joining a project late impossible: megolm exports a session key at its *current*
+  // ratchet index, so being admitted to a running session buys the next event and never a
+  // past one.
+  //
+  // So the trust is moved to where it can actually be checked: the reader accepts an
+  // unauthenticated session only if that exact session id came out of a handoff it opened
+  // itself, sealed by an endpoint whose fingerprint it had already confirmed. Every other
+  // import stays refused, and every other check here still applies to the event.
+  async decryptVerifiedTask(roomId, event, expected, { admittedSessions } = {}) {
     if (!expected || event?.type !== 'm.room.encrypted' || event.room_id !== roomId) throw new Error('task_integrity_failed');
     const decrypted = await this.machine.decryptRoomEvent(JSON.stringify(event), new sdk.RoomId(roomId),
       new sdk.DecryptionSettings(sdk.TrustRequirement.Untrusted));
     const shield = decrypted.shieldState(true);
-    const allowedShield = shield.color === sdk.ShieldColor.None ||
+    const admitted = shield.code === sdk.ShieldStateCode.AuthenticityNotGuaranteed &&
+      !!admittedSessions && admittedSessions.has(event.content?.session_id);
+    const allowedShield = shield.color === sdk.ShieldColor.None || admitted ||
       shield.code === sdk.ShieldStateCode.UnverifiedIdentity || shield.code === sdk.ShieldStateCode.UnsignedDevice;
-    if (!allowedShield || decrypted.sender.toString() !== expected.user ||
-        decrypted.senderDevice?.toString() !== expected.device || decrypted.senderCurve25519Key !== expected.curve25519 ||
+    // An exported session carries the writer's keys but not its device id - the format has
+    // no field for one - so an admitted session cannot be checked against a device name.
+    // The curve25519/ed25519 pair still identifies that exact device's keys, and the device
+    // must still be one this endpoint has confirmed, so the identity check survives; only
+    // the name it is spelled with is unavailable. Every non-admitted session is unchanged.
+    const deviceAttributed = admitted || decrypted.senderDevice?.toString() === expected.device;
+    if (!allowedShield || !deviceAttributed || decrypted.sender.toString() !== expected.user ||
+        decrypted.senderCurve25519Key !== expected.curve25519 ||
         decrypted.senderClaimedEd25519Key !== expected.ed25519 || !await this.isEndpointVerified(expected.user, expected.device)) {
       throw new Error('task_sender_unverified');
     }
@@ -352,7 +377,9 @@ class Endpoint {
     const allowed = new Set(roomIds);
     if (!keys.length || keys.some((key) => !allowed.has(key.room_id))) throw new Error('recovery_scope_mismatch');
     const imported = await this.machine.importExportedRoomKeys(exported, () => {});
-    return { imported: Number(imported.importedCount), total: keys.length };
+    // The session ids are returned because the caller has to be able to say later which
+    // sessions this particular handoff brought in. See decryptVerifiedTask.
+    return { imported: Number(imported.importedCount), total: keys.length, sessions: keys.map((key) => key.session_id) };
   }
 
   close() { this.machine?.close(); this.machine = null; }
