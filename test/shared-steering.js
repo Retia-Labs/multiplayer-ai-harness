@@ -197,6 +197,15 @@ class Client {
   await refused('a help request addressed to no thread is refused', Errors.UNKNOWN_THREAD,
     () => bob.op({ type: 'command', runtimeId: runtime.id, command: { method: Commands.THREAD_HELP, text: 'orphan' } }));
 
+  // `to` used to be whatever the caller typed, so a question could be addressed to a
+  // stranger, to a typo, or to nobody at all - and would then sit open forever, because the
+  // person it named could never see it.
+  await refused('a help request addressed to somebody outside the team is refused', Errors.RECIPIENT_NOT_AUTHORIZED,
+    () => bob.command(threadId, { method: Commands.THREAD_HELP, text: 'who is this for?', to: 'u_nobody' }));
+
+  await refused('handing a thread to somebody outside the team is refused', Errors.RECIPIENT_NOT_AUTHORIZED,
+    () => bob.command(threadId, { method: Commands.THREAD_ASSIGN, assignee: { userId: 'u_nobody', name: 'nobody' } }));
+
   // Resolving something nobody asked for would put an answer in the log for a question that
   // was never posed, and clear a real request while doing it.
   await refused('resolving a help request that was never made is refused', Errors.UNKNOWN_HELP_REQUEST,
