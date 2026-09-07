@@ -162,6 +162,63 @@ class EncryptedHost {
     return { admitted: members.map((m) => m.userId), handed };
   }
 
+  // Applying a revocation, which is the only part of it that actually removes anybody.
+  //
+  // The relay can stop serving a revoked device the moment somebody clicks. It cannot take
+  // back a key that device already holds - so the removal that matters happens here: the group
+  // session is thrown away and re-shared to the members who are left, and everything written
+  // afterwards is unreadable to the device that was removed.
+  //
+  // What this cannot do is unsay what was already said. Events the removed endpoint had
+  // already decrypted stay decrypted, on their machine, forever. See REVOCATION_LIMITS.
+  async applyRevocations(tasks) {
+    const response = await fetch(this.url + '/api/enrollment?team=' + encodeURIComponent(this.runtime.teamId), {
+      headers: { Authorization: 'Bearer ' + this.runtime.runtimeToken, 'X-Plexus-Runtime': this.runtime.id },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error('enrollment_unavailable');
+    const state = await response.json();
+    const mine = (state.revocations || []).filter((r) => !r.appliedBy.includes(this.runtime.id));
+    if (!mine.length) return { applied: [], rotated: [] };
+
+    // Rotate every task this host owns. A revoked endpoint may have held the key to any of
+    // them, and working out which is a guess this host has no reason to make.
+    const listed = tasks || (await this.tasks.list(this.runtime.teamId)).tasks || [];
+    const owned = listed.filter((task) => task.runtimeId === this.runtime.id && this.projects.get(task.projectId));
+    const rotated = [];
+    for (const task of owned) {
+      const holders = await this.participants(task.projectId);
+      const verified = await this.verifiedEndpoints();
+      const members = [...holders.keys()].map((userId) => verified.get(userId)).filter(Boolean);
+      const adapter = new EncryptedFixtureHost({
+        runtime: this.runtime, endpoint: this.endpoint, transport: this.tasks, state: this.state,
+        projects: new Map([[task.projectId, this.projects.get(task.projectId)]]),
+        creators: new Map([...verified].map(([userId, identity]) => [userId, identity]))
+      });
+      await adapter.open(task);
+      // rotate: the difference between adding somebody and removing somebody.
+      await adapter.admit(task, members, { rotate: true });
+      rotated.push(task.id);
+    }
+
+    const applied = [];
+    for (const revocation of mine) {
+      const ack = await fetch(this.url + '/api/enrollment/ack-revocation', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + this.runtime.runtimeToken,
+          'X-Plexus-Runtime': this.runtime.id
+        },
+        body: JSON.stringify({ teamId: this.runtime.teamId, target: { userId: revocation.userId, device: revocation.device } }),
+        signal: AbortSignal.timeout(10000)
+      });
+      if (ack.ok) applied.push({ userId: revocation.userId, device: revocation.device });
+    }
+    this.log('applied ' + applied.length + ' revocation(s), rotated ' + rotated.length + ' task key(s)');
+    return { applied, rotated };
+  }
+
   // Control messages teammates have sealed to this host, applied to the tasks they name.
   //
   // The mailbox is drained once and dispatched, because draining is destructive: collecting
@@ -200,8 +257,25 @@ class EncryptedHost {
     return { applied, refused };
   }
 
+  // The enrolment's current verdict on one device, fetched rather than remembered.
+  //
+  // Local trust is sticky on purpose - this host confirmed that device once and has no reason
+  // to forget - so "can it still seal to me" keeps saying yes long after the team removed it.
+  // Whether it may still *act* is a live question, and the only honest answer comes from
+  // asking now.
+  async endpointStanding(userId, device) {
+    const response = await fetch(this.url + '/api/enrollment?team=' + encodeURIComponent(this.runtime.teamId), {
+      headers: { Authorization: 'Bearer ' + this.runtime.runtimeToken, 'X-Plexus-Runtime': this.runtime.id },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error('enrollment_unavailable');
+    const state = await response.json();
+    const row = (state.endpoints || []).find((e) => e.userId === userId && e.device === device);
+    return row ? row.state : 'unknown';
+  }
+
   // One authorized control message, turned into one log event.
-  async apply(task, { sender, action, payload }) {
+  async apply(task, { sender, senderDevice, action, payload }) {
     const project = this.projects.get(task.projectId);
     if (!project) throw Object.assign(new Error('project_not_mapped'), { code: 'project_not_mapped' });
     const holders = await this.participants(task.projectId);
@@ -209,6 +283,14 @@ class EncryptedHost {
     // project, and the two gates are deliberately different: cryptography says who you are,
     // the grant says what you are part of.
     if (!holders.has(sender)) throw Object.assign(new Error('sender_not_in_project'), { code: 'sender_not_in_project' });
+
+    // A revoked device keeps its account's project grant - the grant is about the person, the
+    // revocation is about the machine - so the grant alone would let a removed laptop go on
+    // authorising work. Rotation stops it reading; this is what stops it acting.
+    const standing = await this.endpointStanding(sender, senderDevice);
+    if (standing !== 'verified') {
+      throw Object.assign(new Error('endpoint_' + standing), { code: standing === 'revoked' ? 'endpoint_revoked' : 'endpoint_not_verified' });
+    }
 
     const creators = await this.verifiedEndpoints();
     const adapter = new EncryptedFixtureHost({

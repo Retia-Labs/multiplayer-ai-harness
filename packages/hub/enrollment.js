@@ -41,6 +41,11 @@ class Enrollment {
         granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL, revoked_at INTEGER,
         PRIMARY KEY(team_id, project_id, user_id));
       CREATE INDEX IF NOT EXISTS project_grants_user ON project_grants(team_id, user_id);
+    
+      CREATE TABLE IF NOT EXISTS revocation_acks(
+        team_id TEXT NOT NULL, user_id TEXT NOT NULL, device_id TEXT NOT NULL,
+        runtime_id TEXT NOT NULL, applied_at INTEGER NOT NULL,
+        PRIMARY KEY(team_id, user_id, device_id, runtime_id));
     `);
   }
 
@@ -139,6 +144,44 @@ class Enrollment {
     this.db.prepare("UPDATE endpoint_enrollments SET state='revoked', revoked_at=? WHERE team_id=? AND user_id=? AND device_id=?")
       .run(now, teamId, target.userId, target.device);
     return this.row(teamId, target.userId, target.device);
+  }
+
+  // ---- revocation, and who has actually applied it ----
+  //
+  // Revoking an endpoint is a decision made here, and applied somewhere else. The relay can
+  // stop serving that device immediately; it cannot reach into an execution host that is
+  // asleep and rotate a key. So a revocation is recorded as pending until each host says it
+  // has applied it, and "pending" is shown rather than smoothed over - telling somebody a
+  // device is locked out when the machine holding the keys has not heard yet is the kind of
+  // reassurance that gets people hurt.
+  revocations(teamId) {
+    const revoked = this.db.prepare(
+      "SELECT user_id, device_id, revoked_at FROM endpoint_enrollments WHERE team_id=? AND state='revoked'").all(teamId);
+    const runtimes = (this.store.listRuntimes ? this.store.listRuntimes(teamId) : []).map((r) => r.id);
+    return revoked.map((row) => {
+      const applied = this.db.prepare(
+        'SELECT runtime_id, applied_at FROM revocation_acks WHERE team_id=? AND user_id=? AND device_id=?')
+        .all(teamId, row.user_id, row.device_id);
+      const appliedBy = new Set(applied.map((a) => a.runtime_id));
+      return {
+        userId: row.user_id, device: row.device_id, revokedAt: row.revoked_at,
+        appliedBy: [...appliedBy],
+        // Named rather than counted, because "1 of 2 hosts" does not tell anybody which
+        // machine is still able to act on keys the removed device may still hold.
+        pendingHosts: runtimes.filter((id) => !appliedBy.has(id)),
+        applied: runtimes.length > 0 && runtimes.every((id) => appliedBy.has(id))
+      };
+    });
+  }
+
+  // Only the host that did the work may say it did. A client claiming a rotation happened on
+  // somebody else's machine would be exactly the false reassurance this exists to prevent.
+  acknowledgeRevocation(teamId, runtimeId, target, now = Date.now()) {
+    if (!this.row(teamId, target.userId, target.device)) throw problem('endpoint_not_announced', 404);
+    this.db.prepare(`INSERT INTO revocation_acks VALUES (?,?,?,?,?)
+      ON CONFLICT(team_id, user_id, device_id, runtime_id) DO UPDATE SET applied_at=excluded.applied_at`)
+      .run(teamId, target.userId, target.device, runtimeId, now);
+    return { applied: true, runtimeId, target };
   }
 
   // ---- project grants ----
@@ -255,7 +298,10 @@ class Enrollment {
       const parts = url.pathname.split('/').filter(Boolean).slice(2); // after /api/enrollment
       // A host reads; it does not decide. Every route below that changes a verdict needs an
       // account, and this is where that line is drawn rather than in each handler.
-      if (principal.runtimeId && req.method !== 'GET') throw problem('client_required', 403);
+      // A host writes exactly one thing here: that it has applied a revocation. Everything
+      // else that changes trust is a person's decision made on a client.
+      const hostAck = principal.runtimeId && req.method === 'POST' && parts[0] === 'ack-revocation';
+      if (principal.runtimeId && req.method !== 'GET' && !hostAck) throw problem('client_required', 403);
       const account = principal.account;
       let body;
       if (req.method === 'POST') {
@@ -276,11 +322,16 @@ class Enrollment {
             ? { runtimeId: principal.runtimeId, role: 'execution-host' }
             : { userId: account.id, role: this.store.membership(teamId, account.id).role },
           endpoints: this.endpoints(teamId),
+          revocations: this.revocations(teamId),
           projects: principal.runtimeId ? [] : this.projectsFor(teamId, account.id),
           ...(projectId ? { participants: this.participants(teamId, projectId) } : {})
         });
       }
       if (req.method !== 'POST') throw problem('method_not_allowed', 405);
+      if (parts[0] === 'ack-revocation') {
+        if (!principal.runtimeId) throw problem('host_required', 403);
+        return reply(200, this.acknowledgeRevocation(teamId, principal.runtimeId, body.target || {}));
+      }
       if (parts[0] === 'announce') return reply(200, this.announce(teamId, account.id, body.endpoint));
       if (parts[0] === 'bootstrap') return reply(200, { endpoint: this.bootstrap(teamId, account.id, body.endpoint) });
       if (parts[0] === 'confirm') return reply(200, this.confirm(teamId, { userId: account.id, device: String(body.device || '') }, body.target));
