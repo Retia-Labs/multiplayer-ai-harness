@@ -219,9 +219,12 @@ let hub, runtime, socketsToClose = [];
 
   await opened.writer.append(events[events.length - 1], fixtureEventId(task.id, events.length - 1));
   await bobReader.reconnect(tasks.bob);
-  assert.equal(bobReader.state.outcome, 'completed');
+  // The fixture ends with a turn finishing. The task itself stays open until a person says
+  // otherwise, which is issue #13's separation and is what makes this assertion narrow.
+  assert.equal(bobReader.state.turn, 'completed');
+  assert.equal(bobReader.state.outcome, null);
   assert.deepEqual(bobReader.state.events, events);
-  pass('events written after the grant reach the new participant', 'outcome completed');
+  pass('events written after the grant reach the new participant', 'the final turn arrives');
 
   // A second task in the same project needs no second grant.
   const second = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId: task.projectId, creatorUserId: alice.me.id };
