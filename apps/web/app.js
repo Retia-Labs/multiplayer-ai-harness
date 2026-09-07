@@ -77,6 +77,8 @@
     catchup: null, catchupSnapshot: null, catchupTaskId: null,
     catchupExplain: null, catchupHostPrompt: null,
     inbox: [], inboxOpen: false,
+    // Set from the address bar before anything is connected, acted on once an endpoint exists.
+    linkedTaskId: (/^\/t\/([A-Za-z0-9_-]{1,80})$/.exec(location.pathname) || [])[1] || null,
     localRuntimeId: null,
     prefs: loadPrefs()
   };
@@ -219,6 +221,22 @@
     const enrolment = await state.encrypted.enrolmentState();
     state.encryptedState = { ...enrolment, fingerprint: state.encryptedIdentity && state.encryptedIdentity.fingerprint };
     try { state.encryptedTasks = await state.encrypted.list(); } catch { state.encryptedTasks = []; }
+    // A private link names a task and nothing else. Everything that decides whether its
+    // holder may read it has already happened by the time this runs: they signed in, the
+    // relay served this list only because they are on the team, and the catch-up screen
+    // still refuses to decrypt anything until this device has been confirmed.
+    if (state.linkedTaskId && !state.catchupOpen) {
+      const wanted = state.encryptedTasks.find((task) => task.id === state.linkedTaskId);
+      state.activeThreadId = state.linkedTaskId;
+      state.linkedTaskId = null;
+      if (wanted) openCatchup();
+      else {
+        // Whether that id exists is not something this screen should answer either way.
+        state.catchupExplain = 'This link points at a task this account cannot open. '
+          + 'That is the same answer whether it does not exist, belongs to another team, or has not been shared with you.';
+        openCatchup();
+      }
+    }
     renderEnrollment();
     // The inbox is only meaningful once this device can read something, so it is refreshed
     // with the enrolment rather than on a timer that would spin while it can read nothing.
@@ -948,7 +966,7 @@
       decisions: [], plan: { value: null, provenance: 'unavailable', reason: 'No plan has been recorded for this task.' },
       currentStep: { value: null, provenance: 'unavailable', reason: 'No plan has been recorded for this task.' },
       changes: { value: null, provenance: 'unavailable', reason: 'No file changes have been recorded for this task.' },
-      activity: [], outcome: { value: 'open', provenance: 'derived', sources: [] },
+      links: [], activity: [], outcome: { value: 'open', provenance: 'derived', sources: [] },
       turn: { value: null, provenance: 'unavailable', reason: 'No turn has finished on this task yet.' },
       pending: { approvals: [],
         blocker: { value: null, provenance: 'unavailable', reason: 'Nothing in the log identifies a blocker.' } } };

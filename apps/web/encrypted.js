@@ -37,12 +37,13 @@
         import('/shared/e2ee/enrollment.mjs'),
         import('/shared/e2ee/catchup.mjs'),
         import('/shared/e2ee/task-control.mjs'),
-        import('/shared/protocol/encrypted-task.mjs')
-      ]).then(([sdk, core, keys, log, enrol, view, control, protocol]) => {
+        import('/shared/protocol/encrypted-task.mjs'),
+        import('/shared/protocol/related-work.mjs')
+      ]).then(([sdk, core, keys, log, enrol, view, control, protocol, links]) => {
         const api = core.createEndpointAPI(sdk);
         return {
           Endpoint: api.Endpoint, HubKeyTransport: keys.HubKeyTransport,
-          matrixUser: protocol.matrixUser, ...log, ...enrol, ...view, ...control
+          matrixUser: protocol.matrixUser, ...log, ...enrol, ...view, ...control, ...links
         };
       });
     }
@@ -278,6 +279,37 @@
         task, action: 'help.settle', payload: { id, outcome: outcome === 'cancelled' ? 'cancelled' : 'resolved' }
       });
       return { id, outcome };
+    }
+
+    // ---- related work ----
+
+    // Store the issue or PR this task belongs to. Checked here so the person typing it gets
+    // an answer immediately, and checked again by the host, which is the copy that counts.
+    // Adding one talks to nobody: no request is made to the tracker, then or ever.
+    async addLink(task, { url, title }) {
+      const writer = this.confirmedHost(task.runtimeId);
+      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      const href = this.m.normalizeLink(url);
+      const id = 'lnk_' + Array.from(crypto.getRandomValues(new Uint8Array(8)),
+        (v) => v.toString(16).padStart(2, '0')).join('');
+      await this.m.sendTaskControl(this.endpoint, writer, {
+        task, action: 'link.add', payload: { id, url: href, ...(title ? { title: String(title) } : {}) }
+      });
+      return { id, url: href };
+    }
+
+    async removeLink(task, id) {
+      const writer = this.confirmedHost(task.runtimeId);
+      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      await this.m.sendTaskControl(this.endpoint, writer, { task, action: 'link.remove', payload: { id } });
+      return { id };
+    }
+
+    // The link somebody copies to point a teammate at this task. It carries an identifier and
+    // nothing else: no key, no token, no title. Whoever opens it still has to be signed in,
+    // still has to be on the team, and still has to hold an endpoint somebody confirmed.
+    privateLink(task) {
+      return location.origin + '/t/' + task.id;
     }
 
     // ---- finishing, and handing over ----

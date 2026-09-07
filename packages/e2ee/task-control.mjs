@@ -18,7 +18,7 @@ import { routing } from './task-log.mjs';
 export const ENVELOPE_TYPE = 'plexus.control.v1';
 export const CONTROL_TYPE = 'plexus.task.control.v1';
 export const HISTORY_TYPE = 'plexus.task.history.v1';
-export const ACTIONS = ['help.request', 'help.settle', 'task.outcome', 'responsibility.handover'];
+export const ACTIONS = ['help.request', 'help.settle', 'task.outcome', 'responsibility.handover', 'link.add', 'link.remove'];
 
 export class TaskControlError extends Error { constructor(code) { super(code); this.code = code; } }
 const fail = (code) => { throw new TaskControlError(code); };

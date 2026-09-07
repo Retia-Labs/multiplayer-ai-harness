@@ -21,6 +21,7 @@ const { HubKeyTransport } = require('../e2ee/hub-key-transport.mjs');
 const { EncryptedTaskTransport } = require('../e2ee/task-log.mjs');
 const { matrixUser } = require('../protocol/encrypted-task.mjs');
 const { readTaskControl, ENVELOPE_TYPE, HISTORY_TYPE } = require('../e2ee/task-control.mjs');
+const { normalizeLink, normalizeLinkTitle } = require('../protocol/related-work.mjs');
 const { routing } = require('../e2ee/task-log.mjs');
 const { EncryptedTaskState, EncryptedFixtureHost } = require('./encrypted-task');
 const { EncryptedTaskRun } = require('./encrypted-run');
@@ -219,7 +220,7 @@ class EncryptedHost {
     // Help requests carry their own id; an outcome or a handover is identified by what it
     // is and who sent it, which is enough to make a redelivered envelope idempotent without
     // letting a caller choose the identity of an event it does not own.
-    const id = action === 'help.request' || action === 'help.settle'
+    const id = ['help.request', 'help.settle', 'link.add', 'link.remove'].includes(action)
       ? String(payload.id || '')
       : action + ':' + sender;
     if (!/^[A-Za-z0-9_:.-]{1,96}$/.test(id)) throw Object.assign(new Error('invalid_task_control'), { code: 'invalid_task_control' });
@@ -260,6 +261,26 @@ class EncryptedHost {
       event = { type: 'responsibility.changed', payload: {
         to, by: sender, ...(from ? { from } : {}), ...(note ? { note } : {})
       } };
+    } else if (action === 'link.add') {
+      // Validated here because this is the copy everybody else renders. A client checks too,
+      // so it can say no without a round trip, but a client that skipped the check gets the
+      // same answer - which is the only arrangement worth having.
+      let url;
+      let title;
+      try {
+        url = normalizeLink(payload.url);
+        title = normalizeLinkTitle(payload.title);
+      } catch (error) {
+        throw Object.assign(new Error(error.code || 'invalid_link_url'), { code: error.code || 'invalid_link_url' });
+      }
+      if (opened.reader.state.links.some((link) => link.id === id && !link.removedBy)) {
+        throw Object.assign(new Error('task_link_exists'), { code: 'task_link_exists' });
+      }
+      event = { type: 'link.added', payload: { id, url, by: sender, ...(title ? { title } : {}) } };
+    } else if (action === 'link.remove') {
+      const held = opened.reader.state.links.find((link) => link.id === id);
+      if (!held || held.removedBy) throw Object.assign(new Error('unknown_task_link'), { code: 'unknown_task_link' });
+      event = { type: 'link.removed', payload: { id, by: sender } };
     } else {
       throw Object.assign(new Error('unsupported_task_control'), { code: 'unsupported_task_control' });
     }
