@@ -332,8 +332,14 @@ let hub, runtime, encrypted, browser, socket, running;
   // Resolving goes back through the host, and the inbox clears only once the host has
   // recorded it - not because the button was pressed.
   await page.click('#inbox-view button[data-action="resolve-help"]');
-  await waitFor(() => true, 'send');
-  const settledBrowser = await encrypted.collect();
+  // The host picks control messages up when it next looks, so this looks repeatedly rather
+  // than once - the same poll a running host performs, and the reason the inbox count is not
+  // cleared optimistically in the first place.
+  let settledBrowser = { applied: [] };
+  for (let n = 0; n < 200 && !settledBrowser.applied.length; n++) {
+    settledBrowser = await encrypted.collect();
+    if (!settledBrowser.applied.length) await new Promise((r) => setTimeout(r, 50));
+  }
   assert.equal(settledBrowser.applied.length, 1, JSON.stringify(settledBrowser));
   await page.evaluate(() => window.__plexus.refreshEncrypted());
   await page.waitForFunction(() => document.querySelector('#inbox-count').textContent === '0', null, { timeout: 30000 });
