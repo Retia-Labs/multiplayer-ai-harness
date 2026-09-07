@@ -7,6 +7,7 @@
     me: $('#me'), settingsBtn: $('#btn-settings'),
     topbarTitle: $('#topbar-title'), topbarBranch: $('#topbar-branch'), topbarWorktree: $('#topbar-worktree'), topbarRuntime: $('#topbar-runtime'),
     presence: $('#presence'), changesBtn: $('#btn-changes'), assignBtn: $('#btn-assign'), assignLabel: $('#assign-label'), auditBtn: $('#btn-audit'), catchupBtn: $('#btn-catchup'), catchupView: $('#catchup-view'),
+    inboxBtn: $('#btn-inbox'), inboxView: $('#inbox-view'), inboxCount: $('#inbox-count'),
     activityPanel: $('#activity-panel'),
     assignModal: $('#assign-modal'), closeAssign: $('#btn-close-assign'), assignUser: $('#assign-user'), assignNote: $('#assign-note'), doAssign: $('#btn-do-assign'), unassign: $('#btn-unassign'),
     fleetView: $('#fleet-view'), fleetRuntime: $('#fleet-runtime'), fleetProject: $('#fleet-project'), addProject: $('#btn-add-project'), fleetWorktree: $('#fleet-worktree'),
@@ -75,6 +76,7 @@
     encryptedTasks: [],       // tasks this account may fetch (not necessarily read)
     catchup: null, catchupSnapshot: null, catchupTaskId: null,
     catchupExplain: null, catchupHostPrompt: null,
+    inbox: [], inboxOpen: false,
     localRuntimeId: null,
     prefs: loadPrefs()
   };
@@ -218,6 +220,12 @@
     state.encryptedState = { ...enrolment, fingerprint: state.encryptedIdentity && state.encryptedIdentity.fingerprint };
     try { state.encryptedTasks = await state.encrypted.list(); } catch { state.encryptedTasks = []; }
     renderEnrollment();
+    // The inbox is only meaningful once this device can read something, so it is refreshed
+    // with the enrolment rather than on a timer that would spin while it can read nothing.
+    if (enrolment.state === 'verified') {
+      try { state.inbox = await state.encrypted.inbox(); } catch { state.inbox = []; }
+    } else state.inbox = [];
+    renderInbox();
   }
 
   function showInvite(invitation) {
@@ -1074,6 +1082,103 @@
 
   function renderIfOpen() { if (state.catchupOpen) renderCatchupView(); }
 
+  // ---- the inbox ----
+  //
+  // Questions a teammate addressed to this account, across every task this endpoint can
+  // read. It renders the same records the task view renders, from the same projections, so
+  // the two cannot disagree about whether something is still open.
+  function renderInbox() {
+    const open = state.inbox || [];
+    el.inboxBtn.classList.toggle('hidden', !state.encrypted);
+    el.inboxCount.textContent = String(open.length);
+    el.inboxCount.classList.toggle('zero', open.length === 0);
+    if (!state.inboxOpen) return;
+    el.inboxView.innerHTML = '';
+    const head = document.createElement('h3');
+    head.textContent = open.length ? 'Questions for you' : 'Nothing is waiting on you';
+    el.inboxView.appendChild(head);
+    if (!open.length) {
+      const empty = document.createElement('p');
+      empty.className = 'inbox-empty';
+      empty.textContent = 'A teammate can ask you about a task they have shared with you. '
+        + 'Questions appear here, and stay here until you resolve them or the asker withdraws them.';
+      el.inboxView.appendChild(empty);
+      return;
+    }
+    const list = document.createElement('ul');
+    list.className = 'cu-cards';
+    for (const entry of open) {
+      const card = document.createElement('li');
+      card.className = 'cu-card cu-help';
+      card.dataset.request = entry.request.id;
+      const question = document.createElement('p');
+      question.className = 'cu-help-question';
+      question.textContent = entry.request.question;
+      const who = document.createElement('p');
+      who.className = 'cu-help-who';
+      who.textContent = (nameFor(entry.request.from) || entry.request.from) + ' asked you';
+      const where = document.createElement('p');
+      where.className = 'inbox-task';
+      // Freshness travels with the entry, so "act later" does not quietly mean "act on
+      // something that stopped being true a while ago".
+      where.textContent = (entry.title || entry.taskId) + ' · ' + entry.freshness;
+      const actions = document.createElement('div');
+      actions.className = 'cu-actions';
+      const open_ = document.createElement('button');
+      open_.className = 'mini-btn';
+      open_.type = 'button';
+      open_.textContent = 'Open the task';
+      open_.addEventListener('click', () => {
+        closeInbox();
+        state.activeThreadId = entry.taskId;
+        openCatchup();
+      });
+      const done = document.createElement('button');
+      done.className = 'mini-btn';
+      done.type = 'button';
+      done.dataset.action = 'resolve-help';
+      done.textContent = 'Mark resolved';
+      done.addEventListener('click', async () => {
+        done.disabled = true;
+        try {
+          await state.encrypted.settleHelp(entry.task, entry.request.id, 'resolved');
+          // The host records it, and this endpoint learns it did by reading the log again -
+          // not by assuming the send succeeded and crossing it off locally.
+          toast('Sent. It clears once the host records it.');
+          await refreshEncrypted();
+        } catch (error) {
+          done.disabled = false;
+          toast('⚠ ' + esc(error.message || String(error)));
+        }
+      });
+      actions.append(open_, done);
+      card.append(question, who, where, actions);
+      list.appendChild(card);
+    }
+    el.inboxView.appendChild(list);
+  }
+
+  function nameFor(userId) {
+    const member = (state.users || []).find((u) => u.userId === userId);
+    return member ? member.name : null;
+  }
+
+  function openInbox() {
+    state.inboxOpen = true;
+    el.threadView.classList.add('hidden'); el.diffView.classList.add('hidden');
+    el.catchupView.classList.add('hidden'); el.fleetView.classList.add('hidden');
+    el.inboxView.classList.remove('hidden'); el.inboxBtn.classList.add('active');
+    renderInbox();
+    refreshEncrypted().catch(() => {});
+  }
+
+  function closeInbox() {
+    if (!state.inboxOpen) return;
+    state.inboxOpen = false;
+    el.inboxView.classList.add('hidden'); el.inboxBtn.classList.remove('active');
+    if (state.activeThreadId) el.threadView.classList.remove('hidden'); else el.fleetView.classList.remove('hidden');
+  }
+
   function closeCatchup() {
     if (!state.catchupOpen) return;
     state.catchupOpen = false; el.catchupView.classList.add('hidden'); el.catchupBtn.classList.remove('active');
@@ -1257,7 +1362,8 @@
   // A handle on this page's own state, so automated checks can drive the real app instead of
   // a fixture of it. It exposes nothing a script on this origin could not already reach - the
   // session token is in localStorage either way - and confers no authority the page lacks.
-  window.__plexus = { state, openCatchup, refreshEncrypted: () => refreshEncrypted() };
+  window.__plexus = { state, openCatchup, openInbox, refreshEncrypted: () => refreshEncrypted() };
+  el.inboxBtn.addEventListener('click', () => (state.inboxOpen ? closeInbox() : openInbox()));
 
   let saved = null;
   try { saved = JSON.parse(localStorage.getItem('harness.session') || 'null'); } catch {}

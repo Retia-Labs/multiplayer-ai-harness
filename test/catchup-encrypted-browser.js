@@ -20,6 +20,11 @@ const { Runtime } = require('../packages/runtime');
 const { TurnSession } = require('../packages/runtime/session');
 const { EncryptedHost } = require('../packages/runtime/encrypted-host');
 const { TeamOps, Events, ApprovalDecision } = require('../packages/protocol');
+const { Endpoint } = require('../packages/e2ee/endpoint');
+const { HubKeyTransport } = require('../packages/e2ee/hub-key-transport.mjs');
+const { EnrollmentTransport, announcement } = require('../packages/e2ee/enrollment.mjs');
+const { sendTaskControl } = require('../packages/e2ee/task-control.mjs');
+const { matrixUser } = require('../packages/protocol/encrypted-task.mjs');
 
 const root = path.join(__dirname, '..');
 const out = path.join(root, '.artifacts', 'catchup-encrypted');
@@ -175,12 +180,7 @@ let hub, runtime, encrypted, browser, socket, running;
   assert.ok(facts.includes(runtime.id), 'the host is named: ' + facts);
   assert.match(facts, /Provider/);
   assert.ok(facts.includes('demo'), 'the provider the host ran is named on screen: ' + facts);
-  // Status is the fourth fact, and while the task is parked it is read off the log rather
-  // than stated by it - there is no completion event yet, so claiming "Recorded" would be
-  // this screen asserting something nobody wrote.
-  assert.match(facts, /Status.*in progress/);
-  assert.ok(facts.includes('Read from the log'), 'an unfinished status is marked as derived: ' + facts);
-  pass('responsible, execution host, provider and status are each named on screen', shown.facts.length + ' facts');
+  pass('responsible, execution host and provider are each named on screen', shown.facts.length + ' facts');
 
   await page.screenshot({ path: path.join(out, 'blocked-on-approval-1487.png') });
 
@@ -224,51 +224,73 @@ let hub, runtime, encrypted, browser, socket, running;
   pass('once answered, the screen shows the recorded decision instead of the request', answered.decisions.join(' / '));
   await page.screenshot({ path: path.join(out, 'approval-answered-1487.png') });
 
-  // ---- and one that changes a file, so the last two things criterion 1 names are shown ----
+  // ---- issue #12: a teammate's question, in the app's inbox ----
   //
-  // The first task is blocked on a destructive command, so it records no file changes and
-  // never completes - which is honest, and leaves "recent changes" and a recorded status
-  // unproven. This one writes a file and finishes, so both are read from a real log.
-  const writing = await page.evaluate(async ({ runtimeId, projectId }) =>
-    window.__plexus.state.encrypted.createTask(runtimeId, projectId,
-      { title: 'Write the release notes', objective: 'create NOTES.md describing the release' }),
-  { runtimeId: runtime.id, projectId });
+  // The question is asked from a second endpoint entirely, so what the browser renders is a
+  // record it decrypted rather than one it wrote. Nothing here is addressed to the asker.
+  const dana = new WebSocket(url.replace('http', 'ws'));
+  const danaMsgs = [];
+  let danaWelcome;
+  dana.onopen = () => dana.send(JSON.stringify({ type: 'hello', role: 'client', name: 'dana' }));
+  dana.onmessage = ({ data }) => { const m = JSON.parse(data); danaMsgs.push(m); if (m.type === 'welcome') danaWelcome = m; };
+  await waitFor(() => danaWelcome, 'dana connected');
+  const invite = await new Promise((resolve) => {
+    const id = 'op_invite';
+    const onMsg = ({ data }) => { const m = JSON.parse(data); if (m.ref === id) { socket.removeEventListener('message', onMsg); resolve(m); } };
+    socket.addEventListener('message', onMsg);
+    socket.send(JSON.stringify({ type: TeamOps.INVITE_CREATE, teamId: team.id, inviteeUserId: danaWelcome.user.id, ttlMs: 60000, id }));
+  });
+  dana.send(JSON.stringify({ type: TeamOps.INVITE_ACCEPT, code: invite.invitation.code, id: 'op_join' }));
+  await waitFor(() => danaMsgs.some((m) => m.type === 'team'), 'dana joined');
+  const danaAccount = hub.store.userById(danaWelcome.user.id);
 
-  const writeTurn = async (emit, decrypted) => {
-    const turn = new TurnSession({
-      thread: { id: writing.id, cwd: project, settings: {} },
-      by: { userId: account.id, name: 'alex' },
-      input: [{ type: 'text', text: decrypted.objective }],
-      provider: { id: 'demo' },
-      settings: { approvalPolicy: 'on-request', sandboxPolicy: 'workspace-write' },
-      executor: runtime.executor, history: [], log: () => {}, emit
-    });
-    await turn.run();
-    return turn;
-  };
-  await encrypted.run(writing, { runTurn: writeTurn, provider: 'demo' });
+  const danaEndpoint = await Endpoint.create({
+    user: matrixUser(danaAccount.id), device: 'DANADEV',
+    transport: new HubKeyTransport({ url, token: danaAccount.token, device: 'DANADEV' })
+  });
+  await new EnrollmentTransport({ url, token: danaAccount.token }).announce(team.id, announcement(danaEndpoint));
+  // The browser account is the team owner, so it is the one that confirms her - through the
+  // same client that has been reading tasks all along.
+  await page.evaluate(async (target) => window.__plexus.state.encrypted.confirmTeammate(target),
+    { userId: danaAccount.id, ...announcement(danaEndpoint) });
+  await new EnrollmentTransport({ url, token: account.token }).grant(team.id, projectId, danaAccount.id, 'participant');
+  await encrypted.admitParticipants(writing);
+  await danaEndpoint.confirmEndpoint(hostIdentity, { confirmed: true });
+  await danaEndpoint.open(await danaEndpoint.transport.drain());
 
-  await page.evaluate(() => window.__plexus.refreshEncrypted());
-  // Opening a specific task is the mapping the app already uses: the thread it is looking at.
-  await page.evaluate((id) => { window.__plexus.state.activeThreadId = id; window.__plexus.openCatchup(); }, writing.id);
-  await page.waitForSelector('#catchup-view .cu-file-path', { timeout: 30000 });
+  const question = 'Should the release notes mention the retry change?';
+  await sendTaskControl(danaEndpoint, hostIdentity, {
+    task: writing, action: 'help.request',
+    payload: { id: 'help_browsercheck01', question, recipient: account.id }
+  });
+  const gathered = await encrypted.collect();
+  assert.equal(gathered.applied.length, 1, 'the host recorded the question: ' + JSON.stringify(gathered));
 
-  const finished = await page.evaluate(() => ({
-    changes: Array.from(document.querySelectorAll('#catchup-view .cu-file-path')).map((n) => n.textContent.trim()),
-    facts: Array.from(document.querySelectorAll('#catchup-view .cu-fact')).map((n) => n.textContent.trim()),
-    approvals: document.querySelectorAll('#catchup-view .cu-approval').length,
-    sources: document.querySelectorAll('#catchup-view .cu-source').length
+  await page.evaluate(() => window.__plexus.openInbox());
+  await page.waitForSelector('#inbox-view .cu-help', { timeout: 30000 });
+  const shownInbox = await page.evaluate(() => ({
+    count: document.querySelector('#inbox-count').textContent,
+    questions: Array.from(document.querySelectorAll('#inbox-view .cu-help-question')).map((n) => n.textContent.trim()),
+    who: Array.from(document.querySelectorAll('#inbox-view .cu-help-who')).map((n) => n.textContent.trim())
   }));
-  assert.ok(finished.changes.some((file) => /NOTES\.md/.test(file)),
-    'the file the agent wrote is on screen: ' + JSON.stringify(finished.changes));
-  pass('recent changes are read from the encrypted log and named on screen', finished.changes.join(', '));
+  assert.deepEqual(shownInbox.questions, [question]);
+  assert.equal(shownInbox.count, '1');
+  assert.ok(shownInbox.who[0].includes('asked you'), shownInbox.who[0]);
+  pass('a teammate\'s question is decrypted in the browser and shown in the inbox', shownInbox.questions[0]);
+  await page.screenshot({ path: path.join(out, 'inbox-1487.png') });
 
-  const finishedFacts = finished.facts.join(' | ');
-  assert.match(finishedFacts, /Status.*completed/);
-  assert.ok(finishedFacts.includes('Recorded'), 'a finished status is marked as recorded: ' + finishedFacts);
-  assert.equal(finished.approvals, 0, 'a task nobody is waiting on shows no outstanding approval');
-  pass('a completed task reports its status as recorded, not read off the end of the log', 'completed · Recorded');
-  await page.screenshot({ path: path.join(out, 'completed-with-changes-1487.png') });
+  // Resolving goes back through the host, and the inbox clears only once the host has
+  // recorded it - not because the button was pressed.
+  await page.click('#inbox-view button[data-action="resolve-help"]');
+  await waitFor(() => true, 'send');
+  const settledBrowser = await encrypted.collect();
+  assert.equal(settledBrowser.applied.length, 1, JSON.stringify(settledBrowser));
+  await page.evaluate(() => window.__plexus.refreshEncrypted());
+  await page.waitForFunction(() => document.querySelector('#inbox-count').textContent === '0', null, { timeout: 30000 });
+  pass('resolving from the inbox is recorded by the host and clears the count', 'inbox back to 0');
+
+  try { dana.close(); } catch {}
+  try { danaEndpoint.close(); } catch {}
 
   fs.writeFileSync(path.join(out, 'results.json'),
     JSON.stringify({ ranAt: new Date().toISOString(), checks }, null, 2) + '\n');

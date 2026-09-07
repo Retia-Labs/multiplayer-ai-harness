@@ -36,12 +36,13 @@
         import('/shared/e2ee/task-log.mjs'),
         import('/shared/e2ee/enrollment.mjs'),
         import('/shared/e2ee/catchup.mjs'),
+        import('/shared/e2ee/task-control.mjs'),
         import('/shared/protocol/encrypted-task.mjs')
-      ]).then(([sdk, core, keys, log, enrol, view, protocol]) => {
+      ]).then(([sdk, core, keys, log, enrol, view, control, protocol]) => {
         const api = core.createEndpointAPI(sdk);
         return {
           Endpoint: api.Endpoint, HubKeyTransport: keys.HubKeyTransport,
-          matrixUser: protocol.matrixUser, ...log, ...enrol, ...view
+          matrixUser: protocol.matrixUser, ...log, ...enrol, ...view, ...control
         };
       });
     }
@@ -132,8 +133,17 @@
     // Confirm a teammate's endpoint. The caller is expected to have shown the fingerprint
     // and got a person to agree with it; this cannot check that and does not pretend to.
     async confirmTeammate(target) {
-      await this.endpoint.confirmEndpoint(target, { confirmed: true });
-      return this.enrolment.confirm(this.teamId, this.device, { userId: target.userId, device: target.device });
+      // The enrolment speaks in account ids and the crypto store speaks in Matrix user ids.
+      // Confirming needs both halves of that, and the keys are the part that actually
+      // matters: a device whose keys do not match what was announced is refused here.
+      await this.endpoint.confirmEndpoint({
+        user: this.m.matrixUser(target.userId), device: target.device,
+        curve25519: target.curve25519, ed25519: target.ed25519
+      }, { confirmed: true });
+      return this.enrolment.confirm(this.teamId, this.device, {
+        userId: target.userId, device: target.device,
+        curve25519: target.curve25519, ed25519: target.ed25519
+      });
     }
 
     // ---- confirming a host ----
@@ -239,6 +249,51 @@
           provider: ctx.provider || null
         })
       };
+    }
+
+    // ---- asking a named teammate ----
+
+    // Ask somebody about this task. The question never reaches a provider: it is sealed to
+    // the host, which records it as a question for a person. Nothing on this path can turn
+    // into agent input, which is the point of it being a separate call from starting a turn.
+    async askForHelp(task, { question, recipient }) {
+      const writer = this.confirmedHost(task.runtimeId);
+      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      const text = typeof question === 'string' ? question.trim() : '';
+      if (!text) throw Object.assign(new Error('help_needs_a_question'), { code: 'help_needs_a_question' });
+      const id = 'help_' + Array.from(crypto.getRandomValues(new Uint8Array(8)),
+        (v) => v.toString(16).padStart(2, '0')).join('');
+      await this.m.sendTaskControl(this.endpoint, writer, {
+        task, action: 'help.request', payload: { id, question: text, recipient }
+      });
+      return { id };
+    }
+
+    // The recipient dealt with it, or the asker withdrew it. The host decides which of those
+    // this caller is allowed to say; sending the other is refused there, not here.
+    async settleHelp(task, id, outcome) {
+      const writer = this.confirmedHost(task.runtimeId);
+      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      await this.m.sendTaskControl(this.endpoint, writer, {
+        task, action: 'help.settle', payload: { id, outcome: outcome === 'cancelled' ? 'cancelled' : 'resolved' }
+      });
+      return { id, outcome };
+    }
+
+    // Every open question addressed to this account, across the tasks this endpoint can
+    // read. Built from the same projections the task views render, so the inbox and the task
+    // cannot disagree about whether something is still open.
+    async inbox(context) {
+      const tasks = await this.list();
+      const projections = [];
+      for (const task of tasks) {
+        const out = await this.catchUp(task, context);
+        if (out.projection) projections.push({ task, projection: out.projection });
+      }
+      return this.m.inbox(projections, this.userId).map((entry) => ({
+        ...entry,
+        task: (projections.find((p) => p.projection.scope.taskId === entry.taskId) || {}).task || null
+      }));
     }
 
     close() { try { if (this.endpoint) this.endpoint.close(); } catch {} }

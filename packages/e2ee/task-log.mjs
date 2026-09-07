@@ -29,6 +29,19 @@ function eventValid(e) {
     // answered stays visibly outstanding rather than being quietly cleared.
     case 'approval.requested':return typeof p.id==='string' && typeof p.action==='string' &&
       (p.reason===undefined||typeof p.reason==='string') && (p.expiresAt===undefined||integer(p.expiresAt));
+    // Asking a named teammate for help, and the answer being that somebody dealt with it.
+    //
+    // Both halves are written by the host, which is what makes `from` worth reading: the
+    // request reaches the host sealed by an endpoint it has verified, so the host states who
+    // asked rather than repeating a claim. A client asserting its own name here would make
+    // the attribution decorative.
+    case 'help.requested':return typeof p.id==='string' && typeof p.question==='string' &&
+      typeof p.from==='string' && typeof p.recipient==='string';
+    // Resolved and cancelled are different acts by different people - the recipient dealt
+    // with it, or the asker withdrew it - so the outcome is recorded rather than inferred
+    // from who happened to send it.
+    case 'help.settled':return typeof p.id==='string' && typeof p.by==='string' &&
+      ['resolved','cancelled'].includes(p.outcome);
     case 'task.completed':return ['completed','failed','cancelled'].includes(p.outcome);
     default:return false;
   }
@@ -48,6 +61,16 @@ function reduce(state,event) {
   if(event.type==='tool.completed')state.tools.push(p);
   if(event.type==='diff.updated')state.diffs=p.files;
   if(event.type==='activity.recorded')state.activity.push(p);
+  if(event.type==='help.requested') {
+    if(state.help.some((h)=>h.id===p.id)) fail('task_item_conflict');
+    state.help.push(p);
+  }
+  if(event.type==='help.settled') {
+    const held=state.help.find((h)=>h.id===p.id);
+    if(!held) fail('unknown_help_request');
+    if(held.outcome) fail('task_item_conflict');
+    held.outcome=p.outcome;held.settledBy=p.by;
+  }
   if(event.type==='approval.requested') {
     if(state.approvals.some((a)=>a.id===p.id)) fail('task_item_conflict');
     state.approvals.push(p);
@@ -96,7 +119,7 @@ export class EncryptedTaskReader {
       (this.floor.seq===0 ? this.floor.hash!==null : !/^[a-f0-9]{64}$/.test(this.floor.hash)))fail('invalid_local_checkpoint');
     this.floor=structuredClone(this.floor);
     this.seq=0;this.hash=null;this.hashes=new Map();this.ids=new Set();
-    this.state={title:null,objective:null,details:null,messages:[],plan:null,tools:[],diffs:[],activity:[],approvals:[],decisions:[],outcome:null,events:[]};
+    this.state={title:null,objective:null,details:null,messages:[],plan:null,tools:[],diffs:[],activity:[],approvals:[],help:[],decisions:[],outcome:null,events:[]};
     this.status={state:'idle',seq:0};this.queue=Promise.resolve();
   }
   setStatus(state,code) {this.status={state,seq:this.seq,...(code?{code}:{})};this.onStatus(this.status);}

@@ -15,10 +15,13 @@
 //     the alternative is a remote id selecting a local folder.
 //   * **What the agent did.** Turn events are translated, never summarised, and anything
 //     without a counterpart in the log is dropped rather than approximated.
+const crypto = require('node:crypto');
 const { Endpoint } = require('../e2ee/endpoint');
 const { HubKeyTransport } = require('../e2ee/hub-key-transport.mjs');
 const { EncryptedTaskTransport } = require('../e2ee/task-log.mjs');
 const { matrixUser } = require('../protocol/encrypted-task.mjs');
+const { readTaskControl, ENVELOPE_TYPE, HISTORY_TYPE } = require('../e2ee/task-control.mjs');
+const { routing } = require('../e2ee/task-log.mjs');
 const { EncryptedTaskState, EncryptedFixtureHost } = require('./encrypted-task');
 const { EncryptedTaskRun } = require('./encrypted-run');
 
@@ -34,6 +37,7 @@ class EncryptedHost {
     this.adapter = null;
     this.state = null;
     this.handled = new Set();
+    this.handedOff = new Set();
     this.running = new Map();
   }
 
@@ -93,6 +97,155 @@ class EncryptedHost {
   async pending() {
     const listed = await this.tasks.list(this.runtime.teamId);
     return (listed.tasks || []).filter((task) => task.runtimeId === this.runtime.id && !this.handled.has(task.id));
+  }
+
+  // Who holds a live grant on a project, as the relay records it. This is the relay's own
+  // gate - membership of a project, not decryption authority - and it is the right one to
+  // ask here: "may this person be sent a question about this work" is exactly a grant.
+  async participants(projectId) {
+    const response = await fetch(this.url + '/api/enrollment?team=' + encodeURIComponent(this.runtime.teamId) +
+      '&project=' + encodeURIComponent(projectId), {
+      headers: { Authorization: 'Bearer ' + this.runtime.runtimeToken, 'X-Plexus-Runtime': this.runtime.id },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error('enrollment_unavailable');
+    const state = await response.json();
+    return new Map((state.participants || []).map((p) => [p.userId, p]));
+  }
+
+  // Everyone a live project grant covers, handed the key to a task they may now read.
+  //
+  // A grant is the relay's gate and hands nobody a key: the host owns the group session, so
+  // it is the only party that can share one. Re-sharing to the current member set is also
+  // what makes removal mean something, because the next share leaves out whoever was
+  // revoked. Poll-based like everything else here - a grant takes effect when the host next
+  // looks, and there is no push.
+  async admitParticipants(task) {
+    const project = this.projects.get(task.projectId);
+    if (!project) return { admitted: [], skipped: 'project_not_mapped' };
+    const holders = await this.participants(task.projectId);
+    const verified = await this.verifiedEndpoints();
+    const members = [];
+    for (const userId of holders.keys()) {
+      const identity = verified.get(userId);
+      // A grant without a verified endpoint is a person who may join and has not yet proved
+      // which device they are. Nothing is shared with a device nobody has confirmed.
+      if (identity) members.push({ userId, identity });
+    }
+    if (!members.length) return { admitted: [] };
+
+    const creators = await this.verifiedEndpoints();
+    const adapter = new EncryptedFixtureHost({
+      runtime: this.runtime, endpoint: this.endpoint, transport: this.tasks, state: this.state,
+      projects: new Map([[task.projectId, project]]),
+      creators: new Map([...creators].map(([userId, identity]) => [userId, identity]))
+    });
+    await adapter.open(task);
+
+    // History first. A teammate admitted to the session but not handed what came before
+    // would replay from event one and fail on the first event they cannot decrypt.
+    const handed = [];
+    for (const member of members) {
+      const key = task.id + '/' + member.identity.user + '/' + member.identity.device;
+      if (this.handedOff.has(key)) continue;
+      const history = await adapter.handOff(task, { userId: member.userId, device: member.identity.device });
+      const envelope = await this.endpoint.sealControl(member.identity.user, member.identity.device, {
+        type: HISTORY_TYPE, task: routing(task), history
+      });
+      await this.endpoint.transport.deliverToDevice(member.identity.user, member.identity.device, envelope);
+      this.handedOff.add(key);
+      handed.push(member.userId);
+    }
+    // Then the session itself, so everything written afterwards needs no further handoff.
+    await adapter.admit(task, members.map((m) => m.identity));
+    return { admitted: members.map((m) => m.userId), handed };
+  }
+
+  // Control messages teammates have sealed to this host, applied to the tasks they name.
+  //
+  // The mailbox is drained once and dispatched, because draining is destructive: collecting
+  // "for one task" would throw away every message addressed to the others. Poll-based like
+  // pending() - a request is picked up when the host next looks, and there is no push.
+  async collect() {
+    const envelopes = await this.endpoint.transport.drain();
+    if (!envelopes.length) return { applied: [], refused: [] };
+    // The same call takes delivery of room keys, which share this mailbox.
+    const events = await this.endpoint.open(envelopes);
+    const control = events.filter((event) => event && event.type === ENVELOPE_TYPE);
+    if (!control.length) return { applied: [], refused: [] };
+
+    const listed = await this.tasks.list(this.runtime.teamId);
+    const mine = (listed.tasks || []).filter((task) => task.runtimeId === this.runtime.id);
+    const applied = [];
+    const refused = [];
+    for (const event of control) {
+      let match = null;
+      for (const task of mine) {
+        let read = null;
+        try { read = readTaskControl(event, task); }
+        catch (error) { refused.push({ code: error.code || 'invalid_task_control' }); match = 'refused'; break; }
+        if (read) { match = { task, read }; break; }
+      }
+      if (match === 'refused') continue;
+      // A message naming a task this host does not hold is dropped rather than guessed at.
+      if (!match) { refused.push({ code: 'unknown_task_control_target' }); continue; }
+      try {
+        applied.push(await this.apply(match.task, match.read));
+      } catch (error) {
+        this.log('task control refused: ' + (error.code || error.message));
+        refused.push({ taskId: match.task.id, code: error.code || 'task_control_refused' });
+      }
+    }
+    return { applied, refused };
+  }
+
+  // One authorized control message, turned into one log event.
+  async apply(task, { sender, action, payload }) {
+    const project = this.projects.get(task.projectId);
+    if (!project) throw Object.assign(new Error('project_not_mapped'), { code: 'project_not_mapped' });
+    const holders = await this.participants(task.projectId);
+    // Being able to seal to this host is being a verified endpoint. It is not being on the
+    // project, and the two gates are deliberately different: cryptography says who you are,
+    // the grant says what you are part of.
+    if (!holders.has(sender)) throw Object.assign(new Error('sender_not_in_project'), { code: 'sender_not_in_project' });
+
+    const creators = await this.verifiedEndpoints();
+    const adapter = new EncryptedFixtureHost({
+      runtime: this.runtime, endpoint: this.endpoint, transport: this.tasks, state: this.state,
+      projects: new Map([[task.projectId, project]]),
+      creators: new Map([...creators].map(([userId, identity]) => [userId, identity]))
+    });
+    const opened = await adapter.open(task);
+    const id = String(payload.id || '');
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw Object.assign(new Error('invalid_task_control'), { code: 'invalid_task_control' });
+
+    let event;
+    if (action === 'help.request') {
+      const recipient = String(payload.recipient || '');
+      const question = typeof payload.question === 'string' ? payload.question.trim() : '';
+      if (!question) throw Object.assign(new Error('help_needs_a_question'), { code: 'help_needs_a_question' });
+      // The criterion this exists for: a question addressed outside the project is refused
+      // rather than recorded and left unanswerable.
+      if (!holders.has(recipient)) throw Object.assign(new Error('recipient_not_in_project'), { code: 'recipient_not_in_project' });
+      event = { type: 'help.requested', payload: { id, question, from: sender, recipient } };
+    } else if (action === 'help.settle') {
+      const held = opened.reader.state.help.find((entry) => entry.id === id);
+      if (!held) throw Object.assign(new Error('unknown_help_request'), { code: 'unknown_help_request' });
+      const outcome = payload.outcome === 'cancelled' ? 'cancelled' : 'resolved';
+      // The recipient deals with a question; the person who asked withdraws it. Nobody else
+      // closes somebody's question on their behalf.
+      const may = outcome === 'resolved' ? held.recipient : held.from;
+      if (sender !== may) throw Object.assign(new Error('not_the_help_owner'), { code: 'not_the_help_owner' });
+      event = { type: 'help.settled', payload: { id, by: sender, outcome } };
+    } else {
+      throw Object.assign(new Error('unsupported_task_control'), { code: 'unsupported_task_control' });
+    }
+
+    // Deterministic, so a redelivered envelope is recognised as the same event rather than
+    // appended twice - #6's writer refuses a reused id whose content differs.
+    const eventId = 'ev_' + crypto.createHash('sha256').update(task.id + ':' + event.type + ':' + id).digest('hex').slice(0, 32);
+    await opened.writer.append(event, eventId);
+    return { taskId: task.id, type: event.type, id };
   }
 
   // One task, from opaque record to finished encrypted history.

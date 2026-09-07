@@ -130,6 +130,9 @@ const Errors = {
   TURN_BINDING_REQUIRED: 'turn_binding_required',    // steering must name the turn it was written for
   HELP_IS_NOT_INPUT: 'help_is_not_agent_input',      // a message for a person cannot be sent to an agent
   UNKNOWN_HELP_REQUEST: 'unknown_help_request',
+  // Addressing work to somebody who is not on the team. Its own code because "nobody
+  // by that name" and "that person cannot see this" are different problems to fix.
+  RECIPIENT_NOT_AUTHORIZED: 'recipient_not_authorized',
   // ---- approval resolution (issue #11) ----
   APPROVAL_UNKNOWN: 'unknown_approval_request',        // nothing is pending under that id
   APPROVAL_SETTLED: 'approval_already_settled',        // somebody answered first; who and how is returned

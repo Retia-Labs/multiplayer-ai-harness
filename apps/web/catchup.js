@@ -208,6 +208,20 @@
       pending.appendChild(el('p', 'cu-missing',
         'No approval on this task is waiting for an answer. A decision recorded against a request is what answers it.'));
     }
+    // Questions asked of a named person. Shown with the question itself, because "somebody
+    // asked you something" without the question is a notification, not an inbox.
+    const help = projection.pending.help || [];
+    if (help.length) {
+      const list = el('ul', 'cu-cards');
+      for (const entry of help) {
+        const card = el('li', 'cu-card cu-help');
+        card.appendChild(el('p', 'cu-help-question', entry.value.question));
+        card.appendChild(el('p', 'cu-help-who', entry.value.from + ' asked ' + entry.value.recipient));
+        card.appendChild(provenanceRow(entry, onOpenSource));
+        list.appendChild(card);
+      }
+      pending.appendChild(list);
+    }
     root.appendChild(section('Waiting on', pending));
 
     // --- followup ---

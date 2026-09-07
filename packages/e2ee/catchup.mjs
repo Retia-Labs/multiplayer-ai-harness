@@ -160,7 +160,21 @@ export function catchUp(snapshot, context = {}) {
       ? derived(currentStep.value, currentStep.sources || [])
       : unavailable('Nothing in the log identifies a blocker.');
 
-  const pending = { approvals, blocker };
+  // Questions somebody asked a named person and nobody has closed. Settling is its own
+  // event, so an open question stays open until the recipient dealt with it or the asker
+  // withdrew it - not because the task moved on, and not because time passed.
+  const help = events.map((event, index) => ({ event, index }))
+    .filter(({ event }) => event.type === 'help.requested' && !event.payload.outcome)
+    .filter(({ event }) => !events.some((other) =>
+      other.type === 'help.settled' && other.payload.id === event.payload.id))
+    .map(({ event, index }) => recorded({
+      id: event.payload.id,
+      question: event.payload.question,
+      from: event.payload.from,
+      recipient: event.payload.recipient
+    }, event, index));
+
+  const pending = { approvals, help, blocker };
 
   const lastEventAt = typeof context.lastEventAt === 'number' ? context.lastEventAt : null;
 
@@ -193,6 +207,38 @@ export function catchUp(snapshot, context = {}) {
     outcome,
     pending
   };
+}
+
+/**
+ * One person's open questions, across every task this endpoint can read.
+ *
+ * Built from the same projections the task views render, on purpose: an inbox computed
+ * separately is an inbox that can disagree with the task it points at, and #12 asks for the
+ * two to stay consistent. Each entry carries enough to open the exact question - the task,
+ * the request, and who asked - and nothing that was not in the log.
+ *
+ * `mine` is the account id reading. Requests addressed to somebody else are not returned,
+ * which is a display decision and not a security one: the whole log is readable by anyone
+ * holding the task key, and pretending otherwise would be theatre.
+ */
+export function inbox(projections, mine) {
+  const out = [];
+  for (const entry of projections || []) {
+    const projection = entry && entry.projection;
+    if (!projection || !projection.pending) continue;
+    for (const request of projection.pending.help || []) {
+      if (request.value.recipient !== mine) continue;
+      out.push({
+        taskId: projection.scope.taskId,
+        projectId: projection.scope.projectId,
+        title: projection.scope.title,
+        freshness: projection.freshness.state,
+        request: request.value,
+        source: request.source
+      });
+    }
+  }
+  return out;
 }
 
 // Every source reference a projection makes, so a renderer can prove each one resolves to an

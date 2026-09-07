@@ -559,6 +559,18 @@ class Hub {
     // action is a separate grant, and it is checked here rather than assumed from role.
     const isApproval = cmd.method === Commands.APPROVAL_RESOLVE;
     if (isApproval && !this.store.isApprover(pairing.teamId, ctx.user.id)) throw fail(Errors.NOT_APPROVER);
+    // A question or a handover addressed to somebody has to name somebody who can actually
+    // receive it. These used to be whatever the caller typed, so work could be handed to a
+    // name nobody has and then sit there looking assigned to every client that rendered it.
+    // Membership is what this hub knows, so this is where it is checked.
+    const addressed = cmd.method === Commands.THREAD_HELP ? cmd.to
+      : cmd.method === Commands.THREAD_ASSIGN ? cmd.assignee : undefined;
+    if (addressed !== undefined && addressed !== null) {
+      const wanted = typeof addressed === 'string' ? addressed : addressed.userId;
+      if (typeof wanted !== 'string' || !this.store.membership(pairing.teamId, wanted)) {
+        throw fail(Errors.RECIPIENT_NOT_AUTHORIZED, 'that person is not on this team');
+      }
+    }
     const id = msg.id || uid('cmd');
     const key = ctx.user.id + '/' + id;
     const fingerprint = JSON.stringify([runtimeId, msg.threadId || null, cmd]);
@@ -595,6 +607,7 @@ class Hub {
     'e2ee/enrollment.mjs',
     'e2ee/catchup.mjs',
     'e2ee/hub-key-transport.mjs',
+    'e2ee/task-control.mjs',
     'protocol/encrypted-task.mjs'
   ]);
 
