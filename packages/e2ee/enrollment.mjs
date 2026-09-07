@@ -178,3 +178,16 @@ export async function participation(transport, teamId, projectId) {
     awaitingConfirmation: participants.filter((p) => !p.readable).map((p) => p.userId)
   };
 }
+
+// What revocation does, and the part of it nobody can do.
+//
+// Written down because the gap between these two is where people get hurt: a product that
+// says "removed" without saying "from here on" invites somebody to believe a laptop that was
+// taken home has been reached into, and it has not.
+export const REVOCATION_LIMITS = {
+  future: 'Removing an endpoint rotates the key. Everything written after the host applies it is unreadable to that device.',
+  alreadyRead: 'It does not erase anything that device already decrypted. Those events are on that machine, and no key rotation reaches them.',
+  participantHistory: 'A teammate who was in a project keeps whatever they had already read. Removal ends access; it does not un-share what was shared.',
+  pending: 'Until each execution host has applied the revocation, that device may still be able to read new events on the tasks that host owns. The hosts that have not applied it yet are named rather than counted.',
+  distinctFromRole: 'Endpoint keys, team role and paid seats are three separate things. Revoking a device does not change somebody\'s role or their seat, and removing a role does not rotate a key.'
+};
