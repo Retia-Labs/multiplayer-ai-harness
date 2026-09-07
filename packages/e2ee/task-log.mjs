@@ -42,7 +42,17 @@ function eventValid(e) {
     // from who happened to send it.
     case 'help.settled':return typeof p.id==='string' && typeof p.by==='string' &&
       ['resolved','cancelled'].includes(p.outcome);
-    case 'task.completed':return ['completed','failed','cancelled'].includes(p.outcome);
+    // What the machine did. A turn ending is a turn ending: the agent stopped talking, which
+    // is not the same as the work being finished, and recording one as the other is how a
+    // task ends up marked complete while somebody is still reviewing it.
+    case 'turn.completed':return ['completed','failed','interrupted'].includes(p.status);
+    // What a person decided about the work itself, and who decided it. Required, because an
+    // outcome with nobody attached is exactly the inference #9 forbids.
+    case 'task.completed':return ['completed','cancelled'].includes(p.outcome) && typeof p.by==='string';
+    // Responsibility moving, and who moved it. Nothing else travels with it - not approval
+    // authority, not the host, not whose provider account pays.
+    case 'responsibility.changed':return typeof p.to==='string' && typeof p.by==='string' &&
+      (p.from===undefined||typeof p.from==='string') && (p.note===undefined||typeof p.note==='string');
     default:return false;
   }
 }
@@ -76,7 +86,12 @@ function reduce(state,event) {
     state.approvals.push(p);
   }
   if(event.type==='decision.recorded')state.decisions.push(p);
-  if(event.type==='task.completed')state.outcome=p.outcome;
+  if(event.type==='turn.completed')state.turn=p.status;
+  if(event.type==='task.completed') {
+    if(state.outcome) fail('task_item_conflict');
+    state.outcome=p.outcome;state.completedBy=p.by;
+  }
+  if(event.type==='responsibility.changed') {state.responsible=p.to;state.handover=p;}
   state.events.push(structuredClone(event));
 }
 export class EncryptedTaskTransport {
@@ -119,7 +134,7 @@ export class EncryptedTaskReader {
       (this.floor.seq===0 ? this.floor.hash!==null : !/^[a-f0-9]{64}$/.test(this.floor.hash)))fail('invalid_local_checkpoint');
     this.floor=structuredClone(this.floor);
     this.seq=0;this.hash=null;this.hashes=new Map();this.ids=new Set();
-    this.state={title:null,objective:null,details:null,messages:[],plan:null,tools:[],diffs:[],activity:[],approvals:[],help:[],decisions:[],outcome:null,events:[]};
+    this.state={title:null,objective:null,details:null,messages:[],plan:null,tools:[],diffs:[],activity:[],approvals:[],help:[],decisions:[],turn:null,responsible:null,handover:null,outcome:null,completedBy:null,events:[]};
     this.status={state:'idle',seq:0};this.queue=Promise.resolve();
   }
   setStatus(state,code) {this.status={state,seq:this.seq,...(code?{code}:{})};this.onStatus(this.status);}

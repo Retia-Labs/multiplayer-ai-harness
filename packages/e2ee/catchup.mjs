@@ -89,6 +89,7 @@ export function catchUp(snapshot, context = {}) {
   const createdIndex = events.findIndex((e) => e.type === 'task.created');
   const created = createdIndex >= 0 ? events[createdIndex] : null;
   const planIndex = lastIndexOf(events, 'plan.updated');
+  const handoverIndex = lastIndexOf(events, 'responsibility.changed');
   const completedIndex = lastIndexOf(events, 'task.completed');
   const diffIndex = lastIndexOf(events, 'diff.updated');
 
@@ -125,9 +126,18 @@ export function catchUp(snapshot, context = {}) {
     .filter(({ event }) => event.type === 'activity.recorded')
     .map(({ event, index }) => recorded(event.payload.description, event, index, { paths: event.payload.paths }));
 
+  // The task's own outcome, which only a person records. Until somebody does, the work is
+  // open - and "open" is derived, because the log does not say it, it merely fails to say
+  // anything else. The last turn's result is reported next to it and never instead of it.
   const outcome = completedIndex >= 0
-    ? recorded(events[completedIndex].payload.outcome, events[completedIndex], completedIndex)
-    : derived('in-progress', events.length ? [ref(events[events.length - 1], events.length - 1)] : []);
+    ? recorded(events[completedIndex].payload.outcome, events[completedIndex], completedIndex,
+      { actor: events[completedIndex].payload.by })
+    : derived('open', events.length ? [ref(events[events.length - 1], events.length - 1)] : []);
+
+  const turnIndex = lastIndexOf(events, 'turn.completed');
+  const turn = turnIndex >= 0
+    ? recorded(events[turnIndex].payload.status, events[turnIndex], turnIndex)
+    : unavailable('No turn has finished on this task yet.');
 
   // Pending work is only ever what the log records as pending, never a message that happens
   // to end in a question mark.
@@ -156,7 +166,7 @@ export function catchUp(snapshot, context = {}) {
   // blocked, and saying otherwise would put words in the writer's mouth.
   const blocker = approvals.length
     ? derived('Waiting for a decision on: ' + approvals[0].value.action, approvals.map((entry) => entry.source))
-    : outcome.value === 'in-progress' && currentStep.value
+    : outcome.value === 'open' && currentStep.value
       ? derived(currentStep.value, currentStep.sources || [])
       : unavailable('Nothing in the log identifies a blocker.');
 
@@ -189,7 +199,14 @@ export function catchUp(snapshot, context = {}) {
     },
     freshness: freshness({ status: snapshot?.status, seq: snapshot?.seq ?? 0, head, hostConnected, lastEventAt, now, staleAfterMs, events: events.length }),
     // Operational facts the log does not carry. Absent means absent, and says so.
-    responsible: responsible ? { value: responsible, provenance: 'context' } : unavailable('No responsible teammate is recorded for this task.'),
+    // Responsibility is in the log once somebody has handed it over, and a recorded handover
+    // outranks whatever the screen was told - the same rule the provider follows.
+    responsible: handoverIndex >= 0
+      ? recorded(events[handoverIndex].payload.to, events[handoverIndex], handoverIndex,
+        { from: events[handoverIndex].payload.from ?? null, by: events[handoverIndex].payload.by,
+          note: events[handoverIndex].payload.note ?? null })
+      : responsible ? { value: responsible, provenance: 'context' }
+        : unavailable('No responsible teammate is recorded for this task.'),
     host: host ? { value: host, provenance: 'context' } : unavailable('No execution host is recorded for this task.'),
     // The log carries the provider when the host asserted one, and that beats anything a
     // caller passes in: a recorded fact and a screen's own guess are not interchangeable.
@@ -205,6 +222,7 @@ export function catchUp(snapshot, context = {}) {
     changes,
     activity,
     outcome,
+    turn,
     pending
   };
 }

@@ -117,8 +117,8 @@ let hub, runtime, encrypted, socket;
   const reader = new EncryptedTaskReader({ endpoint: client, task, writer: hostIdentity });
   await reader.reconnect(tasks);
   const text = JSON.stringify(reader.state.events);
-  assert.ok(reader.state.events.some((e) => e.type === 'task.completed'), 'the log says how it ended');
-  pass('the creator replays what the real provider did', reader.seq + ' events, outcome ' + reader.state.outcome);
+  assert.ok(reader.state.events.some((e) => e.type === 'turn.completed'), 'the log says how the turn ended');
+  pass('the creator replays what the real provider did', reader.seq + ' events, turn ' + reader.state.turn);
 
   // The agent read a file only the workspace contains, so the answer proves it saw it.
   if (text.includes(canary)) {
