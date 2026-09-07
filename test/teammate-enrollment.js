@@ -131,6 +131,9 @@ let hub, runtime, socketsToClose = [];
   await refused('confirming without having compared anything out of band is refused locally', 'endpoint_confirmation_required',
     () => confirmTeammateEndpoint(aliceEp, enroll.alice, team.id, { userId: bob.me.id, ...announcement(bobEp) }));
 
+  await refused('the owner cannot vouch from a device that is not itself confirmed', 'confirming_endpoint_unverified',
+    () => enroll.alice.confirm(team.id, 'ALICE_OTHER', { userId: bob.me.id, ...announcement(bobEp) }));
+
   // ================= a task exists before bob is anywhere near it =================
 
   const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId: newId('ep'), creatorUserId: alice.me.id };
@@ -161,7 +164,7 @@ let hub, runtime, socketsToClose = [];
 
   // ================= criterion 2: granting, and what it says it does =================
 
-  await refused('history cannot be sealed to an endpoint nobody has confirmed', 'endpoint_unverified',
+  await refused('history cannot be handed to an endpoint the relay does not call verified', 'member_endpoint_unverified',
     () => grantProjectAccess(aliceEp, enroll.alice, {
       teamId: team.id, projectId: task.projectId, member: { userId: bob.me.id, device: 'BOBDEV' }, taskIds: [task.id]
     }));
@@ -274,6 +277,57 @@ let hub, runtime, socketsToClose = [];
   await recovered.reconnect(tasks.bob);
   assert.deepEqual(recovered.state.events, events);
   pass('re-enrollment restores the full history to the rebuilt endpoint', recovered.seq + ' events');
+
+  // ================= who is allowed to vouch, and who stops being allowed =================
+
+  // Bob is verified and is not the team owner: the ordinary case, which until now only ever
+  // ran through the owner's branch.
+  await announceEndpoint(malloryEp, enroll.mallory, team.id);
+  await bobEp.confirmEndpoint(malloryEp.identity(), { confirmed: true });
+  const byBob = await confirmTeammateEndpoint(bobEp, enroll.bob, team.id, { userId: mallory.me.id, ...announcement(malloryEp) }, { confirmed: true });
+  assert.equal(byBob.endpoint.confirmedBy, bob.me.id + '/BOBDEV');
+  assert.equal(byBob.authority, 'endpoint');
+  pass('a verified endpoint that is not the team owner can vouch for another', 'mallory confirmed by bob/BOBDEV');
+
+  // Alice never compared mallory's fingerprint, so the relay calling it verified is not
+  // enough. The two layers disagreeing is the point: each refuses on its own grounds.
+  await refused('a relay-verified endpoint is still not sealed to without local confirmation', 'endpoint_unverified',
+    () => grantProjectAccess(aliceEp, enroll.alice, {
+      teamId: team.id, projectId: task.projectId, member: { userId: mallory.me.id, device: 'MALLORYDEV' }, taskIds: [task.id]
+    }));
+
+  await refused('the team cannot be bootstrapped a second time', 'team_already_bootstrapped',
+    () => enroll.alice.bootstrap(team.id, announcement(aliceEp)));
+
+  await refused('a participant cannot revoke the project owner', 'project_owner_grant_retained',
+    () => enroll.bob.revokeGrant(team.id, task.projectId, alice.me.id));
+
+  const revoked = await enroll.alice.revokeEndpoint(team.id, { userId: bob.me.id, device: 'BOBDEV2' });
+  assert.equal(revoked.endpoint.state, 'revoked');
+  pass('an endpoint can be revoked', 'bob/BOBDEV2 revoked');
+
+  await refused('a revoked endpoint cannot be confirmed again', 'endpoint_revoked',
+    () => enroll.alice.confirm(team.id, 'ALICEDEV', { userId: bob.me.id, ...announcement(bobFresh) }));
+  await refused('a revoked endpoint cannot announce its way back to pending', 'endpoint_not_announced',
+    () => announceEndpoint(bobFresh, enroll.bob, team.id));
+  await refused('a revoked endpoint receives no further history, however trusted it once was', 'member_endpoint_unverified',
+    () => grantProjectAccess(aliceEp, enroll.alice, {
+      teamId: team.id, projectId: task.projectId, member: { userId: bob.me.id, device: 'BOBDEV2' }, taskIds: [task.id]
+    }));
+
+  await enroll.alice.revokeEndpoint(team.id, { userId: bob.me.id, device: 'BOBDEV' });
+  await refused('a participant with no confirmed endpoint left cannot grant to anyone', 'granting_endpoint_unverified',
+    () => enroll.bob.grant(team.id, task.projectId, mallory.me.id, 'participant'));
+
+  // The recovery authority, in the situation it exists for: the owner has lost every
+  // endpoint she had, so there is nobody left who could vouch for her replacement.
+  await enroll.alice.revokeEndpoint(team.id, { userId: alice.me.id, device: 'ALICEDEV' });
+  const aliceFresh = await Endpoint.create({ user: matrixUser(alice.me.id), device: 'ALICEDEV2', transport: keys });
+  await announceEndpoint(aliceFresh, enroll.alice, team.id);
+  const byRecovery = await enroll.alice.confirm(team.id, 'ALICEDEV2', { userId: alice.me.id, ...announcement(aliceFresh) });
+  assert.equal(byRecovery.authority, 'recovery');
+  assert.equal(byRecovery.endpoint.state, 'verified');
+  pass('the owner who has lost every endpoint confirms a replacement as the recovery authority', 'alice/ALICEDEV2');
 
   // ================= the relay never saw any of it =================
 

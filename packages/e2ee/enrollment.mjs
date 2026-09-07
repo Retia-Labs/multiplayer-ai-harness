@@ -103,6 +103,15 @@ export async function grantProjectAccess(endpoint, transport, { teamId, projectI
   if (!member || typeof member.userId !== 'string' || typeof member.device !== 'string') fail('project_membership_required');
   if (!Array.isArray(taskIds)) fail('project_membership_required');
   const granted = await transport.grant(teamId, projectId, member.userId, role);
+
+  // Both verdicts have to agree before anything is sealed. Local trust survives a device
+  // being revoked - this endpoint confirmed it once and has no reason to forget - so
+  // without the relay's view a revoked endpoint would keep receiving history from anyone
+  // who had ever trusted it. Asking is what makes revocation mean something.
+  const known = await transport.state(teamId);
+  const listed = (known.endpoints || []).find((e) => e.userId === member.userId && e.device === member.device);
+  if (!listed || listed.state !== 'verified') fail('member_endpoint_unverified');
+
   const rooms = taskIds.map(roomFor);
   let history = null;
   if (rooms.length) {

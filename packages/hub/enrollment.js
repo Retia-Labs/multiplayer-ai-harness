@@ -106,8 +106,12 @@ class Enrollment {
   }
 
   // `confirmer` has compared fingerprints out of band and is now recording the verdict.
-  // The hub accepts that verdict from a verified endpoint, or from the team owner acting
-  // as the team's recovery authority when a teammate has lost every endpoint they had.
+  // The hub accepts that verdict from a verified endpoint, or from the team owner acting as
+  // the team's recovery authority - but only while the owner has no verified endpoint left,
+  // which is the situation that authority exists for. An owner who still holds one confirms
+  // from it like anybody else. Otherwise possession of the owner's session would be a way to
+  // enrol endpoints into the team's trust, and "login is not trust" would have an exception
+  // big enough to walk through.
   //
   // The fingerprints must match what was announced. A confirmation naming different keys
   // is refused rather than overwriting them: it means the confirmer and the relay are
@@ -115,7 +119,7 @@ class Enrollment {
   confirm(teamId, confirmer, target, now = Date.now()) {
     const team = this.store.getTeam(teamId);
     if (!team) throw problem('unknown_team', 404);
-    const recoveryAuthority = team.ownerId === confirmer.userId;
+    const recoveryAuthority = team.ownerId === confirmer.userId && !this.hasVerifiedEndpoint(teamId, confirmer.userId);
     if (!recoveryAuthority && !this.verified(teamId, confirmer.userId, confirmer.device)) throw problem('confirming_endpoint_unverified', 403);
     if (!fingerprint(target) || typeof target.userId !== 'string') throw problem('invalid_endpoint_fingerprint');
     const held = this.row(teamId, target.userId, target.device);
@@ -124,7 +128,7 @@ class Enrollment {
     if (held.curve25519 !== target.curve25519 || held.ed25519 !== target.ed25519) throw problem('endpoint_key_mismatch', 409);
     this.db.prepare('UPDATE endpoint_enrollments SET state=?, confirmed_by=?, confirmed_at=? WHERE team_id=? AND user_id=? AND device_id=?')
       .run('verified', confirmer.userId + '/' + confirmer.device, now, teamId, target.userId, target.device);
-    return { endpoint: this.row(teamId, target.userId, target.device), authority: recoveryAuthority && !this.verified(teamId, confirmer.userId, confirmer.device) ? 'recovery' : 'endpoint' };
+    return { endpoint: this.row(teamId, target.userId, target.device), authority: recoveryAuthority ? 'recovery' : 'endpoint' };
   }
 
   revokeEndpoint(teamId, actor, target, now = Date.now()) {

@@ -21,9 +21,18 @@ so the creator never locks themselves out of what they just made.
 
 An account and an accepted invitation produce a `pending` row and nothing else. Confirmation
 comes from an endpoint already verified in that team, or from the team owner acting as the
-team's recovery authority; the announced fingerprints must match, and a confirmation naming
-other keys is refused rather than applied. The team's first endpoint is self-confirmed and
-recorded as `bootstrap` - every trust graph has a root and this one is named.
+team's recovery authority - but only while the owner has no verified endpoint left, which is
+the situation that authority exists for. An owner who still holds one confirms from it like
+anybody else; otherwise possession of the owner's session would enrol endpoints into the
+team's trust, and "login is not trust" would have an exception big enough to walk through.
+The announced fingerprints must match, and a confirmation naming other keys is refused rather
+than applied. The team's first endpoint is self-confirmed and recorded as `bootstrap` - every
+trust graph has a root and this one is named.
+
+Handing over history consults both verdicts. Local trust survives a device being revoked -
+an endpoint that confirmed it once has no reason to forget - so the relay's view is checked
+as well before anything is sealed, and a revoked endpoint receives nothing further however
+trusted it once was. The two layers refuse on their own grounds and either refusal is enough.
 
 Confirmation is device-fingerprint trust, not cross-signing. Signing another account's device
 requires user-signing keys and a verified account identity that this adapter does not
@@ -70,6 +79,11 @@ this slice is about.
 | `endpoint_confirmation_required` | confirming without asserting an out-of-band comparison |
 | `endpoint_device_id_reused` | a device id returns with different keys |
 | `endpoint_unverified` | sealing or key-sharing aimed at a device this endpoint has not confirmed |
+| `member_endpoint_unverified` | a handoff aimed at a device the relay does not list as verified, including a revoked one |
+| `endpoint_revoked` | confirming an endpoint that has been revoked |
+| `endpoint_not_announced` | a revoked endpoint trying to announce its way back to pending |
+| `team_already_bootstrapped` | a second attempt to self-confirm a team's first endpoint |
+| `project_owner_grant_retained` | a participant trying to revoke the project owner's own grant |
 | `task_integrity_failed` | ciphertext that cannot be opened, or a session not admitted by a handoff |
 | `owning_runtime_required` | a participant tries to append to the log through the relay |
 | `granting_endpoint_unverified` | a grant issued from an account with no confirmed endpoint |
@@ -104,10 +118,12 @@ Node 24 or newer and `npm ci`, then `node node_modules/electron/install.js` is *
 here, but a browser is: `node node_modules/playwright-core/cli.js install chromium` (add
 `--with-deps` on Linux), or set `CHROMIUM_PATH`.
 
-- `npm run test:teammate-enrollment:node` - 25 checks: pending enrolment, refused
+- `npm run test:teammate-enrollment:node` - 36 checks: pending enrolment, refused
   confirmations, project scoping, the two-gate proof, late-join replay of a running task,
-  events after the grant, a second task needing no second grant, revocation, site-data loss
-  and re-enrolment, and a canary scan of everything the relay serves.
+  events after the grant, a second task needing no second grant, grant and endpoint
+  revocation, vouching by a verified non-owner, the owner's recovery authority after losing
+  every endpoint, site-data loss and re-enrolment, and a canary scan of everything the relay
+  serves. Every refusal in the table above has a check.
 - `npm run test:teammate-enrollment:browser` - 8 checks in real Chromium with a persistent
   profile: announce, blind read, confirmed late-join replay, restart persistence, profile
   wipe, refused read, re-enrolment, and relay canary scans.
@@ -123,6 +139,7 @@ WebSocket, exactly as in #6 - the enrolment *records* are in the real hub, the k
 is not. Out-of-band fingerprint comparison is asserted by the caller and cannot be checked by
 anything here. There is no production UI: participant state is exposed as data and rendered
 only by the fixture, because the joining teammate's view belongs to
-[#9](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/9). Removing a participant
-revokes the grant and rotates on the next admission; proving a removed reader cannot follow a
-rotation is #10/#11's territory, not tested here.
+[#9](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/9). Removing a participant revokes
+the grant, stops further handoffs and rotates on the next admission; what is *not* proven
+here is that a removed reader cannot follow a rotation it never received, which is #10/#11's
+territory. Nothing revokes knowledge already decrypted, and nothing here claims to.
