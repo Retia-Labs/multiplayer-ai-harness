@@ -110,10 +110,15 @@ const eventId = (taskId, seq) => 'ev_' + require('crypto').createHash('sha256')
  * the turn is done; the runtime supplies one that builds a TurnSession.
  */
 class EncryptedTaskRun {
-  constructor({ opened, task, runTurn, log = () => {} }) {
+  constructor({ opened, task, runTurn, provider = null, log = () => {} }) {
     this.opened = opened;
     this.task = task;
     this.runTurn = runTurn;
+    // Which provider this host is about to run. Asserted here rather than taken from the
+    // creating request, because a creator naming a provider is a preference and a host
+    // naming one is a fact - and "which provider touched my code" is a question a teammate
+    // reading this task later actually has.
+    this.provider = provider;
     this.log = log;
     this.written = 0;
     this.dropped = new Map();
@@ -131,7 +136,10 @@ class EncryptedTaskRun {
     // The creating request is the first event, so a reader starting from zero learns what
     // was asked before it learns what was done about it.
     if (this.opened.reader.seq === 0) {
-      await this.append({ type: 'task.created', payload: { title: objective.title, objective: objective.objective } });
+      await this.append({ type: 'task.created', payload: {
+        title: objective.title, objective: objective.objective,
+        ...(this.provider ? { provider: this.provider } : {})
+      } });
     }
     const queue = [];
     let pump = Promise.resolve();

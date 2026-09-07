@@ -177,7 +177,12 @@ export function catchUp(snapshot, context = {}) {
     // Operational facts the log does not carry. Absent means absent, and says so.
     responsible: responsible ? { value: responsible, provenance: 'context' } : unavailable('No responsible teammate is recorded for this task.'),
     host: host ? { value: host, provenance: 'context' } : unavailable('No execution host is recorded for this task.'),
-    provider: provider ? { value: provider, provenance: 'context' } : unavailable('No provider is recorded for this task.'),
+    // The log carries the provider when the host asserted one, and that beats anything a
+    // caller passes in: a recorded fact and a screen's own guess are not interchangeable.
+    provider: created && typeof created.payload.provider === 'string'
+      ? recorded(created.payload.provider, created, createdIndex)
+      : provider ? { value: provider, provenance: 'context' }
+        : unavailable('No provider is recorded for this task.'),
     hostConnected,
     objective,
     decisions,

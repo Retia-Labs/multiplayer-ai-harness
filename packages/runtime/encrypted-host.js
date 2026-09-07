@@ -96,7 +96,7 @@ class EncryptedHost {
   }
 
   // One task, from opaque record to finished encrypted history.
-  async run(wanted, { runTurn }) {
+  async run(wanted, { runTurn, provider = null }) {
     const id = typeof wanted === 'string' ? wanted : wanted.id;
     if (this.running.has(id)) return this.running.get(id);
     const work = (async () => {
@@ -124,7 +124,7 @@ class EncryptedHost {
       // Drain anything the hub is holding for this endpoint before writing: the creator's
       // session keys arrive the same way as everything else.
       await this.endpoint.open(await this.endpoint.transport.drain());
-      const run = new EncryptedTaskRun({ opened, task, runTurn, log: this.log });
+      const run = new EncryptedTaskRun({ opened, task, runTurn, provider, log: this.log });
       const result = await run.start();
       this.handled.add(id);
       return { ...result, adapter, opened };

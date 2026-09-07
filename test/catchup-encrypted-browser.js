@@ -132,7 +132,7 @@ let hub, runtime, encrypted, browser, socket, running;
     return session;
   };
   // Not awaited: the turn stays parked on the approval, which is the state under test.
-  running = encrypted.run(task, { runTurn: approvalTurn });
+  running = encrypted.run(task, { runTurn: approvalTurn, provider: 'demo' });
   await waitFor(() => requested, 'the turn asks for an approval');
   await waitFor(() => hub.store.db.prepare('SELECT COUNT(*) AS n FROM encrypted_task_events WHERE task_id=?').get(task.id).n >= 4,
     'the request reaches the relay');
@@ -174,7 +174,8 @@ let hub, runtime, encrypted, browser, socket, running;
   assert.match(facts, new RegExp('Execution host'));
   assert.ok(facts.includes(runtime.id), 'the host is named: ' + facts);
   assert.match(facts, /Provider/);
-  pass('responsible, execution host and provider each appear with their own state', shown.facts.length + ' facts');
+  assert.ok(facts.includes('demo'), 'the provider the host ran is named on screen: ' + facts);
+  pass('responsible, execution host and provider are each named on screen', shown.facts.length + ' facts');
 
   await page.screenshot({ path: path.join(out, 'blocked-on-approval-1487.png') });
 
