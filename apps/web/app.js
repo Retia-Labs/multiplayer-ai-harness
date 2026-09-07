@@ -948,7 +948,8 @@
       decisions: [], plan: { value: null, provenance: 'unavailable', reason: 'No plan has been recorded for this task.' },
       currentStep: { value: null, provenance: 'unavailable', reason: 'No plan has been recorded for this task.' },
       changes: { value: null, provenance: 'unavailable', reason: 'No file changes have been recorded for this task.' },
-      activity: [], outcome: { value: 'in-progress', provenance: 'derived', sources: [] },
+      activity: [], outcome: { value: 'open', provenance: 'derived', sources: [] },
+      turn: { value: null, provenance: 'unavailable', reason: 'No turn has finished on this task yet.' },
       pending: { approvals: [],
         blocker: { value: null, provenance: 'unavailable', reason: 'Nothing in the log identifies a blocker.' } } };
   }

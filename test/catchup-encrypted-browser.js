@@ -183,8 +183,10 @@ let hub, runtime, encrypted, browser, socket, running;
   // Status is the fourth fact, and while the task is parked it is read off the log rather
   // than stated by it - there is no completion event yet, so claiming "Recorded" would be
   // this screen asserting something nobody wrote.
-  assert.match(facts, /Status.*in progress/);
-  assert.ok(facts.includes('Read from the log'), 'an unfinished status is marked as derived: ' + facts);
+  // The task is open and no turn has finished, and the screen says both rather than letting
+  // a running agent stand in for unfinished work.
+  assert.match(facts, /Status.*open/);
+  assert.ok(facts.includes('Read from the log'), 'an unsettled status is marked as derived: ' + facts);
   pass('responsible, execution host, provider and status are each named on screen', shown.facts.length + ' facts');
 
   await page.screenshot({ path: path.join(out, 'blocked-on-approval-1487.png') });
@@ -269,10 +271,12 @@ let hub, runtime, encrypted, browser, socket, running;
   pass('recent changes are read from the encrypted log and named on screen', finished.changes.join(', '));
 
   const finishedFacts = finished.facts.join(' | ');
-  assert.match(finishedFacts, /Status.*completed/);
-  assert.ok(finishedFacts.includes('Recorded'), 'a finished status is marked as recorded: ' + finishedFacts);
+  // The turn completed; the task is still open, because no person has closed it. The screen
+  // carries both facts, which is exactly what #13's fourth criterion asks for.
+  assert.match(finishedFacts, /Status.*open/);
+  assert.match(finishedFacts, /Last turn.*completed/);
   assert.equal(finished.approvals, 0, 'a task nobody is waiting on shows no outstanding approval');
-  pass('a completed task reports its status as recorded, not read off the end of the log', 'completed · Recorded');
+  pass('a finished turn is shown next to the task outcome, not instead of it', 'Status open · Last turn completed');
   await page.screenshot({ path: path.join(out, 'completed-with-changes-1487.png') });
   // ---- issue #12: a teammate's question, in the app's inbox ----
   //

@@ -216,8 +216,13 @@ class EncryptedHost {
       creators: new Map([...creators].map(([userId, identity]) => [userId, identity]))
     });
     const opened = await adapter.open(task);
-    const id = String(payload.id || '');
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw Object.assign(new Error('invalid_task_control'), { code: 'invalid_task_control' });
+    // Help requests carry their own id; an outcome or a handover is identified by what it
+    // is and who sent it, which is enough to make a redelivered envelope idempotent without
+    // letting a caller choose the identity of an event it does not own.
+    const id = action === 'help.request' || action === 'help.settle'
+      ? String(payload.id || '')
+      : action + ':' + sender;
+    if (!/^[A-Za-z0-9_:.-]{1,96}$/.test(id)) throw Object.assign(new Error('invalid_task_control'), { code: 'invalid_task_control' });
 
     let event;
     if (action === 'help.request') {
@@ -237,6 +242,24 @@ class EncryptedHost {
       const may = outcome === 'resolved' ? held.recipient : held.from;
       if (sender !== may) throw Object.assign(new Error('not_the_help_owner'), { code: 'not_the_help_owner' });
       event = { type: 'help.settled', payload: { id, by: sender, outcome } };
+    } else if (action === 'task.outcome') {
+      // Closing the work is a decision about the work, so it belongs to whoever is on the
+      // project. The turn's own result is recorded separately and by the machine; this is
+      // the only event that says the task itself is done, and it names who said so.
+      const outcome = payload.outcome === 'cancelled' ? 'cancelled' : 'completed';
+      if (opened.reader.state.outcome) throw Object.assign(new Error('task_already_settled'), { code: 'task_already_settled' });
+      event = { type: 'task.completed', payload: { outcome, by: sender } };
+    } else if (action === 'responsibility.handover') {
+      const to = String(payload.to || '');
+      // The recipient must already be on the project. Handing responsibility to somebody
+      // without access would be a grant made sideways, and the whole point of the two gates
+      // is that access is granted deliberately rather than inherited from being handed work.
+      if (!holders.has(to)) throw Object.assign(new Error('recipient_not_in_project'), { code: 'recipient_not_in_project' });
+      const note = typeof payload.note === 'string' ? payload.note.trim() : '';
+      const from = opened.reader.state.responsible || task.creatorUserId || null;
+      event = { type: 'responsibility.changed', payload: {
+        to, by: sender, ...(from ? { from } : {}), ...(note ? { note } : {})
+      } };
     } else {
       throw Object.assign(new Error('unsupported_task_control'), { code: 'unsupported_task_control' });
     }

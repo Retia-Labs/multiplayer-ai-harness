@@ -223,11 +223,25 @@ function pureChecks() {
   assert.equal(watched.objective.value, payload.objective);
   assert.equal(watched.decisions.length, 1);
   assert.equal(watched.decisions[0].actor, 'maya');
-  assert.equal(watched.outcome.value, 'completed');
+  // A turn finished; nobody has said the work is done. Those are different facts and the
+  // projection reports both rather than letting the first stand in for the second.
+  assert.equal(watched.turn.value, 'completed');
+  assert.equal(watched.turn.provenance, 'recorded');
+  assert.equal(watched.outcome.value, 'open');
+  assert.equal(watched.outcome.provenance, 'derived');
   assert.equal(watched.responsible.value, 'alex');
   assert.equal(watched.host.value, "Alex's Mac");
   assert.equal(watched.provider.value, 'Codex');
-  pass('the view carries objective, responsible, host, provider, decisions and outcome', 'all present');
+  pass('the view carries objective, responsible, host, provider, decisions and both statuses', 'all present');
+
+  // And the task's own outcome only appears when a person records it, with their name on it.
+  const settled = catchUp({ ...watcher.snapshot(),
+    events: [...watcher.state.events, { type: 'task.completed', payload: { outcome: 'completed', by: 'maya' } }],
+    seq: watcher.seq + 1 }, context);
+  assert.equal(settled.outcome.provenance, 'recorded');
+  assert.equal(settled.outcome.value, 'completed');
+  assert.equal(settled.outcome.actor, 'maya');
+  pass('a task is completed when somebody records it, not when a turn ends', 'recorded by maya');
 
   // Every reference the projection makes must resolve to an event this endpoint accepted.
   const sources = sourcesOf(watched);

@@ -129,8 +129,12 @@ let hub, runtime, encrypted, socket;
   const state = reader.state;
   assert.equal(state.title, objective.title);
   assert.ok(state.events.length >= 4);
-  assert.ok(state.events.some((e) => e.type === 'task.completed'), 'the log says how it ended');
-  pass('the creator replays the task the host actually ran', reader.seq + ' events, outcome ' + state.outcome);
+  // The turn finished; the task is still open, because nobody has said otherwise. Recording
+  // one as the other is what issue #13's fourth criterion is about.
+  assert.ok(state.events.some((e) => e.type === 'turn.completed'), 'the log says how the turn ended');
+  assert.equal(state.events.some((e) => e.type === 'task.completed'), false, 'a turn ending does not close the task');
+  assert.equal(state.outcome, null);
+  pass('the creator replays the task the host actually ran', reader.seq + ' events, turn ' + state.turn + ', task still open');
 
   // The provider is passed as context here deliberately, and deliberately loses: the log
   // says which provider the host ran, and a recorded fact outranks a caller's claim.

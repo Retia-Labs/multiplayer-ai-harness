@@ -280,6 +280,32 @@
       return { id, outcome };
     }
 
+    // ---- finishing, and handing over ----
+
+    // Say the work itself is done, or that it is not going to be. Separate from any turn
+    // finishing: an agent stopping is not a person deciding.
+    async recordOutcome(task, outcome) {
+      const writer = this.confirmedHost(task.runtimeId);
+      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      await this.m.sendTaskControl(this.endpoint, writer, {
+        task, action: 'task.outcome', payload: { outcome: outcome === 'cancelled' ? 'cancelled' : 'completed' }
+      });
+      return { outcome };
+    }
+
+    // Hand responsibility to somebody already on the project. This moves responsibility and
+    // nothing else: not approval authority, not the host, not whose provider account pays.
+    // The host refuses a recipient without project access rather than granting them any.
+    async handOverResponsibility(task, { to, note }) {
+      const writer = this.confirmedHost(task.runtimeId);
+      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      await this.m.sendTaskControl(this.endpoint, writer, {
+        task, action: 'responsibility.handover',
+        payload: { to, ...(note ? { note: String(note) } : {}) }
+      });
+      return { to };
+    }
+
     // Every open question addressed to this account, across the tasks this endpoint can
     // read. Built from the same projections the task views render, so the inbox and the task
     // cannot disagree about whether something is still open.

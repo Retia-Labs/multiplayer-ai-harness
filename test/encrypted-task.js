@@ -50,7 +50,7 @@ let hub,runtime,client,host,state,socket;const extra=[];
   await reader.reconnect(transport);assert.equal(reader.seq,2);assert.equal(reader.state.title,payload.title);
   for(let i=2;i<events.length;i++)await opened.writer.append(events[i],fixtureEventId(task.id,i));
   await Promise.all([reader.reconnect(transport),reader.reconnect(transport)]);
-  assert.deepEqual(reader.state.events,events);assert.equal(reader.state.outcome,'completed');
+  assert.deepEqual(reader.state.events,events);assert.equal(reader.state.turn,'completed');assert.equal(reader.state.outcome,null);
   assert.equal(reader.search(canary).length,7);assert.deepEqual(reader.overlap([payload.fixture.path]),[payload.fixture.path]);
   pass('enrolled client creates an opaque task through the real paired hub; full fixture is reconstructed at endpoints');
 

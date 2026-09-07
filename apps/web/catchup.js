@@ -105,6 +105,15 @@
     status.appendChild(el('span', outcome.provenance === 'recorded' ? 'cu-tag cu-tag-recorded' : 'cu-tag cu-tag-derived',
       outcome.provenance === 'recorded' ? 'Recorded' : 'Read from the log'));
     meta.appendChild(status);
+    // The last turn's result, next to the task's outcome and never instead of it. An agent
+    // finishing and the work being done are different facts, and a screen that showed only
+    // one of them would let the first quietly pass for the second.
+    const turn = projection.turn || {};
+    const lastTurn = el('span', 'cu-fact');
+    lastTurn.appendChild(el('span', 'cu-fact-k', 'Last turn'));
+    lastTurn.appendChild(el('span', turn.value ? 'cu-fact-v' : 'cu-fact-v cu-fact-unknown', turn.value || 'None yet'));
+    if (!turn.value) lastTurn.title = turn.reason || '';
+    meta.appendChild(lastTurn);
     scope.appendChild(meta);
     scope.appendChild(el('p', 'cu-explain', projection.freshness.explain));
     root.appendChild(scope);
