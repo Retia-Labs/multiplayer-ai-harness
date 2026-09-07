@@ -11,11 +11,17 @@
 // as an export, and there is no arrangement of the relay that changes this.
 //
 // #6 refused every imported session, because an export carries no provenance a reader can
-// check - it is exactly what an attacker would also hand you - and left the question to
-// this slice's enrollment contract. The contract: an import is readable only when the
-// receiving endpoint opened the handoff itself, sealed by a fingerprint it had already
-// confirmed, and only for the session ids that handoff actually contained. Anything else
-// stays refused. The trust does not come from the export; it comes from the seal around it.
+// check - it is exactly what an attacker would also hand you - and left the question to this
+// slice's enrollment contract. The contract: an import is readable only when the receiving
+// endpoint opened the handoff itself, sealed by the execution host that writes the log, and
+// only for the session ids that handoff actually contained.
+//
+// The writer specifically, not merely someone the reader has confirmed. An exported session
+// states its sender keys as claimed metadata chosen by whoever exported it, so a confirmed
+// teammate could otherwise hand over a session claiming the host's keys and have fabricated
+// events read as the host's writing. test/e2ee-import-forgery.js does exactly that, and it
+// succeeded until this binding existed. The only party whose account of the writer's
+// sessions means anything is the writer.
 import { roomFor, matrixUser } from '../protocol/encrypted-task.mjs';
 
 const randomKey = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(32)), (v) => v.toString(16).padStart(2, '0')).join('');
@@ -91,14 +97,8 @@ export async function confirmTeammateEndpoint(endpoint, transport, teamId, targe
 // makes each of them checkable - the grant alone buys bytes nobody can read, and the
 // handoff alone has nothing to read.
 //
-// The export is scoped to this project's rooms and encrypted to a single-use transfer key.
-// The blob may cross the relay; the transfer key never does in the clear, and sealControl
-// refuses outright to seal for a device this endpoint has not confirmed. That refusal is
-// what stops a grant from quietly becoming access.
-//
-// Events written after this handoff ride the same session and need nothing further. A
-// later rotation - which is how removal works - is what makes `EncryptedFixtureHost.admit`
-// necessary again.
+// A grant may be issued by any project participant holding a confirmed endpoint. The key
+// handoff may not: see handOffHistory, which only the writing host can perform.
 export async function grantProjectAccess(endpoint, transport, { teamId, projectId, member, taskIds, role = 'participant' }) {
   if (!member || typeof member.userId !== 'string' || typeof member.device !== 'string') fail('project_membership_required');
   if (!Array.isArray(taskIds)) fail('project_membership_required');
@@ -112,25 +112,44 @@ export async function grantProjectAccess(endpoint, transport, { teamId, projectI
   const listed = (known.endpoints || []).find((e) => e.userId === member.userId && e.device === member.device);
   if (!listed || listed.state !== 'verified') fail('member_endpoint_unverified');
 
+  return granted;
+}
+
+// The writer's side of joining late, performed by the execution host that owns these
+// sessions - the only party whose account of them is worth anything.
+//
+// The export is scoped to the named rooms and encrypted to a single-use transfer key. The
+// blob may cross the relay; the transfer key never does in the clear, and sealControl
+// refuses outright to seal for a device this endpoint has not confirmed, which is what stops
+// a grant from quietly becoming access.
+//
+// Events written after this handoff ride the same session and need nothing further. A later
+// rotation - which is how removal works - is what makes EncryptedFixtureHost.admit necessary
+// again.
+export async function handOffHistory(endpoint, { teamId, projectId, member, taskIds }) {
+  if (!member || typeof member.userId !== 'string' || typeof member.device !== 'string') fail('project_membership_required');
+  if (!Array.isArray(taskIds) || !taskIds.length) fail('project_membership_required');
   const rooms = taskIds.map(roomFor);
-  let history = null;
-  if (rooms.length) {
-    const transferKey = randomKey();
-    const blob = await endpoint.exportHistory(rooms, transferKey);
-    const envelope = await endpoint.sealControl(matrixUser(member.userId), member.device, {
-      type: 'plexus.project.history.v1', teamId, projectId, rooms, transferKey
-    });
-    history = { blob, envelope, rooms };
-  }
-  return { ...granted, history };
+  const transferKey = randomKey();
+  const blob = await endpoint.exportHistory(rooms, transferKey);
+  const envelope = await endpoint.sealControl(matrixUser(member.userId), member.device, {
+    type: 'plexus.project.history.v1', teamId, projectId, rooms, transferKey
+  });
+  return { blob, envelope, rooms };
 }
 
 // The joining side. The sealed half authenticates the handoff; the blob is inert without
 // it. What comes back is the set of session ids this handoff admitted - the reader needs
 // them, because that set is the whole basis on which it will trust an imported session.
-export async function acceptProjectAccess(endpoint, { history }) {
+export async function acceptProjectAccess(endpoint, { history }, { writer } = {}) {
   if (!history || typeof history.blob !== 'string' || !history.envelope) fail('project_history_missing');
+  // The writer is required, and is checked against the seal's actual sender. Accepting a
+  // handoff from anyone else is the forgery this contract exists to refuse.
+  if (!writer || typeof writer.user !== 'string' || typeof writer.device !== 'string') fail('project_history_writer_required');
   const opened = await endpoint.openControl([history.envelope]);
+  if (opened.sender !== writer.user || opened.senderDevice !== writer.device || opened.senderKey !== writer.curve25519) {
+    fail('project_history_not_from_writer');
+  }
   const content = opened.content;
   if (!content || content.type !== 'plexus.project.history.v1' || !Array.isArray(content.rooms) || typeof content.transferKey !== 'string') {
     fail('project_history_unauthenticated');

@@ -5,6 +5,7 @@ on:
       - 'packages/**'
       - 'test/encrypted-task*.js'
       - 'test/teammate-enrollment*.js'
+      - 'test/e2ee-import-forgery.js'
       - 'test/fixtures/encrypted-task*'
       - 'package*.json'
       - '.github/workflows/encrypted-task.yml'
@@ -31,6 +32,7 @@ jobs:
         run: node node_modules/playwright-core/cli.js install chromium
       - run: npm run test:encrypted-task
       - run: npm run test:teammate-enrollment
+      - run: npm run test:import-forgery
       - run: npm run test:protocol
       - run: npm run test:unit
       - run: npm run test:team

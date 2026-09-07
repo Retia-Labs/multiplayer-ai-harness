@@ -51,9 +51,16 @@ endpoint has not confirmed, which is what stops a grant from quietly becoming ac
 #6 refused every imported session, because an export carries no provenance a reader can check
 - it is exactly what an attacker would also hand you - and left the question to this slice.
 The contract is now explicit: **an imported session is readable only for the session ids that
-came out of a handoff the receiving endpoint opened itself, sealed by a fingerprint it had
-already confirmed.** Every other import stays refused, with no plaintext fallback. The trust
-does not come from the export; it comes from the seal around it.
+came out of a handoff the receiving endpoint opened itself, sealed by the execution host that
+wrote the log.** Every other import stays refused, with no plaintext fallback.
+
+The writer specifically, and not merely an endpoint the reader has confirmed. The first
+version of this contract accepted a handoff from any confirmed endpoint, and that was wrong:
+an exported session states its sender keys as claimed metadata chosen by whoever exported it,
+so a confirmed teammate could hand over a session claiming the host's keys and have fabricated
+events read as the host's writing. `test/e2ee-import-forgery.js` performs that forgery; it
+succeeded, and it is kept as a regression test now that the handoff is bound to the writer.
+Only the party whose sessions they are can vouch for them.
 
 One check weakens under that contract and is recorded here rather than buried: an exported
 session carries the writer's keys but **not its device id**, so an admitted session cannot be
@@ -79,6 +86,8 @@ this slice is about.
 | `endpoint_confirmation_required` | confirming without asserting an out-of-band comparison |
 | `endpoint_device_id_reused` | a device id returns with different keys |
 | `endpoint_unverified` | sealing or key-sharing aimed at a device this endpoint has not confirmed |
+| `project_history_not_from_writer` | a history handoff sealed by anyone but the execution host that wrote the log |
+| `project_history_writer_required` | a handoff accepted without naming the writer to check it against |
 | `member_endpoint_unverified` | a handoff aimed at a device the relay does not list as verified, including a revoked one |
 | `endpoint_revoked` | confirming an endpoint that has been revoked |
 | `endpoint_not_announced` | a revoked endpoint trying to announce its way back to pending |
@@ -118,7 +127,8 @@ Node 24 or newer and `npm ci`, then `node node_modules/electron/install.js` is *
 here, but a browser is: `node node_modules/playwright-core/cli.js install chromium` (add
 `--with-deps` on Linux), or set `CHROMIUM_PATH`.
 
-- `npm run test:teammate-enrollment:node` - 36 checks: pending enrolment, refused
+- `npm run test:import-forgery` - the forgery above, which must be refused.
+- `npm run test:teammate-enrollment:node` - 37 checks: pending enrolment, refused
   confirmations, project scoping, the two-gate proof, late-join replay of a running task,
   events after the grant, a second task needing no second grant, grant and endpoint
   revocation, vouching by a verified non-owner, the owner's recovery authority after losing

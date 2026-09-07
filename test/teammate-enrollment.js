@@ -23,7 +23,7 @@ const { EncryptedTaskState, EncryptedFixtureHost, fixtureEvents, fixtureEventId 
 const { TeamOps } = require('../packages/protocol');
 const {
   EnrollmentTransport, announcement, announceEndpoint, confirmTeammateEndpoint,
-  grantProjectAccess, acceptProjectAccess, participation
+  grantProjectAccess, handOffHistory, acceptProjectAccess, participation
 } = require('../packages/e2ee/enrollment.mjs');
 
 const results = [];
@@ -183,18 +183,29 @@ let hub, runtime, socketsToClose = [];
   assert.equal(confirmed.endpoint.confirmedBy, alice.me.id + '/ALICEDEV');
   pass('a trusted endpoint completes the verification flow', 'confirmed by alice/ALICEDEV');
 
-  const handoff = await grantProjectAccess(aliceEp, enroll.alice, {
+  const granted = await grantProjectAccess(aliceEp, enroll.alice, {
     teamId: team.id, projectId: task.projectId, member: { userId: bob.me.id, device: 'BOBDEV' }, taskIds: [task.id]
   });
-  assert.equal(handoff.explanation.existingTasks.length, 1);
-  assert.match(handoff.explanation.covers.join(' '), /complete ordered history of 1 task/);
-  assert.match(handoff.explanation.covers.join(' '), /every task added to this project after this grant/);
-  assert.match(handoff.explanation.covers.join(' '), /nothing in any other project/);
-  pass('the grant states what it covers and what it does not', handoff.explanation.covers.length + ' clauses');
+  assert.equal(granted.explanation.existingTasks.length, 1);
+  assert.match(granted.explanation.covers.join(' '), /complete ordered history of 1 task/);
+  assert.match(granted.explanation.covers.join(' '), /every task added to this project after this grant/);
+  assert.match(granted.explanation.covers.join(' '), /nothing in any other project/);
+  pass('the grant states what it covers and what it does not', granted.explanation.covers.length + ' clauses');
 
   await bobEp.confirmEndpoint(aliceEp.identity(), { confirmed: true });
   await bobEp.confirmEndpoint(hostEp.identity(), { confirmed: true });
-  const accepted = await acceptProjectAccess(bobEp, handoff);
+  await hostEp.confirmEndpoint(bobEp.identity(), { confirmed: true });
+
+  // A grant is not a handoff. Alice may grant; only the host that wrote the log may hand
+  // over its sessions, and a handoff sealed by anyone else is refused outright.
+  const fromAlice = await handOffHistory(aliceEp, {
+    teamId: team.id, projectId: task.projectId, member: { userId: bob.me.id, device: 'BOBDEV' }, taskIds: [task.id]
+  });
+  await refused('history sealed by a teammate rather than the writer is refused', 'project_history_not_from_writer',
+    () => acceptProjectAccess(bobEp, { history: fromAlice }, { writer: hostEp.identity() }));
+
+  const handoff = await host.handOff(created.task, { userId: bob.me.id, device: 'BOBDEV' });
+  const accepted = await acceptProjectAccess(bobEp, { history: handoff }, { writer: hostEp.identity() });
   assert.ok(accepted.sessions.length > 0);
 
   const bobReader = new EncryptedTaskReader({ endpoint: bobEp, task, writer: hostEp.identity(), admittedSessions: accepted.sessions });
@@ -219,7 +230,6 @@ let hub, runtime, socketsToClose = [];
   const secondOpen = await host.open(createdSecond.task);
   // A session with no events yet: admitting bob to it hands him its key at index zero, so
   // no history export is needed for a task he was present for from the start.
-  await hostEp.confirmEndpoint(bobEp.identity(), { confirmed: true });
   await host.admit(createdSecond.task, [aliceEp.identity(), bobEp.identity()]);
   await Promise.all([aliceEp, bobEp].map((ep) => ep.open(directory.drain(ep.user, ep.device))));
   await secondOpen.writer.append({ type: 'task.created', payload: secondPayload }, fixtureEventId(second.id, 0));
@@ -267,12 +277,13 @@ let hub, runtime, socketsToClose = [];
 
   await confirmTeammateEndpoint(aliceEp, enroll.alice, team.id, { userId: bob.me.id, ...announcement(bobFresh) }, { confirmed: true });
   await hostEp.confirmEndpoint(bobFresh.identity(), { confirmed: true });
-  const rehandoff = await grantProjectAccess(aliceEp, enroll.alice, {
+  await grantProjectAccess(aliceEp, enroll.alice, {
     teamId: team.id, projectId: task.projectId, member: { userId: bob.me.id, device: 'BOBDEV2' }, taskIds: [task.id]
   });
   await bobFresh.confirmEndpoint(aliceEp.identity(), { confirmed: true });
   await bobFresh.confirmEndpoint(hostEp.identity(), { confirmed: true });
-  const rejoined = await acceptProjectAccess(bobFresh, rehandoff);
+  const rehandoff = await host.handOff(created.task, { userId: bob.me.id, device: 'BOBDEV2' });
+  const rejoined = await acceptProjectAccess(bobFresh, { history: rehandoff }, { writer: hostEp.identity() });
   const recovered = new EncryptedTaskReader({ endpoint: bobFresh, task, writer: hostEp.identity(), admittedSessions: rejoined.sessions });
   await recovered.reconnect(tasks.bob);
   assert.deepEqual(recovered.state.events, events);
@@ -292,7 +303,7 @@ let hub, runtime, socketsToClose = [];
   // Alice never compared mallory's fingerprint, so the relay calling it verified is not
   // enough. The two layers disagreeing is the point: each refuses on its own grounds.
   await refused('a relay-verified endpoint is still not sealed to without local confirmation', 'endpoint_unverified',
-    () => grantProjectAccess(aliceEp, enroll.alice, {
+    () => handOffHistory(aliceEp, {
       teamId: team.id, projectId: task.projectId, member: { userId: mallory.me.id, device: 'MALLORYDEV' }, taskIds: [task.id]
     }));
 
@@ -310,7 +321,7 @@ let hub, runtime, socketsToClose = [];
     () => enroll.alice.confirm(team.id, 'ALICEDEV', { userId: bob.me.id, ...announcement(bobFresh) }));
   await refused('a revoked endpoint cannot announce its way back to pending', 'endpoint_not_announced',
     () => announceEndpoint(bobFresh, enroll.bob, team.id));
-  await refused('a revoked endpoint receives no further history, however trusted it once was', 'member_endpoint_unverified',
+  await refused('a revoked endpoint is refused a further grant, however trusted it once was', 'member_endpoint_unverified',
     () => grantProjectAccess(aliceEp, enroll.alice, {
       teamId: team.id, projectId: task.projectId, member: { userId: bob.me.id, device: 'BOBDEV2' }, taskIds: [task.id]
     }));
