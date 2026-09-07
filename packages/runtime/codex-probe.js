@@ -175,6 +175,7 @@ function probe({ bin } = {}) {
   if (!resolved.ok) {
     return {
       resolved: { kind: resolved.kind, path: null }, version: null, tested: TESTED,
+      platform: { os: process.platform, arch: process.arch, node: process.version, release: os.release() },
       auth: null, models: null, capabilities: null,
       blockers: [{
         id: 'codex-not-found',

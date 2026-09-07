@@ -422,7 +422,7 @@ function laneEnv(lane, probe, tmp) {
 
   const C4 = 'AC4 version & prerequisites';
   await check(C4, 'codex-resolvable', async () => {
-    if (!probe.version) throw new Error(probe.blockers[0].detail);
+    if (!probe.version) return { status: 'blocked', detail: probe.blockers[0].detail + ' ' + probe.blockers[0].alternative };
     return { detail: `resolved the Codex binary as ${probe.resolved.kind} at ${probe.resolved.path}`, evidence: probe.resolved };
   });
   await check(C4, 'version-pinned', async () => ({
@@ -432,7 +432,9 @@ function laneEnv(lane, probe, tmp) {
       : `running Codex ${probe.version}; this adapter has been proved against ${probe.tested.versions.join(', ')}`,
     evidence: { tested: probe.tested, found: probe.version }
   }));
-  await check(C4, 'platform-prerequisites', async () => ({
+  await check(C4, 'platform-prerequisites', async () => !probe.capabilities
+    ? { status: 'blocked', detail: 'Install Codex on the execution host to inspect its provider capabilities.', evidence: { platform: probe.platform } }
+    : ({
     detail: 'recorded the prerequisites this adapter depends on for this platform',
     evidence: {
       platform: probe.platform,
@@ -453,7 +455,9 @@ function laneEnv(lane, probe, tmp) {
       evidence: probe.blockers
     };
   });
-  await check('AC3 authentication', 'usage-owner-and-entitlements', async () => ({
+  await check('AC3 authentication', 'usage-owner-and-entitlements', async () => !probe.auth
+    ? { status: 'blocked', detail: 'Provider authentication is unavailable until Codex is installed on the execution host.' }
+    : ({
     status: 'info',
     detail: 'recorded who pays and what multi-human authority actually means here',
     evidence: {
@@ -573,7 +577,7 @@ function writeMatrix({ probe, lanes, taps }) {
     '',
     `- Host: ${probe.platform.os}/${probe.platform.arch}, Node ${probe.platform.node}`,
     `- Codex CLI: **${probe.version}** (proved against ${probe.tested.versions.join(', ')}), resolved as ${probe.resolved.kind}`,
-    `- Auth mode: **${probe.auth.mode}**`,
+    `- Auth mode: **${probe.auth?.mode || 'unavailable'}**`,
     `- Lanes: ${Object.entries(lanes).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`,
     `- Provider event lines captured: ${taps.length}`,
     '',

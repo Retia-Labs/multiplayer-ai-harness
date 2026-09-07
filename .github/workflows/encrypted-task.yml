@@ -4,6 +4,7 @@ on:
     paths:
       - 'packages/**'
       - 'test/encrypted-task*.js'
+      - 'test/codex*.js'
       - 'test/fixtures/encrypted-task*'
       - 'package*.json'
       - '.github/workflows/encrypted-task.yml'
@@ -32,6 +33,7 @@ jobs:
       - run: npm run test:protocol
       - run: npm run test:unit
       - run: npm run test:team
+      - run: npm run test:codex
       - uses: actions/upload-artifact@v4
         if: always()
         with:
