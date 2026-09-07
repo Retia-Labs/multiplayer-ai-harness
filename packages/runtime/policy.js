@@ -30,6 +30,11 @@ function isRiskyCommand(cmd) {
 
 function decideCommand(command, { approvalPolicy = ApprovalPolicy.ON_REQUEST, sandboxPolicy = SandboxPolicy.WORKSPACE_WRITE, sessionAllowed = new Set() } = {}) {
   if (isSafeCommand(command)) return { verdict: 'allow', reason: 'read-only inspection command' };
+  // Nothing in this product populates sessionAllowed, and that is deliberate: an approval
+  // resolves one action, acceptForSession is never offered in availableDecisions, and the
+  // host refuses it outright if a client sends it anyway (see Errors.APPROVAL_SCOPE_UNSUPPORTED).
+  // The parameter stays because the policy primitive is real and tested; wiring it to an
+  // approval would need bounded, enforced semantics first - which is what issue #11 asks.
   if (sessionAllowed.has(command)) return { verdict: 'allow', reason: 'approved for this session' };
   if (sandboxPolicy === SandboxPolicy.READ_ONLY) return { verdict: 'deny', reason: 'sandbox is read-only' };
   if (sandboxPolicy === SandboxPolicy.DANGER_FULL_ACCESS && approvalPolicy === ApprovalPolicy.NEVER) return { verdict: 'allow', reason: 'full access, approvals off' };

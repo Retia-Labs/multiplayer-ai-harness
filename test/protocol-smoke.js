@@ -107,7 +107,7 @@ class Client {
   const tu = await bob.wait((m) => m.type === 'thread.updated' && m.thread.status.activeFlags && m.thread.status.activeFlags.includes('waitingOnApproval'));
   assert(tu.thread.pendingApproval.requestId === req.requestId, 'thread status shows waitingOnApproval with the pending request');
 
-  await bob.command(thread.id, { method: 'approval/resolve', requestId: req.requestId, decision: 'accept' });
+  await bob.command(thread.id, { method: 'approval/resolve', requestId: req.requestId, decision: 'accept', turnId: req.turnId, fingerprint: req.fingerprint });
   const resolved = await alice.wait((m) => m.type === 'event' && m.method === 'serverRequest/resolved');
   assert(resolved.by.name === 'bob' && resolved.decision === 'accept', 'alice saw that bob approved (serverRequest/resolved attributed to bob)');
   const done = await alice.wait((m) => m.type === 'event' && m.method === 'turn/completed', 30000);
@@ -162,7 +162,7 @@ class Client {
   await bob.command(t2.id, { method: 'turn/start', input: [{ type: 'text', text: 'Create NOTES.md' }] });
   const col = await bob.wait((m) => m.type === 'event' && m.threadId === t2.id && m.method === 'item/fileChange/requestApproval', 30000);
   assert(/collision/.test(col.reason) && col.collision && col.collision.threadId === thread.id, 'second thread writing the same file is escalated to approval with a collision reason: ' + col.reason);
-  await bob.command(t2.id, { method: 'approval/resolve', requestId: col.requestId, decision: 'accept' });
+  await bob.command(t2.id, { method: 'approval/resolve', requestId: col.requestId, decision: 'accept', turnId: col.turnId, fingerprint: col.fingerprint });
   await bob.wait((m) => m.type === 'event' && m.threadId === t2.id && m.method === 'turn/completed', 30000);
   const ov = await alice.wait((m) => m.type === 'workspace.activity' && m.overlaps.some((o) => o.path === 'NOTES.md' && o.threads.length === 2));
   assert(ov.overlaps[0].severity === 'collision', 'hub reports the overlap between the two threads as a collision');

@@ -126,7 +126,7 @@ class Client {
   console.log(`  ✓ Codex asked a human before running: ${String(approvalEvent.command).slice(0, 60)}`);
   assert.ok(approvalEvent.requestId, 'the approval carries a request id');
 
-  await bob.command(thread.id, { method: Commands.APPROVAL_RESOLVE, requestId: approvalEvent.requestId, decision: 'accept' });
+  await bob.command(thread.id, { method: Commands.APPROVAL_RESOLVE, requestId: approvalEvent.requestId, decision: 'accept', turnId: approvalEvent.turnId, fingerprint: approvalEvent.fingerprint });
   const resolved = await bob.wait((m) => m.type === 'event' && m.method === Events.SERVER_REQUEST_RESOLVED, 30000, 'resolution');
   assert.equal(resolved.by.name, 'bob', 'the resolution is attributed to whoever answered');
   console.log(`  ✓ bob resolved it (${resolved.decision}), attributed to ${resolved.by.name}`);

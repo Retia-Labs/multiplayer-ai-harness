@@ -71,7 +71,7 @@ const Commands = {
   // Asking a teammate for help. Never becomes agent input; see Errors.HELP_IS_NOT_INPUT.
   THREAD_HELP: 'thread/help',                 // { text, to? } → { requestId }
   THREAD_HELP_RESOLVE: 'thread/help/resolve', // { requestId } → { ok }
-  APPROVAL_RESOLVE: 'approval/resolve', // { requestId, decision }
+  APPROVAL_RESOLVE: 'approval/resolve', // { requestId, decision, turnId, fingerprint }
   MODEL_LIST: 'model/list',           // { provider? } → { models }
   PROJECT_ADD: 'project/add',         // { dir } → { project }  (host-local only; see Errors)
   GIT_DIFF: 'git/diff',               // {} → { files }
@@ -130,6 +130,14 @@ const Errors = {
   TURN_BINDING_REQUIRED: 'turn_binding_required',    // steering must name the turn it was written for
   HELP_IS_NOT_INPUT: 'help_is_not_agent_input',      // a message for a person cannot be sent to an agent
   UNKNOWN_HELP_REQUEST: 'unknown_help_request',
+  // ---- approval resolution (issue #11) ----
+  APPROVAL_UNKNOWN: 'unknown_approval_request',        // nothing is pending under that id
+  APPROVAL_SETTLED: 'approval_already_settled',        // somebody answered first; who and how is returned
+  APPROVAL_EXPIRED: 'approval_request_expired',        // the request timed out before an answer arrived
+  APPROVAL_ACTION_CHANGED: 'approval_action_changed',  // the answer describes an action other than the pending one
+  APPROVAL_BINDING_REQUIRED: 'approval_binding_required', // an answer must name the turn and action it answers
+  APPROVAL_STALE_AFTER_RESTART: 'approval_stale_after_restart', // the host restarted; that request is gone
+  APPROVAL_SCOPE_UNSUPPORTED: 'approval_scope_unsupported',     // session-wide approval is not offered
   PROVIDER_NOT_ISOLATED: 'provider_not_isolated',    // CLI provider lacks proven project confinement
   PROJECT_OPERATION_UNAVAILABLE: 'project_operation_unavailable',
   PAIRING_INVALID: 'pairing_code_invalid',

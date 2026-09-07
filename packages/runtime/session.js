@@ -4,7 +4,8 @@
 // interrupt, and approval resolution to the runtime (which routes them from the hub).
 const crypto = require('crypto');
 const path = require('path');
-const { Events, ItemTypes, ItemStatus, TurnStatus, ApprovalDecision } = require('../protocol');
+const { Events, ItemTypes, ItemStatus, TurnStatus, ApprovalDecision, Errors } = require('../protocol');
+const { createHash } = require('crypto');
 const { decideCommand, decideFileWrite } = require('./policy');
 const { lineDiff } = require('./diff');
 const { WorkspaceAccess } = require('./workspace');
@@ -22,7 +23,7 @@ const TOOLS = [
 ];
 
 class TurnSession {
-  constructor({ thread, turnId, by, input, provider, model, settings, executor, emit, history, teammates, log = () => {} }) {
+  constructor({ thread, turnId, by, input, provider, model, settings, executor, emit, history, teammates, settledApprovals, onApprovalSettled, onApprovalRequested, approvalTtlMs, log = () => {} }) {
     this.teammates = teammates || (() => []);
     this.thread = thread;
     this.turnId = turnId || uid('turn');
@@ -38,7 +39,13 @@ class TurnSession {
     this.log = log;
     this.running = false;
     this.cancelled = false;
-    this.pendingApprovals = new Map(); // requestId -> resolve(decision)
+    this.pendingApprovals = new Map(); // requestId -> { resolve, fingerprint, expiresAt, turnId }
+    // Settled answers are remembered so a second answer can be told who won, rather than
+    // that nothing was pending. The host persists these, so they survive a restart.
+    this.settledApprovals = new Map(settledApprovals || []);
+    this.onApprovalSettled = onApprovalSettled || (() => {});
+    this.onApprovalRequested = onApprovalRequested || (() => {});
+    this.approvalTtlMs = approvalTtlMs || 10 * 60 * 1000;
     this.steerQueue = [];
     // Every accepted instruction gets a number from the host, in the order the host accepted
     // it. Two people typing at once produce one order, and it is the host's, not whichever
@@ -90,19 +97,39 @@ class TurnSession {
   interrupt() {
     this.cancelled = true;
     this.abort.abort();
-    for (const resolve of this.pendingApprovals.values()) resolve(ApprovalDecision.CANCEL);
+    for (const pending of this.pendingApprovals.values()) pending.resolve(ApprovalDecision.CANCEL);
     this.pendingApprovals.clear();
     if (this.child) { try { this.child.kill('SIGKILL'); } catch {} }
   }
 
-  resolveApproval(requestId, decision, by) {
-    if (![ApprovalDecision.ACCEPT, ApprovalDecision.DECLINE, ApprovalDecision.CANCEL].includes(decision)) return false;
-    const resolve = this.pendingApprovals.get(requestId);
-    if (!resolve) return false;
+  // One answer settles an action, and everyone else is told who settled it. Each way of
+  // being wrong gets its own error on purpose: one code covering a replay, an expiry and a
+  // mutated action would hide exactly the differences that matter.
+  resolveApproval(requestId, decision, by, { turnId, fingerprint } = {}) {
+    const refuse = (code, extra = {}) => { throw Object.assign(new Error(code), { code, ...extra }); };
+    if (decision === ApprovalDecision.ACCEPT_FOR_SESSION) refuse(Errors.APPROVAL_SCOPE_UNSUPPORTED);
+    if (![ApprovalDecision.ACCEPT, ApprovalDecision.DECLINE, ApprovalDecision.CANCEL].includes(decision)) refuse(Errors.APPROVAL_UNKNOWN);
+    const settled = this.settledApprovals.get(requestId);
+    // The loser is told the outcome rather than that nothing was there. Two people answering
+    // at once is ordinary; being unable to see who won is not.
+    if (settled) refuse(Errors.APPROVAL_SETTLED, { settled });
+    const pending = this.pendingApprovals.get(requestId);
+    if (!pending) refuse(Errors.APPROVAL_UNKNOWN);
+    if (!turnId || !fingerprint) refuse(Errors.APPROVAL_BINDING_REQUIRED);
+    if (turnId !== pending.turnId) refuse(Errors.STALE_TURN);
+    if (fingerprint !== pending.fingerprint) refuse(Errors.APPROVAL_ACTION_CHANGED);
+    if (Date.now() > pending.expiresAt) {
+      this.pendingApprovals.delete(requestId);
+      pending.resolve(ApprovalDecision.DECLINE);
+      refuse(Errors.APPROVAL_EXPIRED);
+    }
     this.pendingApprovals.delete(requestId);
+    const record = { requestId, decision, by, at: Date.now(), turnId: pending.turnId, fingerprint: pending.fingerprint };
+    this.settledApprovals.set(requestId, record);
+    this.onApprovalSettled(record);
     this.emit(Events.SERVER_REQUEST_RESOLVED, { requestId, decision, by });
-    resolve(decision);
-    return true;
+    pending.resolve(decision);
+    return record;
   }
 
   // ---------- turn lifecycle ----------
@@ -163,14 +190,34 @@ class TurnSession {
     return 'Plan updated.';
   }
 
+  // What is being approved, reduced to one value an answer must repeat back. Without it an
+  // answer names an id and nothing else, so it cannot be checked against the action it is
+  // supposed to be approving.
+  static fingerprintAction(payload) {
+    const material = JSON.stringify([payload.command ?? null, payload.cwd ?? null, payload.changes ?? null]);
+    return createHash('sha256').update(material).digest('hex').slice(0, 32);
+  }
+
   async requestApproval(method, payload) {
     const requestId = uid('req');
+    const fingerprint = TurnSession.fingerprintAction(payload);
+    const expiresAt = Date.now() + this.approvalTtlMs;
     this.emit(method, {
       requestId,
       ...payload,
+      fingerprint,
+      expiresAt,
+      // Per-action only. acceptForSession is in the vocabulary but is not offered here and
+      // is refused if sent: session-wide approval has no bounded semantics in this harness,
+      // and offering it without them is what issue #11 forbids.
       availableDecisions: [ApprovalDecision.ACCEPT, ApprovalDecision.DECLINE, ApprovalDecision.CANCEL]
     });
-    return await new Promise((resolve) => this.pendingApprovals.set(requestId, resolve));
+    // The host records that this is outstanding. After a restart that record is the only
+    // way to tell "your answer arrived too late" from "that request never existed".
+    this.onApprovalRequested({ requestId, turnId: this.turnId, fingerprint, expiresAt });
+    return await new Promise((resolve) => {
+      this.pendingApprovals.set(requestId, { resolve, fingerprint, expiresAt, turnId: this.turnId, method });
+    });
   }
 
   // ---------- tools ----------

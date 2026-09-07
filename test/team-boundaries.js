@@ -462,7 +462,7 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   ok('an owner delegates approval authority explicitly', `${approvers[0].name} granted by alice`);
 
   // Now the grant is what carries him past the gate - his membership is unchanged.
-  await refused('a delegated approver reaches the host and is judged there', 'no such pending approval',
+  await refused('a delegated approver reaches the host and is judged there', Errors.APPROVAL_UNKNOWN,
     () => bob.command(thread.id, { method: Commands.APPROVAL_RESOLVE, requestId: 'req_x', decision: 'accept' }));
 
   const memberRows = (await alice.op({ type: TeamOps.TEAM_MEMBERS, teamId }, 'users')).users;
