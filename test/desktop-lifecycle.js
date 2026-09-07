@@ -149,7 +149,10 @@ let app, socket;
     try { process.kill(pid, 0); return true; } catch { return false; }
   };
   assert.equal(alive(pidBefore), true, 'the host is running before the quit');
-  await app.close();
+  // The same explicit quit a person chooses from the tray. Closing alone would leave the app
+  // running, which is the behaviour under test.
+  await app.evaluate(() => global.__plexusDesktop.forceQuit());
+  await app.close().catch(() => {});
   await waitFor(async () => !alive(pidBefore), 'the execution host stops', 200);
   pass('an explicit quit shuts the managed processes down', 'host pid ' + pidBefore + ' is gone');
 

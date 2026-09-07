@@ -5,6 +5,14 @@ const path = require('node:path');
 const http = require('node:http');
 const { _electron: electron } = require('playwright-core');
 const { Hub } = require('../packages/hub/server');
+
+// The app stays alive when its window closes - it is a tray app now - so a test that wants it
+// gone has to say so, exactly as a person does by choosing Quit from the tray.
+async function quitApp(app) {
+  if (!app) return;
+  try { await app.evaluate(() => { if (global.__plexusDesktop) global.__plexusDesktop.forceQuit(); }); } catch {}
+  try { await app.close(); } catch {}
+}
 const root = path.join(__dirname, '..');
 const out = path.join(root, '.artifacts', 'desktop-bootstrap');
 fs.mkdirSync(out, { recursive: true });
@@ -64,7 +72,7 @@ const launch = (dataDir, env) => electron.launch({
     assert.match(log, /node 24\./);
     await capture(page, 'ready-to-pair');
     console.log('PASS: retry reaches remote hub and starts this exact local host without Node on PATH');
-    await app.close(); app = null;
+    await quitApp(app); app = null;
     const failureData = path.join(temp, 'runtime-failure');
     const runtimeConfig = path.join(failureData, 'harness', 'runtime.json');
     fs.mkdirSync(path.dirname(runtimeConfig), { recursive: true });
@@ -80,7 +88,7 @@ const launch = (dataDir, env) => electron.launch({
     console.log('PASS: an exited local runtime stays on the error screen and can recover after repair');
 
   } finally {
-    if (app) await app.close();
+    if (app) await quitApp(app);
     if (hub) await hub.close();
     if (unavailable.listening) await new Promise((resolve) => unavailable.close(resolve));
   }

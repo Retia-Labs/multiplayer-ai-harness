@@ -388,7 +388,12 @@ global.__plexusDesktop = {
   closeWindow: () => { if (win && !win.isDestroyed()) win.close(); },
   showWindow: () => showWindow(),
   quitPlanNow: () => quitPlan({ activeTasks: activeTaskCount() }),
-  pairingCode: () => localPairingCode()
+  pairingCode: () => localPairingCode(),
+  // Quitting without the question. A tray app does not exit when its last window closes -
+  // that is the whole point of #18 - so an automated close has to say what it means, the
+  // same way a person does by choosing Quit. Without this the app correctly stays alive and
+  // the test harness waits for an exit that is never coming.
+  forceQuit: () => { quitting = true; app.quit(); }
 };
 
 function createTray() {

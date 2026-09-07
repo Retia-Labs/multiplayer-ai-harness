@@ -3,6 +3,14 @@ const { _electron: electron } = require('playwright-core');
 const fs = require('fs'); const os = require('os'); const path = require('path');
 const { execSync } = require('child_process');
 const { localShell } = require('../packages/runtime/executors');
+
+// The app stays alive when its window closes - it is a tray app now - so a test that wants it
+// gone has to say so, exactly as a person does by choosing Quit from the tray.
+async function quitApp(app) {
+  if (!app) return;
+  try { await app.evaluate(() => { if (global.__plexusDesktop) global.__plexusDesktop.forceQuit(); }); } catch {}
+  try { await app.close(); } catch {}
+}
 function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.log('  ✓ ' + m); }
 (async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-desktop-'));
@@ -62,6 +70,6 @@ function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.
   const evidenceDir = path.join(__dirname, '..', '.artifacts', 'desktop-bootstrap');
   fs.mkdirSync(evidenceDir, { recursive: true });
   await win.screenshot({ path: path.join(evidenceDir, process.env.DESKTOP_EXECUTABLE ? 'packaged-workspace.png' : 'workspace.png') });
-  await app.close();
+  await quitApp(app);
   console.log('\ndesktop smoke passed ✅'); process.exit(0);
 })().catch((e) => { console.error('DESKTOP SMOKE FAILED', e); process.exit(1); });
