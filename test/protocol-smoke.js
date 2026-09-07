@@ -168,7 +168,9 @@ class Client {
   assert(ov.overlaps[0].severity === 'collision', 'hub reports the overlap between the two threads as a collision');
 
   // ---- handoff ----
-  await alice.command(thread.id, { method: 'thread/assign', assignee: { userId: 'u_bob', name: 'bob', color: '#c026d3' }, note: 'please review and merge' });
+  // bob's actual account id, not a made-up one. This used to pass a literal 'u_bob', which
+  // the hub accepted because nothing checked that the person being handed the work existed.
+  await alice.command(thread.id, { method: 'thread/assign', assignee: { userId: bobWelcome.user.id, name: 'bob', color: '#c026d3' }, note: 'please review and merge' });
   const asg = await bob.wait((m) => m.type === 'thread.updated' && m.thread.id === thread.id && m.thread.assignee && m.thread.assignee.name === 'bob');
   assert(asg.thread.handoffNote === 'please review and merge', 'thread handed off to bob with a note (attributed event + thread.updated)');
 
