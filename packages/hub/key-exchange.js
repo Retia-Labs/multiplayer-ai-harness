@@ -76,9 +76,38 @@ class KeyExchange {
 
   // ---- the directory ----
 
+  // What an enrolment recorded for a device, if anything. The enrolment table is the record
+  // of keys a person actually compared and confirmed; this directory is where devices publish.
+  enrolledKeys(userId, device) {
+    const ready = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='endpoint_enrollments'").get();
+    if (!ready) return null;
+    const row = this.db.prepare(
+      "SELECT curve25519, ed25519 FROM endpoint_enrollments WHERE user_id=? AND device_id=? AND state!='revoked'")
+      .get(userId, device);
+    return row || null;
+  }
+
   upload(user, device, body, now = Date.now()) {
     const value = JSON.parse(body || '{}');
     if (value.device_keys) {
+      // A device id somebody already confirmed cannot be republished with different keys.
+      //
+      // #8 refuses this at the enrolment - announcing an enrolled device id with new keys is
+      // endpoint_device_id_reused - but the key directory was accepting the upload anyway. So
+      // a second endpoint claiming an existing device id could overwrite the published keys of
+      // the real one, and the legitimate device became undiscoverable: every lookup returned
+      // the substitute, and every confirmation against the enrolment then failed. Refusing the
+      // announcement while accepting the upload protected the trust decision and broke the
+      // device it was protecting.
+      const enrolled = this.enrolledKeys(localId(user), device);
+      if (enrolled) {
+        const published = (value.device_keys && value.device_keys.keys) || {};
+        const curve = published['curve25519:' + device];
+        const ed = published['ed25519:' + device];
+        if ((curve && curve !== enrolled.curve25519) || (ed && ed !== enrolled.ed25519)) {
+          throw problem('endpoint_device_id_reused', 409);
+        }
+      }
       this.db.prepare(`INSERT INTO e2ee_devices VALUES (?,?,?,?)
         ON CONFLICT(user_id, device_id) DO UPDATE SET keys=excluded.keys, updated_at=excluded.updated_at`)
         .run(user, device, JSON.stringify(value.device_keys), now);
