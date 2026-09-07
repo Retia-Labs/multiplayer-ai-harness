@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Catch-up render fixture</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style>
+    /* Deterministic capture: no motion, no scrollbar drift, fixed shell chrome. */
+    * { animation: none !important; transition: none !important; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: Outfit, system-ui, sans-serif; }
+    #shell { max-width: 780px; margin: 0 auto; }
+    #catchup-view { height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="shell"><section id="catchup-view" aria-label="Catch up"></section></div>
+  <div id="source-pane" hidden></div>
+  <script src="catchup.js"></script>
+  <script>
+    globalThis.fixture = {
+      render(projection) {
+        window.PlexusCatchup.renderCatchup(projection, document.querySelector('#catchup-view'), {
+          onOpenSource: (source) => { globalThis.opened = source; }
+        });
+        return document.querySelector('#catchup-view').getAttribute('data-freshness');
+      },
+      renderSource(opened) {
+        const pane = document.querySelector('#source-pane');
+        pane.hidden = false;
+        window.PlexusCatchup.renderSource(opened, pane);
+        return pane.getAttribute('data-source');
+      }
+    };
+  </script>
+</body>
+</html>
