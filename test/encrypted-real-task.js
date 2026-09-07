@@ -1,0 +1,173 @@
+'use strict';
+// Acceptance test for issue #7 (P06): a real task executing on the host and reaching the
+// encrypted log.
+//
+// #6 wrote that log from fixture events and #9 read it, but nothing in the shipped runtime
+// ever opened an encrypted task, so every encrypted history in this repository was written
+// by test code. This drives the production path: the host publishes an endpoint through the
+// hub, finds the task addressed to it, verifies the creator through #8's enrolment, runs an
+// actual turn, and the objective, plan, tool calls and file changes arrive as encrypted
+// events that a teammate can replay.
+//
+// The provider here is the deterministic one, so this runs the same way everywhere. The
+// separate real-Codex check lives in encrypted-codex-task.js and skips when no CLI is
+// present, because a test that silently passes without exercising a provider is worse than
+// one that says it did not run.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { randomBytes } = require('node:crypto');
+const { Hub } = require('../packages/hub/server');
+const { Runtime } = require('../packages/runtime');
+const { TurnSession } = require('../packages/runtime/session');
+const { Endpoint } = require('../packages/e2ee/endpoint');
+const { HubKeyTransport } = require('../packages/e2ee/hub-key-transport.mjs');
+const { EncryptedHost } = require('../packages/runtime/encrypted-host');
+const { EncryptedTaskReader, EncryptedTaskTransport, createEncryptedTask, newId } = require('../packages/e2ee/task-log.mjs');
+const { matrixUser } = require('../packages/protocol/encrypted-task.mjs');
+const { EnrollmentTransport, announcement, confirmTeammateEndpoint } = require('../packages/e2ee/enrollment.mjs');
+const { catchUp } = require('../packages/e2ee/catchup.mjs');
+const { TeamOps } = require('../packages/protocol');
+
+const results = [];
+const pass = (name, detail) => { results.push({ name, status: 'pass' }); console.log('  PASS ' + name + (detail ? ' - ' + detail : '')); };
+const waitFor = async (fn, label = '') => {
+  for (let n = 0; n < 400; n++) { const v = fn(); if (v) return v; await new Promise((r) => setTimeout(r, 25)); }
+  throw new Error('timeout: ' + label);
+};
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-real-task-'));
+const canary = 'PRIVATE_' + randomBytes(16).toString('hex');
+let hub, runtime, encrypted, socket;
+
+(async () => {
+  hub = new Hub({ dbFile: path.join(tmp, 'hub.sqlite'), log: () => {} });
+  const addr = await hub.listen();
+  const url = 'http://127.0.0.1:' + addr.port;
+  const project = path.join(tmp, 'workspace');
+  fs.mkdirSync(project);
+  fs.writeFileSync(path.join(project, 'seed.txt'), canary + '\n');
+
+  runtime = new Runtime({ hubUrl: url.replace('http', 'ws'), userName: 'host', dataDir: path.join(tmp, 'runtime'), projects: [project], encryptedTasksOnly: true });
+  await runtime.start();
+
+  let welcome; const messages = [];
+  socket = new WebSocket(url.replace('http', 'ws'));
+  socket.onopen = () => socket.send(JSON.stringify({ type: 'hello', role: 'client', name: 'alice' }));
+  socket.onmessage = ({ data }) => { const m = JSON.parse(data); messages.push(m); if (m.type === 'welcome') welcome = m; };
+  await waitFor(() => welcome && hub.pendingPairings.size, 'welcome');
+  socket.send(JSON.stringify({ type: TeamOps.TEAM_CREATE, name: 'Real task team', id: 'op1' }));
+  await waitFor(() => messages.some((m) => m.type === 'team'), 'team');
+  const team = messages.find((m) => m.type === 'team').team;
+  socket.send(JSON.stringify({ type: TeamOps.RUNTIME_PAIR, teamId: team.id, code: runtime.pairingCode, id: 'op2' }));
+  await waitFor(() => runtime.teamId === team.id, 'paired');
+  const account = hub.store.userById(welcome.user.id);
+
+  // ---- the host brings up its encrypted side through the real hub ----
+  const projectId = newId('ep');
+  encrypted = new EncryptedHost({
+    runtime, url, statePath: path.join(tmp, 'host-outbox.sqlite'),
+    projects: new Map([[projectId, project]]), log: () => {}
+  });
+  const hostIdentity = await encrypted.start();
+  assert.ok(hostIdentity.curve25519, 'the host published an endpoint');
+  assert.equal(hub.store.db.prepare('SELECT COUNT(*) AS n FROM e2ee_devices').get().n >= 1, true);
+  pass('the execution host publishes an encrypted endpoint through the hub', hostIdentity.device);
+
+  // ---- the creator enrols, and is confirmed ----
+  const client = await Endpoint.create({
+    user: matrixUser(account.id), device: 'ALICEDEV',
+    transport: new HubKeyTransport({ url, token: account.token, device: 'ALICEDEV' })
+  });
+  const enroll = new EnrollmentTransport({ url, token: account.token });
+  await enroll.bootstrap(team.id, announcement(client));
+  for (const [a, b] of [[client, encrypted.endpoint], [encrypted.endpoint, client]]) await a.confirmEndpoint(b.identity(), { confirmed: true });
+
+  const tasks = new EncryptedTaskTransport({ url, token: account.token });
+  const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId, creatorUserId: account.id };
+  const objective = { title: canary + ' title', objective: 'Create NOTES.md describing ' + canary };
+  const created = await createEncryptedTask(client, tasks, { task, writer: hostIdentity, payload: objective });
+  pass('a solo creator starts an encrypted task without another teammate present', task.id);
+
+  // ---- the host finds it, and refuses what it cannot place ----
+  const unmapped = { ...task, id: newId('et'), projectId: newId('ep') };
+  await createEncryptedTask(client, tasks, { task: unmapped, writer: hostIdentity, payload: objective });
+  const outcomeUnmapped = await encrypted.run(unmapped, { runTurn: async () => { throw new Error('should not run'); } });
+  assert.equal(outcomeUnmapped.skipped, 'project_not_mapped');
+  pass('a task naming a project this host has not mapped is left alone', 'project_not_mapped');
+
+  const found = await encrypted.pending();
+  assert.ok(found.some((t) => t.id === task.id), 'the host sees the task addressed to it');
+  pass('the host finds the encrypted task addressed to it', found.length + ' pending');
+
+  // ---- and runs a real turn into the log ----
+  const runTurn = async (emit, decrypted) => {
+    const session = new TurnSession({
+      thread: { id: task.id, cwd: project, settings: {} },
+      by: { userId: account.id, name: 'alice' },
+      input: [{ type: 'text', text: decrypted.objective }],
+      provider: { id: 'demo' }, settings: {}, executor: runtime.executor,
+      history: [], emit, log: () => {}
+    });
+    await session.run();
+    return session;
+  };
+  const outcome = await encrypted.run(task, { runTurn });
+  assert.ok(outcome.events >= 4, 'the turn produced a history, not a stub');
+  pass('a real turn is executed and written to the encrypted log', outcome.events + ' events');
+
+  // ---- which the creator can read back ----
+  await client.open(await client.transport.drain());
+  const reader = new EncryptedTaskReader({ endpoint: client, task, writer: hostIdentity });
+  await reader.reconnect(tasks);
+  const state = reader.state;
+  assert.equal(state.title, objective.title);
+  assert.ok(state.events.length >= 4);
+  assert.ok(state.events.some((e) => e.type === 'task.completed'), 'the log says how it ended');
+  pass('the creator replays the task the host actually ran', reader.seq + ' events, outcome ' + state.outcome);
+
+  const view = catchUp(reader.snapshot(), { responsible: 'alice', host: runtime.id, provider: 'demo', hostConnected: true, taskId: task.id, projectId });
+  assert.equal(view.objective.value, objective.objective);
+  assert.equal(view.objective.provenance, 'recorded');
+  pass('the catch-up projection reads the real task', '#9 reading #7 through the log');
+
+  // ---- criterion 2: the relay never sees content or credentials ----
+  const relay = JSON.stringify({
+    events: await tasks.page(task.id),
+    tasks: await tasks.list(team.id),
+    devices: hub.store.db.prepare('SELECT * FROM e2ee_devices').all(),
+    mailbox: hub.store.db.prepare('SELECT * FROM e2ee_mailbox').all(),
+    threads: hub.store.listThreads(team.id)
+  });
+  assert.equal(relay.includes(canary), false, 'task content is absent from everything the relay holds');
+  assert.equal(/sk-[A-Za-z0-9]{16}|OPENAI_API_KEY|Bearer sk-/.test(relay), false, 'no credential material is anywhere near it');
+  pass('the relay holds neither the task content nor any credential', canary.slice(0, 12) + '...');
+
+  // ---- criterion 4: product identifiers stay separate from provider ones ----
+  const fleet = hub.store.getRuntime(runtime.id);
+  assert.equal(fleet.taskProtocol, 'encrypted-v1');
+  assert.deepEqual(fleet.projects, [], 'the fleet descriptor names no local paths');
+  const descriptor = JSON.stringify(fleet);
+  assert.equal(descriptor.includes(project), false, 'nor the workspace path');
+  assert.equal(descriptor.includes(task.id), false, 'nor the task it is running');
+  pass('product task ids stay out of the shared host descriptor', 'taskProtocol encrypted-v1, no paths');
+
+  // ---- what the host is honest about ----
+  const durability = EncryptedHost.identityDurability();
+  assert.equal(durability.persistent, false);
+  pass('the host records that its identity does not survive a restart', durability.reason);
+
+  fs.mkdirSync(path.join(__dirname, '..', '.artifacts', 'encrypted-real-task'), { recursive: true });
+  fs.writeFileSync(path.join(__dirname, '..', '.artifacts', 'encrypted-real-task', 'results.json'),
+    JSON.stringify({ ranAt: new Date().toISOString(), results }, null, 2) + '\n');
+  console.log('\n' + results.length + ' real encrypted task checks passed');
+})().then(async () => {
+  socket?.close(); encrypted?.close(); try { runtime?.stop?.(); } catch {}
+  await hub?.close?.(); process.exit(0);
+}).catch(async (error) => {
+  console.error('REAL ENCRYPTED TASK FAILED\n', error);
+  socket?.close(); try { encrypted?.close(); } catch {}
+  try { runtime?.stop?.(); } catch {}
+  try { await hub?.close?.(); } catch {}
+  process.exit(1);
+});

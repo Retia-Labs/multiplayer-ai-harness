@@ -11,6 +11,8 @@ on:
       - 'test/hub-key-exchange.js'
       - 'test/shared-steering.js'
       - 'test/approval-grants.js'
+      - 'test/encrypted-*.js'
+      - 'test/codex-confinement.js'
       - 'test/codex*.js'
       - 'test/fixtures/encrypted-task*'
       - 'package*.json'
@@ -47,6 +49,10 @@ jobs:
       - run: npm run test:team
       - run: npm run test:steering
       - run: npm run test:approvals
+      - run: npm run test:encrypted-real-task
+      # Skips loudly without an authenticated CLI, which CI does not have.
+      - run: npm run test:encrypted-codex-task
+      - run: npm run test:codex-confinement
       - run: npm run test:codex
       - uses: actions/upload-artifact@v4
         if: always()
