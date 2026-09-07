@@ -29,6 +29,7 @@
     "check:design": "node scripts/check-design-contract.js",
     "test:design": "node --test test/design-contract.js",
     "test:desktop-bootstrap": "node test/desktop-bootstrap.js",
+    "test:desktop-lifecycle": "node test/desktop-lifecycle.js",
     "test:desktop:install": "node scripts/desktop-install-proof.js",
     "test:e2ee:acceptance": "node test/e2ee-acceptance.js",
     "test:e2ee:platform": "node scripts/e2ee-platform-proof.js",

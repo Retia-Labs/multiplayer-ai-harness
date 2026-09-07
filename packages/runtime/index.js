@@ -408,6 +408,18 @@ class Runtime {
   // Approvals that were outstanding go the same way. An answer to a request whose turn no
   // longer exists cannot authorise anything, and #11 already refuses one with
   // approval_stale_after_restart; this makes the thread stop advertising the prompt.
+  // How many turns are actually running here, written where the desktop shell can read it.
+  //
+  // The shell cannot ask over the websocket - it may be quitting, and the answer has to be
+  // available at exactly the moment the connection is about to go away - so this is a file the
+  // host keeps current. Nobody should be told "2 tasks are running" from a number that was
+  // true ten minutes ago.
+  publishActiveTasks() {
+    if (!this.dataDir) return;
+    const running = [...this.sessions.values()].filter((s) => s && s.running).length;
+    try { fs.writeFileSync(path.join(this.dataDir, 'active-tasks'), String(running)); } catch {}
+  }
+
   reconcileAfterRestart() {
     const reconciled = [];
     for (const thread of this.store.listThreads()) {
@@ -467,6 +479,7 @@ class Runtime {
   async threadDelete(threadId) {
     const s = this.sessions.get(threadId);
     if (s) { s.interrupt(); this.sessions.delete(threadId); }
+    this.publishActiveTasks();
     // Old worktrees are left for the host operator to clean up. A remote delete must not
     // launch repository-controlled Git hooks or subprocesses.
     this.store.deleteThread(threadId);
@@ -539,6 +552,7 @@ class Runtime {
       }
     });
     this.sessions.set(thread.id, session);
+    this.publishActiveTasks();
     if (thread.name === 'New thread') {
       const text = cmd.input.filter((i) => i.type === 'text').map((i) => i.text).join(' ').trim();
       if (text) {
@@ -551,6 +565,7 @@ class Runtime {
       if (this.stopped) return;
       thread.updatedAt = Date.now(); this.store.upsertThread(thread);
       if (this.sessions.get(thread.id) === session) this.sessions.delete(thread.id);
+      this.publishActiveTasks();
     });
     return { turnId: session.turnId };
   }

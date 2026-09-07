@@ -7,7 +7,8 @@
 // has no terminal, no developer checkout, and no guarantee that Node exists at all - and
 // the hub needs `node:sqlite`, which arrived in Node 22.5, so "whatever node is on PATH"
 // was never a safe answer either.
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage } = require('electron');
+const { shouldQuitOnWindowClose, quitPlan, shouldLaunchRuntime, trayState, killTreeCommand } = require('./lifecycle');
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
@@ -30,6 +31,8 @@ const children = [];
 const serviceLogs = { hub: [], runtime: [] };
 let runtimeChild = null;
 let runtimeLaunch = null;
+// Where the workspace was loaded from, so reopening a window does not re-run boot.
+let bootedUrl = null;
 
 // An installed app has no console to print to, so a startup failure would otherwise be
 // invisible to the user and unreportable to us. Everything the shell prints also goes here.
@@ -99,8 +102,78 @@ function spawnService(label, script, args, env) {
 
 function launchRuntime() {
   if (!runtimeLaunch) return null;
+  // Reopening a window must not start a second host. Two hosts on one machine means two
+  // runtime ids, two pairing codes, and a fleet list implying a machine nobody has.
+  if (!shouldLaunchRuntime(runtimeChild)) return runtimeChild;
   runtimeChild = spawnService('runtime', runtimeLaunch.script, runtimeLaunch.args, runtimeLaunch.env);
+  refreshTray();
   return runtimeChild;
+}
+
+// ---- tray ----
+//
+// The tray is what makes closing a window different from quitting. Without one there is no
+// way back to a running host, so closing would have to end it - which is exactly the
+// behaviour issue #18 exists to remove.
+let tray = null;
+let quitting = false;
+
+function runtimeRunning() {
+  return !!(runtimeChild && runtimeChild.exitCode === null && runtimeChild.signalCode === null);
+}
+
+function refreshTray() {
+  if (!tray) return;
+  const state = trayState({
+    runtimeRunning: runtimeRunning(),
+    activeTasks: activeTaskCount(),
+    windowOpen: !!(win && !win.isDestroyed() && win.isVisible())
+  });
+  tray.setToolTip(state.tooltip);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: state.tooltip, enabled: false },
+    ...(state.detail ? [{ label: state.detail, enabled: false }] : []),
+    { type: 'separator' },
+    { label: 'Open Plexus', click: () => showWindow() },
+    { label: 'Quit Plexus', click: () => requestQuit() }
+  ]));
+}
+
+// What the host says is running. Read from its own state rather than remembered here, so a
+// task that ended while the window was closed is not counted.
+function activeTaskCount() {
+  try {
+    if (!runtimeLaunch) return 0;
+    const raw = fs.readFileSync(path.join(runtimeLaunch.dataDir, 'active-tasks'), 'utf8').trim();
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch { return 0; }
+}
+
+async function showWindow() {
+  if (win && !win.isDestroyed()) { win.show(); win.focus(); refreshTray(); return; }
+  await createWindow();
+  // Reopening is not restarting. The services this app manages are already up - booting
+  // again tried to bind the hub's port a second time and failed with EADDRINUSE, which is
+  // the same mistake as launching a second runtime, wearing different clothes.
+  if (bootedUrl && runtimeRunning()) await win.loadURL(bootedUrl);
+  else await runBoot();
+  refreshTray();
+}
+
+// Quitting is allowed to stop work. It is not allowed to stop it quietly.
+async function requestQuit() {
+  const plan = quitPlan({ activeTasks: activeTaskCount() });
+  if (plan.confirm) {
+    const choice = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+      type: 'warning', title: plan.title, message: plan.message, detail: plan.detail,
+      buttons: plan.buttons, defaultId: 1, cancelId: 1
+    });
+    if (choice.response !== 0) return false;
+  }
+  quitting = true;
+  app.quit();
+  return true;
 }
 
 function stopService(child) {
@@ -111,7 +184,13 @@ function stopService(child) {
     child.once('exit', done);
     child.kill();
     forceTimer = setTimeout(() => {
-      if (child.exitCode === null) child.kill('SIGKILL');
+      if (child.exitCode !== null) return;
+      // A provider CLI spawned by the runtime is not killed by killing the runtime, so a
+      // "quit" could leave a model running and a workspace still being written to. Reach the
+      // whole tree before falling back to killing the one process we have a handle on.
+      const sweep = killTreeCommand(child.pid);
+      if (sweep) { try { spawn(sweep.file, sweep.args, { stdio: 'ignore' }).on('error', () => {}); } catch {} }
+      try { child.kill('SIGKILL'); } catch {}
     }, 2000);
   });
 }
@@ -242,7 +321,8 @@ async function boot() {
   if (!registered) throw new Error('The execution host did not connect. Try again or inspect the data folder logs.');
 
   status('ui', 'working', 'Opening the workspace…');
-  await win.loadURL(httpUrl + '/?name=' + encodeURIComponent(userName));
+  bootedUrl = httpUrl + '/?name=' + encodeURIComponent(userName);
+  await win.loadURL(bootedUrl);
 }
 
 async function createWindow() {
@@ -283,8 +363,53 @@ ipcMain.handle('desktop:retryBoot', () => {
   return retryPromise;
 });
 ipcMain.handle('desktop:openDataFolder', async () => shell.openPath(app.getPath('userData')));
+// What the tray would say, and whether the host is up. Read by the desktop smoke test,
+// which cannot click a tray icon on any of the platforms this is built for.
+ipcMain.handle('desktop:lifecycle', async () => ({
+  runtimeRunning: runtimeRunning(),
+  runtimePid: runtimeChild ? runtimeChild.pid : null,
+  hasTray: !!tray,
+  windows: BrowserWindow.getAllWindows().length,
+  tray: trayState({ runtimeRunning: runtimeRunning(), activeTasks: activeTaskCount(), windowOpen: !!(win && !win.isDestroyed() && win.isVisible()) })
+}));
+ipcMain.handle('desktop:quit', async () => requestQuit());
 
-app.whenReady().then(async () => { openLog(); await createWindow(); return runBoot(); });
-app.on('activate', async () => { if (BrowserWindow.getAllWindows().length === 0) { await createWindow(); runBoot(); } });
-app.on('window-all-closed', () => app.quit());
+// The same handle, reachable from the main process, because a test cannot click a tray icon
+// on any platform this is built for. It exposes state the app already has and grants nothing.
+global.__plexusDesktop = {
+  lifecycle: () => ({
+    runtimeRunning: runtimeRunning(),
+    runtimePid: runtimeChild ? runtimeChild.pid : null,
+    hasTray: !!tray,
+    windows: BrowserWindow.getAllWindows().length,
+    quitsOnWindowClose: shouldQuitOnWindowClose({ hasTray: !!tray }),
+    tray: trayState({ runtimeRunning: runtimeRunning(), activeTasks: activeTaskCount(), windowOpen: !!(win && !win.isDestroyed() && win.isVisible()) })
+  }),
+  closeWindow: () => { if (win && !win.isDestroyed()) win.close(); },
+  showWindow: () => showWindow(),
+  quitPlanNow: () => quitPlan({ activeTasks: activeTaskCount() }),
+  pairingCode: () => localPairingCode()
+};
+
+function createTray() {
+  if (tray) return tray;
+  const icon = nativeImage.createFromPath(path.join(ROOT, 'apps', 'web', 'brand', 'plexus-app-icon-256.png'));
+  // A tray icon that fails to load would silently take the app back to quitting on close,
+  // so an empty image is used rather than no tray at all.
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon.resize({ width: 18, height: 18 }));
+  tray.on('click', () => showWindow());
+  refreshTray();
+  return tray;
+}
+
+app.whenReady().then(async () => { openLog(); createTray(); await createWindow(); return runBoot(); });
+app.on('activate', async () => { if (BrowserWindow.getAllWindows().length === 0) { await showWindow(); } });
+// Closing a window is a statement about a window. The execution host keeps running, and a
+// teammate working in a browser keeps working, until somebody quits on purpose.
+app.on('window-all-closed', () => { refreshTray(); if (shouldQuitOnWindowClose({ hasTray: !!tray })) app.quit(); });
+app.on('before-quit', (event) => {
+  if (quitting) return;
+  event.preventDefault();
+  requestQuit();
+});
 app.on('quit', () => { for (const c of children) { try { c.kill(); } catch {} } });
