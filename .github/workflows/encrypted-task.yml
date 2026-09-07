@@ -50,6 +50,7 @@ jobs:
       - run: npm run test:confined-writes
       - run: npm run test:related-work
       - run: npm run test:recovery
+      - run: npm run test:recover-after-loss
       - run: npm run test:protocol
       - run: npm run test:unit
       - run: npm run test:team

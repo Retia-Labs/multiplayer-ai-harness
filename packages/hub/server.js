@@ -11,7 +11,7 @@ const { HubStore, uid } = require('./store');
 const { EncryptedTasks } = require('./encrypted-tasks');
 const { Enrollment } = require('./enrollment');
 const { KeyExchange } = require('./key-exchange');
-const { TeamOps, Errors, Roles, Commands } = require('../protocol');
+const { TeamOps, Errors, Roles, Commands, ThreadStatus } = require('../protocol');
 
 // Authorization failures carry a code so a caller can tell them apart. `fail` is used for
 // every boundary in this file; a bare `throw new Error(...)` would collapse them back into
@@ -176,7 +176,31 @@ class Hub {
     for (const threadId of ctx.subs) this.broadcastPresence(threadId);
     if (ctx.role === 'runtime' && ctx.runtimeId && this.runtimes.get(ctx.runtimeId) === ws) {
       this.runtimes.delete(ctx.runtimeId);
+      this.markRunningThreadsUnknown(ctx.runtimeId, ctx.teamId);
       if (ctx.teamId) this.broadcastRuntimes(ctx.teamId);
+    }
+  }
+
+  // A host that vanished mid-turn leaves work whose outcome nobody here knows. Saying it is
+  // still running is a claim about a machine that is not answering; saying it is idle reads as
+  // "finished", which is the worse of the two guesses. So it becomes unknown, and stays
+  // unknown until the host itself says what happened.
+  markRunningThreadsUnknown(runtimeId, teamId) {
+    if (!teamId) return;
+    for (const thread of this.store.listThreads(teamId)) {
+      if (thread.runtimeId !== runtimeId) continue;
+      if (!thread.status || thread.status.type !== 'active') continue;
+      const updated = {
+        ...thread,
+        status: ThreadStatus.unknown(thread.activeTurnId || null),
+        // The pending approval goes with it. Answering a request whose host is gone cannot
+        // authorise anything, and leaving the prompt up invites somebody to try.
+        pendingApproval: null,
+        updatedAt: Date.now()
+      };
+      this.store.upsertThread(updated);
+      this.broadcastTeam(teamId, { type: 'thread.updated', thread: updated });
+      this.touchActivity(updated, teamId, { active: false });
     }
   }
 
@@ -582,7 +606,11 @@ class Hub {
     const fingerprint = JSON.stringify([runtimeId, msg.threadId || null, cmd]);
     const prior = this.commandLog.get(key);
     if (prior) {
-      if (prior.fingerprint !== fingerprint) throw fail(Errors.COMMAND_IN_PROGRESS, 'command identity reused with different input');
+      // A reused id carrying different input is a conflict, not a command that is running.
+      // Calling it "in progress" sends somebody looking for work that is not there, when the
+      // problem is the id. The host says command_id_conflict for the same situation, and two
+      // layers answering the same question differently is how a caller learns to ignore both.
+      if (prior.fingerprint !== fingerprint) throw fail(Errors.COMMAND_ID_CONFLICT, 'command identity reused with different input');
       if (prior.state === 'done') this.send(ws, { ...prior.result, id, duplicate: true });
       else prior.waiters.add(ws);
       return;
@@ -723,6 +751,9 @@ class Hub {
     else if (m === 'help/requested') patch = { openHelp: { requestId: ev.requestId, by: ev.by || null, to: ev.to || null, at: Date.now() } };
     else if (m === 'help/resolved') patch = { openHelp: null };
     else if (m === 'turn/completed') patch = { status: ev.status === 'failed' ? { type: 'systemError' } : { type: 'idle' }, activeTurnId: null, pendingApproval: null, interruptRequestedBy: null, lastTurnStatus: ev.status, lastTurnAt: Date.now() };
+    // The host came back without this turn. It is idle now, and the record says the turn was
+    // abandoned rather than completed - which is a different thing and reads differently.
+    else if (m === 'turn/abandoned') patch = { status: { type: 'idle' }, activeTurnId: null, pendingApproval: null, interruptRequestedBy: null, lastTurnStatus: 'abandoned', lastTurnAt: Date.now() };
     else if (m === 'thread/name/updated') patch = { name: ev.name };
     else if (m === 'thread/settings/updated') patch = { settings: { ...(thread.settings || {}), ...(ev.settings || {}) } };
     if (patch) {
