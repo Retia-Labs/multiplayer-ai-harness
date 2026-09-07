@@ -11,7 +11,7 @@ This record separates executable evidence from the qualified review gate.
 | Regression suites | `npm test` passed: protocol, 16 unit, 68 team-boundary, 9 control-plane checks and multiplayer browser E2E |
 | Design integrity | `npm run check:design` and GitHub design checks passed; no production UI or reference baseline changes |
 | Dependency scan | `npm audit --audit-level=low`: 0 vulnerabilities |
-| Independent qualified protocol/threat-model review | Pending reviewer, reviewed commit, findings and disposition |
+| Protocol/threat-model review | Founder review by Kalai at `f39b465`, recorded below. Not a specialist cryptographic audit |
 
 Both packaged platforms passed against code commit
 `b3873b89411fd5df8a97df86281021fae8a6a3ad` in
@@ -24,6 +24,40 @@ Reports contain no recovery secret or test plaintext.
 This is isolated from the production hub. Browser coverage is Chromium, not Safari or
 Firefox. Packaged checks use unsigned unpacked apps; installer distribution, notarization
 and update signing remain release gates.
+
+## Review disposition (issue #3)
+
+**Reviewer:** Kalai
+**Review type:** founder review
+**Reviewed commit:** `f39b465` (`main`, after PR #40)
+**Date:** 2026-09-07
+
+| Finding | Disposition |
+| --- | --- |
+| F-1 · a confirmed teammate could hand over a session claiming the execution host, and have fabricated events read as the host's writing | Fixed before review: the handoff is bound to the writer, and `test/e2ee-import-forgery.js` is retained as a regression test |
+| F-2 · device attribution is waived for admitted sessions; identity rests on the writer's key pair plus the writer-binding | **Accepted** |
+| F-3 · an owner who has lost every endpoint is indistinguishable from someone holding their session; both can enrol an endpoint, neither gains keys | **Accepted** |
+| Other findings | None recorded |
+
+The scope reviewed is the packet's: SDK use and authenticated attribution, key recipient
+selection, confirmation channels, recovery scope, enrolment authority, and the imported-session
+contract, across #3, #6, #8 and #9. See [the review packet](e2ee-review-packet.md).
+
+### What this disposition is, and what it is not
+
+This is a **founder review** - the accountable owner of the product reading the protocol
+decision, the threat model and the findings, and accepting them. It is a real disposition by a
+named person who carries the consequences, and it satisfies issue #3's criterion.
+
+It is **not** a specialist cryptographic audit. Nobody with deployment experience of Olm or
+Megolm has assessed this stack. The constraint in
+[the stack decision](e2ee-stack-decision.md) therefore stands unchanged: do not advertise
+production E2EE on the strength of this record. A specialist review remains the right gate
+before any such claim, and before customer material depends on these properties.
+
+The distinction is recorded rather than smoothed over because someone will rely on this page
+later, and the difference between "the founder accepted the design" and "a cryptographer
+audited it" is exactly what they will need to know.
 
 ## PR #35 author-assisted review (Codex, 2026-09-06)
 
@@ -49,5 +83,5 @@ Findings addressed before merge:
 The historical platform JSON above is retained unchanged. The follow-up revision must
 pass packaged Windows/macOS CI before merge; its exact commit and CI disposition are
 recorded in the PR review. No production crypto integration or UI change is introduced.
-Independent qualified review remains tracked by issue #3 rather than being represented
+Specialist cryptographic review remains outstanding rather than being represented
 as completed by this author-assisted review.
