@@ -43,18 +43,27 @@ anywhere on it - the hub starts, the execution host registers, and `/api/health`
 | Platform | Targets | Arch | Built here |
 | --- | --- | --- | --- |
 | Windows 10/11 | `nsis` installer, `portable` | x64, arm64 (nsis); x64 (portable) | yes |
-| macOS 11+ | `dmg`, `zip` | arm64, x64 | **no - needs a Mac** |
+| macOS 13+ (Ventura) | `dmg`, `zip` | arm64, x64 | **no - needs a Mac** |
 | Linux | `AppImage` | x64 | not exercised |
+
+macOS 13 is Electron 44's floor, not a preference. `Electron.app/Contents/Info.plist` in
+`electron-v44.2.0-darwin-arm64.zip` and `-x64.zip` declares `LSMinimumSystemVersion 13.0`,
+and `build.mac` sets no `minimumSystemVersion`, so the packaged app inherits it. This row
+read `macOS 11+` until it was corrected: 11.0 is what Electron 33 declared, and the number
+did not follow the upgrade (Electron 43 declares 12.0, 44 declares 13.0).
 
 **Prerequisites for a user:** none beyond the OS. No Node, no terminal, no checkout. The
 runtime shells out to a system shell only when an *agent* runs a command, and to `codex` or
 `claude` only if the user selects those providers - those are the user's own tools, not
 install prerequisites.
 
-**Prerequisites for a builder:** Node 22.5+ and `npm ci`. macOS artifacts must be built on
-macOS; electron-builder cannot produce a signed, notarizable `.app` from Windows, and
-notarization requires Apple's toolchain. That row above is `no` for a reason, not an
-oversight, and it is the one acceptance criterion this machine cannot execute.
+**Prerequisites for a builder:** Node 22.5+ and `npm ci`, then `node
+node_modules/electron/install.js`. That second step is not optional on npm 11: install
+scripts are blocked by default, so `npm ci` alone leaves `node_modules/electron` with no
+binary in it and every desktop test fails at launch with nothing to run. macOS artifacts
+must be built on macOS; electron-builder cannot produce a signed, notarizable `.app` from
+Windows, and notarization requires Apple's toolchain. That row above is `no` for a reason,
+not an oversight, and it is the one acceptance criterion this machine cannot execute.
 
 ## What packaging had to fix
 
@@ -100,14 +109,27 @@ the app's own log:
 
 `/api/health` then reports `{"ok":true,"runtimes":1,"clients":2}`.
 
-Artifacts from `npm run dist:win`:
+Artifacts from `npm run dist:win`, rebuilt from `80217ad` on 2026-09-07 and hashed:
 
-| File | Arch |
-| --- | --- |
-| `Plexus-0.1.0-win-x64-setup.exe` | x64 NSIS installer |
-| `Plexus-0.1.0-win-x64-portable.exe` | x64 portable |
-| `Plexus-0.1.0-win-arm64-setup.exe` | arm64 NSIS installer |
-| `latest.yml`, `*.blockmap` | update metadata |
+| File | What it is | Size | SHA-256 |
+| --- | --- | --- | --- |
+| `Plexus-0.1.0-win-x64-setup.exe` | x64 NSIS installer | 107 MB | `535c2b7c0b2c7116c3dc38ca3a3c36cb49382bb0118ef9ab60103f8fa2f733bd` |
+| `Plexus-0.1.0-win-arm64-setup.exe` | arm64 NSIS installer | 101 MB | `dab3732e41cbae369958bc4eaa8c70c00865861dbc897acf1c176d04461f6903` |
+| `Plexus-0.1.0-win-setup.exe` | **both arches in one installer** | 209 MB | `668e4da0a91a5c740d841acd40b7e04c3d69764c3e00656e621ba8a5b02226a0` |
+| `Plexus-0.1.0-win-x64-portable.exe` | x64 portable | 107 MB | `9e1c670d4da2da3620680230d6e62f239912b0c6fa995fdc40dfeae4313a260c` |
+| `*.blockmap` | update metadata, one per NSIS installer | | |
+
+Read that table before handing anyone a build. `npm run dist:win` emits **four** installers,
+not three: declaring `nsis` for `x64` and `arm64` makes electron-builder produce a per-arch
+installer for each *and* a combined one carrying both. Only `Plexus-0.1.0-win-x64-setup.exe`
+has been installed and exercised; the arm64 and combined installers are built but untested,
+and which of the four is the artifact to distribute is an open decision, not a fact this
+record can settle. This table previously listed three files and a `latest.yml`; the rebuild
+produced no `latest.yml` at all.
+
+The hashes name these exact files. They are not a claim of a deterministic build -
+electron-builder stamps build time into its output, so the same tree built again hashes
+differently. Reproducible here means the command reproduces the artifact set, not the bytes.
 
 **A target-name collision hid the installer.** `artifactName` did not distinguish target
 type, so nsis and portable both wrote `Plexus-0.1.0-win-x64.exe` and the second overwrote
@@ -161,6 +183,38 @@ startup failure is invisible to the user and unreportable to us. That log is how
 packaging bugs above were found. The messages name what to do: an unreachable
 remote hub says which address failed and to check the network; a hub that died shows its
 own stderr.
+
+## Tested revisions and environments
+
+| | |
+| --- | --- |
+| Revision under test | `80217ad` (`main`), which contains the #32 merge `6aed137` |
+| Machine | Windows 11 Home, build 10.0.26200.9168, x64 - the machine that built the artifacts |
+| Toolchain | Node 24.20.0, npm 11.19.0, Electron 44.2.0, electron-builder 26.15.3 |
+| Date | 2026-09-07 |
+
+Re-run on that revision and machine:
+
+| What was run | Result |
+| --- | --- |
+| `npm run dist:win` | exit 0; the four installers above |
+| `node test/desktop-bootstrap.js` | 3/3 pass - a failed start stays visible with a working data-folder action; retry reaches the remote hub and registers this exact local host with no Node on `PATH`; an exited runtime holds the error screen and recovers after repair |
+| `node test/desktop-smoke.js` with `DESKTOP_EXECUTABLE` set to the packaged `win-unpacked/Plexus.exe` and `PATH` reduced to `%SystemRoot%\system32;%SystemRoot%` | 11/11 pass, including a native folder dialog authorizing a project on the local host and that authorization surviving a runtime restart |
+
+The packaged run matters because #32 recorded project selection as the one part of criterion
+3 that could not be driven in a packaged build. It can be, and it passes; `ce86da5` added the
+harness that does it. The earlier install/uninstall evidence above was produced on 2026-09-06
+during #32 and has not been re-executed here.
+
+Neither test runs in CI. `npm test` covers protocol, unit, team, codex and e2e; the two
+desktop tests are manual, so nothing catches a regression in this slice.
+
+**Not tested, on any revision: macOS.** No `dmg` or `zip` has been built and the shell has
+never been launched on a Mac. `docs/proofs/e2ee-platform-results.json` records a packaged
+macOS run at `b3873b8`, but `scripts/e2ee-platform-proof.js` builds it with
+`--config.extraMetadata.main=packages/e2ee/desktop-proof-main.js` - a different entry point.
+It shows the macOS packaging pipeline works; it does not exercise `apps/desktop/main.js`, the
+hub and execution host it starts, or installation from a `dmg`.
 
 ## Signing and notarization: what P19 will need
 
