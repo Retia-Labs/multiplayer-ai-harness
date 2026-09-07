@@ -9,6 +9,7 @@ on:
       - 'apps/web/catchup.js'
       - 'test/e2ee-import-forgery.js'
       - 'test/hub-key-exchange.js'
+      - 'test/shared-steering.js'
       - 'test/codex*.js'
       - 'test/fixtures/encrypted-task*'
       - 'package*.json'
@@ -43,6 +44,7 @@ jobs:
       - run: npm run test:protocol
       - run: npm run test:unit
       - run: npm run test:team
+      - run: npm run test:steering
       - run: npm run test:codex
       - uses: actions/upload-artifact@v4
         if: always()

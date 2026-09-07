@@ -40,6 +40,12 @@ class TurnSession {
     this.cancelled = false;
     this.pendingApprovals = new Map(); // requestId -> resolve(decision)
     this.steerQueue = [];
+    // Every accepted instruction gets a number from the host, in the order the host accepted
+    // it. Two people typing at once produce one order, and it is the host's, not whichever
+    // client's message happened to render first.
+    this.acceptedSteers = 0;
+    // Interruption is a request with a lifecycle, not an event that has already happened.
+    this.interruptState = null;
     this.usage = { input: 0, output: 0 };
     this.abort = new AbortController();
     this.child = null;
@@ -57,10 +63,28 @@ class TurnSession {
     return this.provider.id === 'codex-cli' ? 'nextProviderTurn' : 'inline';
   }
 
+  // `queued` and `delivered` are different claims. Inline providers take the instruction on
+  // the next model call; a CLI provider takes it on its next turn, which may be a while. A
+  // message appearing in the transcript is neither of those, and saying so is the point.
   steer(input, by) {
-    this.steerQueue.push({ input, by });
+    const seq = ++this.acceptedSteers;
+    this.steerQueue.push({ input, by, seq });
     this.emitUserMessage(input, by, 'steer');
-    return this.deliveryMode();
+    const mode = this.deliveryMode();
+    return { outcome: mode === 'inline' ? 'queued' : 'queuedForNextProviderTurn', delivery: mode, seq, turnId: this.turnId };
+  }
+
+  // Requesting a stop. The turn is not stopped when this returns, and nothing here claims
+  // that work already done has been undone - a file the agent wrote before the interrupt is
+  // still written. `stopping` lasts until the turn actually ends.
+  requestInterrupt(by) {
+    if (!this.running) return { state: 'notRunning', turnId: this.turnId };
+    if (!this.interruptState) {
+      this.interruptState = { state: 'stopping', by, at: Date.now() };
+      this.emit(Events.TURN_INTERRUPT_REQUESTED, { by });
+    }
+    this.interrupt();
+    return { state: 'requested', turnId: this.turnId, stopping: true };
   }
 
   interrupt() {

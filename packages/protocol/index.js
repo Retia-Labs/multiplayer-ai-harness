@@ -10,6 +10,11 @@ const crypto = require('crypto');
 const Events = {
   TURN_STARTED: 'turn/started',                   // { turnId, by }
   TURN_COMPLETED: 'turn/completed',               // { turnId, status: 'completed'|'interrupted'|'failed', usage?, error? }
+  TURN_INTERRUPT_REQUESTED: 'turn/interrupt/requested', // { turnId, by } - asked for, not yet stopped
+  // Help is addressed to a person. It is a separate event because it must never be
+  // reachable from the path that feeds an agent.
+  HELP_REQUESTED: 'help/requested',               // { requestId, text, by, to? }
+  HELP_RESOLVED: 'help/resolved',                 // { requestId, by }
   TURN_PLAN_UPDATED: 'turn/plan/updated',         // { turnId, explanation?, plan: [{ step, status: 'pending'|'inProgress'|'completed' }] }
   ITEM_STARTED: 'item/started',                   // { turnId, item }
   ITEM_COMPLETED: 'item/completed',               // { turnId, item }
@@ -59,7 +64,10 @@ const Commands = {
   THREAD_ASSIGN: 'thread/assign',     // { assignee: {userId,name,color}|null, note? } → { assignee }
   TURN_START: 'turn/start',           // { input: [{type:'text',text}|{type:'image',url}], settings? } → { turnId }
   TURN_STEER: 'turn/steer',           // { input, expectedTurnId } → { turnId }
-  TURN_INTERRUPT: 'turn/interrupt',   // { turnId }
+  TURN_INTERRUPT: 'turn/interrupt',   // { turnId } → { state: 'requested', turnId }
+  // Asking a teammate for help. Never becomes agent input; see Errors.HELP_IS_NOT_INPUT.
+  THREAD_HELP: 'thread/help',                 // { text, to? } → { requestId }
+  THREAD_HELP_RESOLVE: 'thread/help/resolve', // { requestId } → { ok }
   APPROVAL_RESOLVE: 'approval/resolve', // { requestId, decision }
   MODEL_LIST: 'model/list',           // { provider? } → { models }
   PROJECT_ADD: 'project/add',         // { dir } → { project }  (host-local only; see Errors)
@@ -114,6 +122,11 @@ const Errors = {
   COMMAND_IN_PROGRESS: 'command_already_in_progress',
   COMMAND_ID_CONFLICT: 'command_id_conflict',        // same id was reused for a different action
   COMMAND_OUTCOME_UNKNOWN: 'command_outcome_unknown',// host restarted after accepting the action
+  STALE_TURN: 'stale_turn',                          // the turn named is not the turn running
+  TURN_NOT_ACTIVE: 'turn_not_active',                // nothing is running to steer or interrupt
+  TURN_BINDING_REQUIRED: 'turn_binding_required',    // steering must name the turn it was written for
+  HELP_IS_NOT_INPUT: 'help_is_not_agent_input',      // a message for a person cannot be sent to an agent
+  UNKNOWN_HELP_REQUEST: 'unknown_help_request',
   PROVIDER_NOT_ISOLATED: 'provider_not_isolated',    // CLI provider lacks proven project confinement
   PROJECT_OPERATION_UNAVAILABLE: 'project_operation_unavailable',
   PAIRING_INVALID: 'pairing_code_invalid',
