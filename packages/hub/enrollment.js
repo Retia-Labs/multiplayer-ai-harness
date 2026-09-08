@@ -432,11 +432,16 @@ class Enrollment {
         const signer = request.signer || owner;
         if (canonical(operationBody(proof)) !== canonical(expected) ||
             !await verifySignature(signer, expected, proof.signature)) throw problem('membership_proof_invalid', 403);
-        if (request.signer) {
-          const head = await replayMembership(records, { teamId, authority: owner });
-          if (!verifiedOwnerEndpoint(head, signer)) throw problem('membership_proof_invalid', 403);
-        }
+        // The original key still verifies genesis after device removal, but it can no
+        // longer answer a live v1 challenge. Both proof versions need current standing.
+        const head = await replayMembership(records, { teamId, authority: owner });
+        if (!verifiedOwnerEndpoint(head, signer)) throw problem('membership_proof_invalid', 403);
         if (this.challenges.get(teamId + '/' + body.runtimeId) !== request || request.expiresAt <= Date.now()) throw problem('membership_proof_invalid', 403);
+        // Signature checks yield. A removal committed in that interval must win;
+        // compare the validated membership snapshot, not the proof's possibly older
+        // head, immediately before publishing with no intervening await.
+        const latest = this.db.prepare('SELECT seq,hash FROM membership_log WHERE team_id=? ORDER BY seq DESC LIMIT 1').get(teamId);
+        if (latest?.seq !== head.seq || latest.hash !== head.hash) throw problem('membership_proof_invalid', 403);
         request.proof = proof;
         return reply(200, { answered: true });
       }

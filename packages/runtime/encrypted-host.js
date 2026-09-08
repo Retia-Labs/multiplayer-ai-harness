@@ -42,6 +42,7 @@ class EncryptedHost {
     this.challenge = null;
     this.challengeExpiresAt = 0;
     this.reconcileGeneration = 0;
+    this.observedMembership = null;
     this.openedTasks = new Map();
     this.controlQueues = new Map();
     this.url = url;                 // http origin of the hub
@@ -92,6 +93,9 @@ class EncryptedHost {
   }
 
   async beginReconcile() {
+    if (this.freshness?.record()?.state === 'revoked') {
+      throw Object.assign(new Error('membership_freshness_authority_revoked'), { code: 'membership_freshness_authority_revoked' });
+    }
     this.reconciled = false;
     const generation = ++this.reconcileGeneration;
     const challenge = this.challenge = crypto.randomBytes(24).toString('hex');
@@ -114,16 +118,20 @@ class EncryptedHost {
     const current = await replayMembership(received.authorityLog, { teamId: this.runtime.teamId,
       authority: this.authority, checkpoint: this.state.load('authorization:' + this.runtime.teamId) });
     this.checkMembershipFloor(current, received.authorityLog);
+    // Retain authenticated observations even if the subsequent SQLite write fails.
+    // A recovered disk cannot make this live host forget a removal it already saw.
+    this.observedMembership = { seq: current.seq, hash: current.hash };
     return { received, current };
   }
 
   checkMembershipFloor(current, records) {
     // Signature verification awaits the SDK. Another request may apply a newer
     // checkpoint during it; that must not be overwritten by this older response.
-    const floor = this.state.load('authorization:' + this.runtime.teamId);
-    if (floor && (current.seq < floor.seq || (current.seq === floor.seq ? current.hash !== floor.hash :
-      records[floor.seq]?.previous !== floor.hash))) {
-      throw Object.assign(new Error('membership_rollback'), { code: 'membership_rollback' });
+    for (const floor of [this.state.load('authorization:' + this.runtime.teamId), this.observedMembership]) {
+      if (floor && (current.seq < floor.seq || (current.seq === floor.seq ? current.hash !== floor.hash :
+        records[floor.seq]?.previous !== floor.hash))) {
+        throw Object.assign(new Error('membership_rollback'), { code: 'membership_rollback' });
+      }
     }
   }
 
@@ -159,12 +167,15 @@ class EncryptedHost {
     try {
       ({ received, current } = await this.readMembership());
       if (this.freshness?.isRevoked(current)) {
-        this.freshness.markRevoked(current);
         this.membership = current;
         // Applying removal must stop execution before a relay gets another chance
         // to withhold a response. Every entry point, not just polling, observes it.
         this.disconnect();
-        await this.runtime.encryptedExecution?.close();
+        try { this.freshness.markRevoked(current); }
+        finally {
+          try { await this.runtime.encryptedExecution?.applyMembership?.(current); }
+          finally { await this.runtime.encryptedExecution?.close(); }
+        }
         throw Object.assign(new Error('membership_freshness_authority_revoked'), { code: 'membership_freshness_authority_revoked' });
       }
       const signer = this.freshness?.signer() || this.authority;
@@ -207,9 +218,24 @@ class EncryptedHost {
         throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
       }
       this.checkMembershipFloor(current, received.authorityLog);
+      this.membership = current;
+      try { this.state.save(key, { seq: current.seq, hash: current.hash }); }
+      catch (error) {
+        // Failed checkpoint storage cannot leave already observed removals waiting
+        // while active providers continue. Cancel before reporting the disk error.
+        this.disconnect();
+        try { await this.runtime.encryptedExecution?.applyMembership?.(current); }
+        finally { await this.runtime.encryptedExecution?.close(); }
+        throw error;
+      }
+      await this.runtime.encryptedExecution?.applyMembership?.(current);
+      // Cancellation flushes encrypted receipts asynchronously. Another request
+      // may advance the floor or disconnect while those appends are in flight.
+      if (generation !== this.reconcileGeneration || (needsProof && Date.now() >= this.challengeExpiresAt)) {
+        throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+      }
+      this.checkMembershipFloor(current, received.authorityLog);
     } catch (error) { if (generation === this.reconcileGeneration) this.reconciled = false; throw error; }
-    this.state.save(key, { seq: current.seq, hash: current.hash });
-    this.membership = current;
     this.reconciled = true;
     return current;
   }
@@ -470,6 +496,31 @@ class EncryptedHost {
     }
     if (!commandId) throw Object.assign(new Error('invalid_command_id'), { code: 'invalid_command_id' });
     this.state.save(commandKey, { fingerprint, state: 'accepted' });
+    if (action === 'task.history') {
+      if (Object.keys(payload).length) throw Object.assign(new Error('invalid_task_control'), { code: 'invalid_task_control' });
+      // Reissue consumed/lost Olm ciphertext only to the authenticated requester.
+      // A new command identity asks for a fresh handoff; retrying the same identity
+      // retains the normal command result without pretending the recipient read it.
+      const history = await opened.adapter.handOff(task, { userId: sender, device: senderDevice });
+      const envelope = await this.endpoint.sealControl(matrixUser(sender), senderDevice, {
+        type: HISTORY_TYPE, task: routing(task), history
+      });
+      // Export and encryption await the SDK. Recheck the authenticated state before
+      // publishing, so a removal applied during that work cannot receive new keys.
+      const current = await this.reconcileMembership();
+      const recipient = current.endpoints.find(endpoint => endpoint.userId === sender && endpoint.device === senderDevice);
+      if (recipient?.state !== 'verified') {
+        const code = recipient?.state === 'revoked' ? 'endpoint_revoked' : 'endpoint_not_verified';
+        throw Object.assign(new Error(code), { code });
+      }
+      if (!current.grants.some(grant => grant.projectId === task.projectId && grant.userId === sender && !grant.revoked)) {
+        throw Object.assign(new Error('sender_not_in_project'), { code: 'sender_not_in_project' });
+      }
+      await this.endpoint.transport.deliverToDevice(matrixUser(sender), senderDevice, envelope);
+      const result = { taskId: task.id, type: 'task.history', state: 'accepted', history: 'submitted' };
+      this.state.save(commandKey, { fingerprint, state: 'completed', result });
+      return result;
+    }
     if (action.startsWith('turn.') || action.startsWith('approval.') || action === 'task.diff') {
       if (!this.onControl) throw Object.assign(new Error('unsupported_task_control'), { code: 'unsupported_task_control' });
       const result = await this.onControl(task, read, opened);

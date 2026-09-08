@@ -48,9 +48,12 @@ export function applyOperation(current, body) {
       if (!target || (!isOwner && actor !== target.userId)) fail('endpoint_revocation_refused');
       const existing = next.endpoints.find((e) => e.userId === target.userId && e.device === target.device);
       if (!existing) fail('endpoint_not_verified');
-      // A host-local freshness appointment does not rotate this immutable genesis.
-      // Removing the original root still requires a separate authority ceremony.
-      if (sameIdentity(existing, current.owner)) fail('membership_authority_rotation_required');
+      // The original public identity remains the immutable genesis verifier after its
+      // device is removed. Only a different, already verified owner endpoint may remove
+      // it; each host applies the removal and chooses its live signer independently.
+      if (sameIdentity(existing, current.owner) && (!isOwner || sameIdentity(signer, current.owner))) {
+        fail('membership_authority_rotation_required');
+      }
       existing.state = 'revoked';
       next.revocations.push({ userId: target.userId, device: target.device, seq });
     } else if (action === 'own-project') {

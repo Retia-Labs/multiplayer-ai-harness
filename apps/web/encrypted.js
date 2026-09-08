@@ -21,6 +21,8 @@
   const CHECKPOINT_ITEM = 'plexus.task.'; // + taskId    -> {seq,hash}
   const ADMITTED_ITEM = 'plexus.admitted.';
   const MAILBOX_ITEM = 'plexus.mailbox.';
+  const MAILBOX_RETRY_ITEM = 'plexus.mailbox.retry.';
+  const MAILBOX_REFUSED_ITEM = 'plexus.mailbox.refused.';
   const RECOVERY_TRUST_ITEM = 'plexus.recovered-history.';
 
   const held = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
@@ -28,6 +30,49 @@
   const heldJSON = (key, fallback) => {
     try { const raw = held(key); return raw === null ? fallback : JSON.parse(raw); } catch { return fallback; }
   };
+
+  const mailboxFailure = code => Object.assign(new Error(code), { code });
+  const encode64 = bytes => btoa(Array.from(bytes, value => String.fromCharCode(value)).join(''));
+  const decode64 = value => Uint8Array.from(atob(value), character => character.charCodeAt(0));
+  const sameEndpoint = (a, b) => !!a && !!b && ['user', 'device', 'curve25519', 'ed25519'].every(key => a[key] === b[key]);
+  // Olm envelopes are consumed once. Persist authenticated retry data with a separate
+  // derived key, bound to this account, team and exact local cryptographic identity.
+  // The SDK store key and decrypted transfer keys never enter this storage record.
+  class MailboxJournal {
+    static async create(storageKey, storeKey, context) {
+      const journal = new MailboxJournal(); journal.storageKey = storageKey;
+      journal.context = new TextEncoder().encode(JSON.stringify(['plexus.mailbox.retry.v1', context]));
+      const material = await crypto.subtle.importKey('raw', Uint8Array.from(storeKey), 'HKDF', false, ['deriveKey']);
+      journal.key = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256',
+        salt: new TextEncoder().encode('plexus.mailbox.retry.v1'), info: journal.context }, material,
+      { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+      return journal;
+    }
+    async load() {
+      if (this.pending) return this.pending;
+      try {
+        const saved = localStorage.getItem(this.storageKey);
+        if (!saved) return [];
+        const record = JSON.parse(saved);
+        if (record.version !== 1) throw new Error();
+        const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode64(record.iv), additionalData: this.context },
+          this.key, decode64(record.ciphertext));
+        const entries = JSON.parse(new TextDecoder().decode(plaintext));
+        if (!Array.isArray(entries)) throw new Error();
+        return entries;
+      } catch { throw mailboxFailure('mailbox_journal_rejected'); }
+    }
+    async save(entries) {
+      // Retain a failed durable write in memory for a retry within this process too.
+      this.pending = entries;
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: this.context },
+        this.key, new TextEncoder().encode(JSON.stringify(entries)));
+      try { localStorage.setItem(this.storageKey, JSON.stringify({ version: 1, iv: encode64(iv), ciphertext: encode64(new Uint8Array(ciphertext)) })); }
+      catch { throw mailboxFailure('mailbox_storage_unavailable'); }
+      this.pending = null;
+    }
+  }
 
   let loaded = null;
   function modules() {
@@ -47,6 +92,7 @@
         const api = core.createEndpointAPI(sdk);
         return {
           Endpoint: api.Endpoint, HubKeyTransport: keys.HubKeyTransport,
+          UNABLE_TO_DECRYPT: sdk.ProcessedToDeviceEventType.UnableToDecrypt,
           matrixUser: protocol.matrixUser, roomFor: protocol.roomFor,
           ...log, ...enrol, ...view, ...control, ...links, ...recovery
         };
@@ -104,12 +150,13 @@
       if (!this.support.persistent) throw Object.assign(new Error('Encrypted storage is unavailable. Restore storage access and try again.'), { code: 'endpoint_storage_unavailable' });
       const desktopKey = global.harnessDesktop?.endpointStoreKey
         ? await global.harnessDesktop.endpointStoreKey() : null;
+      const endpointStoreKey = desktopKey ? (Array.isArray(desktopKey) ? desktopKey : desktopKey.key) : storeKey(this.userId);
       this.endpoint = await m.Endpoint.create({
         user: m.matrixUser(this.userId),
         device: this.device,
         recoveredHistory: heldJSON(this.storageKey(RECOVERY_TRUST_ITEM), []),
         storeName: STORE_NAME + '-' + this.userId,
-        storeKey: desktopKey ? (Array.isArray(desktopKey) ? desktopKey : desktopKey.key) : storeKey(this.userId),
+        storeKey: endpointStoreKey,
         transport: new m.HubKeyTransport({ url: this.url, token: this.token, device: this.device })
       });
       this.tasks = new m.EncryptedTaskTransport({ url: this.url, token: this.token });
@@ -118,6 +165,8 @@
         loadCheckpoint: team => heldJSON(this.storageKey('plexus.membership.', team), null),
         saveCheckpoint: (team, head) => hold(this.storageKey('plexus.membership.', team), JSON.stringify(head)) });
       const identity = this.endpoint.identity();
+      this.mailboxJournal = await MailboxJournal.create(this.storageKey(MAILBOX_RETRY_ITEM, this.device), endpointStoreKey,
+        { origin: global.harnessDesktop?.hubUrl || this.url, userId: this.userId, teamId: this.teamId, identity });
       return { ...identity, fingerprint: fingerprint(identity), durable: this.support.persistent };
     }
 
@@ -173,7 +222,11 @@
         confirmedBy: mine ? mine.confirmedBy : null,
         durable: !!(this.support && this.support.persistent),
         membershipIdentity,
-        endpoints: all.map((e) => ({ ...e, fingerprint: fingerprint(e) })),
+        endpoints: all.map((e) => ({ ...e, fingerprint: fingerprint(e),
+          // The relay cannot disguise the original device as an ordinary removable
+          // endpoint by changing its displayed keys or supplying its own role flag.
+          isOriginal: !!membershipIdentity?.owner && this.m.matrixUser(e.userId) === membershipIdentity.owner.user &&
+            e.device === membershipIdentity.owner.device })),
         revocations,
         pendingHosts: [...new Set(revocations.flatMap(entry => entry.pendingHosts))]
       };
@@ -192,7 +245,12 @@
     async grantProject(projectId, { userId, role = 'participant' }) {
       return this.enrolment.grant(this.teamId, projectId, userId, role);
     }
-    async revokeDevice(target) { return this.enrolment.revokeEndpoint(this.teamId, target); }
+    async revokeDevice(target) {
+      // EnrollmentTransport reads and verifies the latest signed head before signing.
+      // Host-local appointment is a guided UI prerequisite, not a relay attestation or
+      // an extra global capability claimed by this public membership operation.
+      return this.enrolment.revokeEndpoint(this.teamId, target);
+    }
     async answerChallenges() {
       if (!this.enrolment.answerChallenges) return { answered: 0 };
       try { return await this.enrolment.answerChallenges(this.teamId); }
@@ -285,56 +343,111 @@
 
     async dispatchMailbox() {
       const mailboxKey = this.storageKey(MAILBOX_ITEM, this.device);
-      // Keep encrypted envelopes durably before decoding. Confirming a host later must not
-      // lose a history handoff that happened to arrive before its fingerprint was checked.
+      const entries = await this.mailboxJournal.load();
+      // Check journal/storage access before consuming another one-shot SDK message.
+      await this.mailboxJournal.save(entries);
       const saved = heldJSON(mailboxKey, []);
       const fresh = await this.endpoint.transport.drain();
       const envelopes = saved.concat(fresh);
-      if (!envelopes.length) return { received: 0 };
-      hold(mailboxKey, JSON.stringify(envelopes));
+      const persistSealed = remaining => {
+        try { localStorage.setItem(mailboxKey, JSON.stringify(remaining)); }
+        catch { throw mailboxFailure('mailbox_storage_unavailable'); }
+      };
+      persistSealed(envelopes);
       const tasks = await this.list();
+      const refusedKey = this.storageKey(MAILBOX_REFUSED_ITEM, this.device);
+      const priorRefusals = heldJSON(refusedKey, []);
+      const refused = Array.isArray(priorRefusals) ? priorRefusals.filter(id => typeof id === 'string').slice(-256) : [];
+      const pins = heldJSON(this.storageKey(HOST_ROSTER_ITEM), []).map(runtimeId =>
+        ({ runtimeId, writer: this.confirmedHost(runtimeId) })).filter(pin => pin.writer);
       const remaining = [];
       for (const envelope of envelopes) {
+        // These unauthenticated routing fields can only postpone decoding. The SDK
+        // seal and exact saved pin below independently authenticate every accepted event.
+        const pin = pins.find(value => value.writer.user === envelope.sender &&
+          value.writer.curve25519 === envelope.content?.sender_key);
+        if (!pin) { remaining.push(envelope); continue; }
+        const id = encode64(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(envelope)))));
+        if (refused.includes(id)) { this.mailboxError = 'mailbox_envelope_unreadable'; continue; }
+        if (entries.some(entry => entry.id === id)) continue;
         let events;
         try { events = await this.endpoint.open([envelope]); }
-        catch { remaining.push(envelope); continue; }
-        let retain = false;
+        catch { remaining.push(envelope); this.mailboxError = 'mailbox_envelope_unreadable'; continue; }
         for (const event of events) {
+          if (!event.decrypted) {
+            if (event.processedAs !== this.m.UNABLE_TO_DECRYPT) { this.mailboxError = 'task_control_unauthenticated'; continue; }
+            // Explicit SDK refusal is not a transient thrown import/transport error.
+            // An already consumed Olm packet can never be replayed successfully. Keep
+            // bounded refusal evidence and request a fresh handoff if replay needs it.
+            // This metadata only skips ciphertext; it cannot authenticate any content.
+            refused.push(id); if (refused.length > 256) refused.splice(0, refused.length - 256);
+            this.mailboxError = 'mailbox_envelope_unreadable'; continue;
+          }
           if (event.type !== this.m.ENVELOPE_TYPE) continue;
-          const task = tasks.find(candidate => candidate.id === event.content?.task?.id);
-          if (!task) { retain = true; continue; }
-          const writer = this.confirmedHost(task.runtimeId);
-          if (!writer) { retain = true; continue; }
+          if (!event.verified || event.sender !== pin.writer.user || event.senderDevice !== pin.writer.device ||
+              event.senderKey !== pin.writer.curve25519) { this.mailboxError = 'task_control_unauthenticated'; continue; }
+          const named = event.content?.task;
+          if (named?.teamId !== this.teamId || named.runtimeId !== pin.runtimeId) continue;
           try {
-            if (event.content?.type === this.m.HISTORY_TYPE) {
-              const transfer = this.m.readTaskHistory(event, task);
-              if (transfer) await this.acceptHandoff(task.id, transfer.history, writer);
-            } else if (event.content?.type === this.m.RECEIPT_TYPE) {
-              const receipt = this.m.readTaskReceipt(event, task, writer);
-              if (receipt) this.receipts.set(receipt.commandId, receipt);
-            }
+            let inner = null;
+            if (event.content.type === this.m.HISTORY_TYPE) {
+              const transfer = this.m.readTaskHistory(event, named);
+              if (!transfer) continue;
+              inner = await this.endpoint.openControl([transfer.history.envelope]);
+              const content = this.m.readProjectHistory(inner, pin.writer);
+              if (content.teamId !== named.teamId || content.projectId !== named.projectId ||
+                  !content.rooms.includes(this.m.roomFor(named.id))) throw mailboxFailure('project_history_scope_mismatch');
+            } else if (event.content.type === this.m.RECEIPT_TYPE) {
+              if (!this.m.readTaskReceipt(event, named, pin.writer)) continue;
+            } else continue;
+            // Both consumable layers have authenticated before their plaintext enters
+            // the encrypted journal. Import/list outages no longer require Olm replay.
+            entries.push({ id, runtimeId: pin.runtimeId, writer: pin.writer, event, inner });
+            await this.mailboxJournal.save(entries);
           } catch (error) {
-            // Failed authentication remains a refusal. Keep the sealed material so a
-            // transient key-directory outage is retryable rather than destructive.
-            retain = true;
+            if (error.code === 'mailbox_storage_unavailable') throw error;
             this.mailboxError = error.code || error.message;
           }
         }
-        if (retain) remaining.push(envelope);
       }
-      hold(mailboxKey, JSON.stringify(remaining));
-      return { received: fresh.length, pending: remaining.length };
+      try { localStorage.setItem(refusedKey, JSON.stringify(refused)); }
+      catch { throw mailboxFailure('mailbox_storage_unavailable'); }
+      persistSealed(remaining);
+      const pending = [];
+      for (const entry of entries) {
+        const task = tasks.find(candidate => candidate.id === entry.event.content?.task?.id);
+        const writer = this.confirmedHost(entry.runtimeId);
+        if (!task || !sameEndpoint(writer, entry.writer)) { pending.push(entry); continue; }
+        try {
+          if (entry.event.content.type === this.m.HISTORY_TYPE) {
+            const transfer = this.m.readTaskHistory(entry.event, task);
+            if (transfer) await this.acceptHandoff(task.id, transfer.history, writer, entry.inner);
+          } else {
+            const receipt = this.m.readTaskReceipt(entry.event, task, writer);
+            if (receipt) this.receipts.set(receipt.commandId, receipt);
+          }
+        } catch (error) { pending.push(entry); this.mailboxError = error.code || error.message; }
+      }
+      await this.mailboxJournal.save(pending);
+      return { received: fresh.length, pending: remaining.length + pending.length };
     }
 
     // A history handoff from a teammate who granted this endpoint access to a project. The
     // admitted session ids are durable trust state: an endpoint that kept them only in
     // memory would hold the keys to its own history and refuse to read it after a reload.
-    async acceptHandoff(taskId, handoff, writer) {
-      const accepted = await this.m.acceptProjectAccess(this.endpoint, { history: handoff }, { writer });
+    async acceptHandoff(taskId, handoff, writer, authenticatedInner) {
+      let accepted;
+      if (authenticatedInner) {
+        const content = this.m.readProjectHistory(authenticatedInner, writer);
+        if (content.teamId !== this.teamId || !content.rooms.includes(this.m.roomFor(taskId))) throw new Error('project_history_scope_mismatch');
+        const imported = await this.endpoint.importHistory(handoff.blob, content.transferKey, content.rooms);
+        accepted = { ...content, ...imported };
+      } else accepted = await this.m.acceptProjectAccess(this.endpoint, { history: handoff }, { writer });
       if (accepted.teamId !== this.teamId || !accepted.rooms.includes(this.m.roomFor(taskId))) throw new Error('project_history_scope_mismatch');
       const admittedKey = this.storageKey(ADMITTED_ITEM, taskId);
       const admitted = new Set(heldJSON(admittedKey, []).concat(accepted.sessions));
-      hold(admittedKey, JSON.stringify([...admitted]));
+      try { localStorage.setItem(admittedKey, JSON.stringify([...admitted])); }
+      catch { throw mailboxFailure('mailbox_storage_unavailable'); }
       return { imported: accepted.imported, sessions: accepted.sessions };
     }
 
@@ -350,7 +463,8 @@
       const ctx = context || {};
       const writer = ctx.writer || this.confirmedHost(task.runtimeId);
       if (!writer) return { error: 'host_unconfirmed', runtimeId: task.runtimeId };
-      await this.receiveKeys();
+      try { await this.receiveKeys(); }
+      catch (error) { return { error: error.code || 'mailbox_unavailable' }; }
       const reader = new this.m.EncryptedTaskReader({
         endpoint: this.endpoint, task, writer,
         checkpoint: heldJSON(this.storageKey(CHECKPOINT_ITEM, task.id), undefined),
@@ -361,7 +475,18 @@
       try {
         snapshot = await reader.reconnect(this.tasks);
       } catch (error) {
-        return { error: error.code || 'task_integrity_failed', seq: reader.seq };
+        const code = error.code || 'task_integrity_failed';
+        let historyRecovery;
+        if (code === 'task_integrity_failed') {
+          if (ctx.hostConnected === false) historyRecovery = { state: 'host_offline' };
+          else {
+            try { historyRecovery = await this.requestHistory(task); }
+            catch (failure) { historyRecovery = { state: 'unavailable', code: failure.code || failure.message }; }
+          }
+        }
+        // A fresh handoff repairs lost delivery, never a tampered task log. Retain the
+        // original integrity error until the entire ordered replay actually verifies.
+        return { error: code, seq: reader.seq, historyRecovery };
       }
       // Only a replay that verified may move the floor a later one is checked against.
       hold(this.storageKey(CHECKPOINT_ITEM, task.id), JSON.stringify(reader.checkpoint()));
@@ -418,6 +543,17 @@
     grantApproval(task, payload, options) { return this.sendControl(task, 'approval.grant', payload, options); }
     revokeApproval(task, payload, options) { return this.sendControl(task, 'approval.revoke', payload, options); }
     requestDiff(task, options) { return this.sendControl(task, 'task.diff', {}, options); }
+    async requestHistory(task) {
+      const key = this.storageKey('plexus.history.retry.', task.id), now = Date.now();
+      const previous = heldJSON(key, 0);
+      if (now - previous < 15000) return { state: 'throttled' };
+      try { localStorage.setItem(key, JSON.stringify(now)); }
+      catch { throw mailboxFailure('mailbox_storage_unavailable'); }
+      // Always a new request ID: retrying a deduplicated request cannot replace an
+      // already consumed response. This operation can only request history delivery.
+      const receipt = await this.sendControl(task, 'task.history', {});
+      return { state: 'requested', commandId: receipt.commandId };
+    }
 
     // Ask somebody about this task. The question never reaches a provider: it is sealed to
     // the host, which records it as a question for a person. Nothing on this path can turn

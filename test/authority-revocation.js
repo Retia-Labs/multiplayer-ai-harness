@@ -15,7 +15,7 @@ const { EncryptedTaskTransport, createEncryptedTask, newId } = require('../packa
 const { EncryptedHost } = require('../packages/runtime/encrypted-host');
 const { matrixUser, roomFor } = require('../packages/protocol/encrypted-task.mjs');
 
-async function fixture(t) {
+async function fixture(t, { appointReplacement = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-authority-revocation-'));
   const hub = new Hub({ dbFile: path.join(dir, 'hub.sqlite'), log() {} });
   const endpoints = [], hosts = [];
@@ -27,7 +27,7 @@ async function fixture(t) {
     await hub.close(); fs.rmSync(dir, { recursive: true, force: true });
   });
   const address = await hub.listen(), hubUrl = 'http://127.0.0.1:' + address.port;
-  const relay = { hideTasks: false, refuseFurtherReads: false, reads: 0, trace: [] };
+  const relay = { hideTasks: false, refuseFurtherReads: false, membershipReplay: null, reads: 0, trace: [] };
   proxy = http.createServer(async (req, res) => {
     try {
       if (relay.refuseFurtherReads && req.method === 'GET' && req.url.startsWith('/api/enrollment?')) {
@@ -40,7 +40,11 @@ async function fixture(t) {
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const response = await fetch(hubUrl + req.url, { method: req.method, headers: req.headers,
         ...(chunks.length ? { body: Buffer.concat(chunks) } : {}) });
-      res.writeHead(response.status, { 'Content-Type': 'application/json' }); res.end(await response.text());
+      let value = await response.text();
+      if (relay.membershipReplay && req.method === 'GET' && req.url.startsWith('/api/enrollment?')) {
+        value = JSON.stringify({ ...JSON.parse(value), authorityLog: relay.membershipReplay });
+      }
+      res.writeHead(response.status, { 'Content-Type': 'application/json' }); res.end(value);
     } catch { res.writeHead(502); res.end('{}'); }
   });
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
@@ -86,7 +90,8 @@ async function fixture(t) {
   };
   const host = await openHost();
   for (const member of [original, selected, successor]) await member.endpoint.confirmEndpoint(hostEndpoint.identity(), { confirmed: true });
-  await reconcile(host, original); await activate(host, selected);
+  await reconcile(host, original);
+  if (appointReplacement) await activate(host, selected);
   const tasks = new EncryptedTaskTransport({ url, token: owner.token });
   const route = { version: 1, id: newId('et'), projectId, runtimeId: runtime.id, teamId: team.id, creatorUserId: owner.id };
   await createEncryptedTask(original.endpoint, tasks, { task: route, writer: hostEndpoint.identity(),
@@ -174,4 +179,85 @@ test('a disconnected host applies selected-signer removal before trying to chall
   assert.equal(f.host.freshness.record().state, 'revoked');
   assert.equal(f.host.challenge, null, 'a removed signer cannot be offered another challenge');
   await assert.rejects(() => f.host.collect(), /membership_freshness_authority_revoked/);
+});
+
+for (const appointReplacement of [false, true]) test('a failed ' + (appointReplacement ? 'authorization-floor' : 'implicit revoked-pin') + ' write cancels every active turn without acknowledging removal', async t => {
+  const f = await fixture(t, { appointReplacement });
+  const { Runtime } = require('../packages/runtime');
+  const { EncryptedExecution } = require('../packages/runtime/encrypted-execution');
+  const project = f.host.projects.get(f.task.projectId);
+  const runtime = new Runtime({ dataDir: path.join(f.dir, 'execution-runtime'), projects: [project], encryptedTasksOnly: true,
+    approvalAuthority: { ...f.original.endpoint.identity(), teamId: f.team.id } });
+  runtime.teamId = f.team.id;
+  const execution = new EncryptedExecution({ runtime, host: f.host });
+  f.runtime.encryptedExecution = execution;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const until = async read => {
+    for (let i = 0; i < 200; i++) { if (read()) return; await new Promise(resolve => setTimeout(resolve, 5)); }
+    throw new Error('synthetic_execution_did_not_settle');
+  };
+  runtime.provider = () => ({ id: 'storage-failure-fixture', run: async session => {
+    await Promise.race([gate, new Promise(resolve => session.abort.signal.addEventListener('abort', resolve, { once: true }))]);
+    await session.writeFile(session.thread.id + '.txt', 'must not execute after authenticated removal');
+  } });
+  try {
+    const route = { ...f.task, id: newId('et') };
+    await createEncryptedTask(f.original.endpoint, f.tasks, { task: route, writer: f.host.endpoint.identity(),
+      payload: { title: 'Second active task', objective: 'No work after removal' } });
+    const second = (await f.tasks.list(f.team.id)).tasks.find(task => task.id === route.id);
+    for (const task of [f.task, second]) {
+      await execution.startTask(task, await f.host.openTask(task), { settings: { provider: 'storage-failure-fixture' } });
+    }
+    await until(() => execution.active.size === 2);
+    const beforeFloor = f.host.state.load('authorization:' + f.team.id);
+    const beforePin = f.host.freshness.record();
+    const tableKey = appointReplacement ? 'authorization:%' : 'freshness:%';
+    f.host.state.db.exec("CREATE TRIGGER fail_authorization BEFORE INSERT ON encrypted_task_state WHEN NEW.id LIKE '" + tableKey + "' BEGIN SELECT RAISE(ABORT, 'synthetic_authorization_disk_failure'); END;");
+    await f.selected.enrollment.revokeEndpoint(f.team.id, { userId: f.owner.id, device: 'ORIGINAL' });
+    await assert.rejects(() => f.host.applyRevocations(), /synthetic_authorization_disk_failure/);
+    const standing = await f.selected.enrollment.state(f.team.id);
+    const removal = standing.revocations.find(value => value.device === 'ORIGINAL');
+    assert.deepEqual(removal.appliedBy, [], 'failure cannot emit a successful application receipt');
+    assert.deepEqual(f.host.state.load('authorization:' + f.team.id), beforeFloor);
+    assert.deepEqual(f.host.freshness.record(), beforePin);
+    f.host.state.db.exec('DROP TRIGGER fail_authorization');
+    release(); await until(() => execution.active.size === 0);
+    assert.deepEqual([f.task, second].map(task => fs.existsSync(path.join(project, task.id + '.txt'))), [false, false],
+      'all active turns must stop even when saving the authenticated removal failed before the execution hook');
+  } finally {
+    release(); await execution.close(); await runtime.stop();
+  }
+});
+
+test('a host with a failed membership write cannot reopen key sharing from a withheld removal and an honest stale responder', async t => {
+  const f = await fixture(t);
+  const { Runtime } = require('../packages/runtime');
+  const { EncryptedExecution } = require('../packages/runtime/encrypted-execution');
+  const project = f.host.projects.get(f.task.projectId);
+  const runtime = new Runtime({ dataDir: path.join(f.dir, 'failed-membership-runtime'), projects: [project], encryptedTasksOnly: true });
+  runtime.teamId = f.team.id;
+  const execution = new EncryptedExecution({ runtime, host: f.host });
+  f.runtime.encryptedExecution = execution;
+  try {
+    const before = (await f.selected.enrollment.state(f.team.id)).authorityLog;
+    // A different owner device removes the original. The selected responder has
+    // not observed that operation, so withholding can leave it at its older floor.
+    await f.successor.enrollment.revokeEndpoint(f.team.id, { userId: f.owner.id, device: 'ORIGINAL' });
+    f.host.state.db.exec("CREATE TRIGGER fail_membership BEFORE INSERT ON encrypted_task_state WHEN NEW.id LIKE 'authorization:%' BEGIN SELECT RAISE(ABORT, 'synthetic_membership_disk_failure'); END;");
+    await assert.rejects(() => f.host.applyRevocations(), /synthetic_membership_disk_failure/);
+    assert.equal(execution.closed, true);
+    f.host.state.db.exec('DROP TRIGGER fail_membership');
+    f.relay.membershipReplay = before;
+    // The public responder still verifies the entire pinned chain and produces a
+    // genuine fresh-nonce v2 signature. No signature result or host state is forged.
+    await assert.rejects(async () => {
+      await f.host.beginReconcile();
+      await f.selected.enrollment.answerChallenges(f.team.id);
+      await f.host.admitParticipants(f.task);
+    }, 'a storage-failed host must retain its observed removal or remain disabled before sharing any room key');
+    await assert.rejects(() => f.host.readMembership(), 'an older persisted floor cannot override the newer observation in this process');
+    await assert.rejects(() => f.host.prepareFreshnessAuthority(f.successor.endpoint.identity()),
+      'local appointment cannot silently erase the failed write and its observed removal');
+  } finally { await execution.close(); await runtime.stop(); }
 });

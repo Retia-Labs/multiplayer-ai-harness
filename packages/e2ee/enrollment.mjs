@@ -202,6 +202,17 @@ export async function acceptProjectAccess(endpoint, { history }, { writer } = {}
   // handoff from anyone else is the forgery this contract exists to refuse.
   if (!writer || typeof writer.user !== 'string' || typeof writer.device !== 'string') fail('project_history_writer_required');
   const opened = await endpoint.openControl([history.envelope]);
+  const content = readProjectHistory(opened, writer);
+  const imported = await endpoint.importHistory(history.blob, content.transferKey, content.rooms);
+  return { teamId: content.teamId, projectId: content.projectId, rooms: content.rooms, ...imported };
+}
+
+// Separate authentication from import so a receiver can encrypt the authenticated
+// transfer into its local retry journal before an import consumes further state.
+export function readProjectHistory(opened, writer) {
+  if (!opened?.decrypted || !opened.verified || opened.type !== 'plexus.control.v1' || !opened.senderDevice) {
+    fail('project_history_unauthenticated');
+  }
   if (opened.sender !== writer.user || opened.senderDevice !== writer.device || opened.senderKey !== writer.curve25519) {
     fail('project_history_not_from_writer');
   }
@@ -209,8 +220,7 @@ export async function acceptProjectAccess(endpoint, { history }, { writer } = {}
   if (!content || content.type !== 'plexus.project.history.v1' || !Array.isArray(content.rooms) || typeof content.transferKey !== 'string') {
     fail('project_history_unauthenticated');
   }
-  const imported = await endpoint.importHistory(history.blob, content.transferKey, content.rooms);
-  return { teamId: content.teamId, projectId: content.projectId, rooms: content.rooms, ...imported };
+  return content;
 }
 
 // What the relay knows about this team, shaped for display: who participates in a project,

@@ -17,6 +17,7 @@ class EncryptedExecution {
     this.host = host;
     this.active = new Map();
     this.pending = new Set();
+    this.taskCompletions = new Map();
     this.closed = false;
   }
 
@@ -29,6 +30,31 @@ class EncryptedExecution {
     const verified = this.host.membership?.endpoints.find(endpoint => endpoint.state === 'verified' && sameIdentity(endpoint, authority));
     if (!verified) return null;
     return Object.fromEntries(['user', 'device', 'curve25519', 'ed25519'].map(key => [key, authority[key]]));
+  }
+
+  async applyMembership(current) {
+    const completions = [];
+    let failure;
+    for (const [taskId, active] of this.active) {
+      const authority = active.saved.approvalAuthority;
+      if (!authority || !current.endpoints.some(endpoint => endpoint.state === 'revoked' && sameIdentity(endpoint, authority))) continue;
+      // A grant belongs to this turn's locally appointed approver. Removing that
+      // device cancels the turn before another workspace action can use its consent.
+      try {
+        active.saved.grants = {};
+        this.save({ id: taskId }, active.saved);
+        active.session.cancelPendingApprovals('approval_authority_revoked');
+      } catch (error) { failure ||= error; }
+      finally {
+        try { active.session.interrupt(); } catch (error) { failure ||= error; }
+      }
+      const completion = this.taskCompletions.get(taskId);
+      if (completion) completions.push(completion);
+    }
+    // A failing disk must not leave later tasks running. All affected sessions are
+    // synchronously cancelled before surfacing a failure that prevents host receipt.
+    if (failure) throw failure;
+    await Promise.allSettled(completions);
   }
 
   async ensureTaskCreated(task, opened, provider) {
@@ -110,6 +136,7 @@ class EncryptedExecution {
     // Persist before the provider can execute. A crash from this point is an explicit
     // recovery-required state, even if no output made it back yet.
     const saved = { state: 'running', turnId, settings: chosen, openApprovals: {}, providerState: providerState(),
+      approvalAuthority: this.approvalOwner(),
       settledApprovals: old?.settledApprovals || {}, grants: {}, commandId: commandId || null };
     try { this.save(task, saved); }
     catch (error) { this.pending.delete(task.id); throw error; }
@@ -128,6 +155,7 @@ class EncryptedExecution {
       },
       runTurn: async (emit) => {
         if (this.closed) refuse('host_stopped');
+        if (saved.approvalAuthority && !sameIdentity(saved.approvalAuthority, this.approvalOwner())) refuse('approval_authority_revoked');
         session = new TurnSession({ thread, turnId, by: actor, input: requested,
           provider, model: chosen.model, settings: chosen, executor: this.runtime.executor,
           history: opened.reader.state.messages.map((message) => ({ ...message,
@@ -176,9 +204,11 @@ class EncryptedExecution {
     }).finally(() => {
       this.active.delete(task.id); this.pending.delete(task.id);
       this.runtime.sessions.delete(task.id);
+      if (this.taskCompletions.get(task.id) === completion) this.taskCompletions.delete(task.id);
     });
     this.completions ||= new Set();
     this.completions.add(completion);
+    this.taskCompletions.set(task.id, completion);
     completion.then(() => this.completions.delete(completion), () => this.completions.delete(completion));
     return { turnId, state: 'accepted' };
   }

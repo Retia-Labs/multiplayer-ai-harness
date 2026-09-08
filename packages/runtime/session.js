@@ -100,14 +100,17 @@ class TurnSession {
   interrupt() {
     this.cancelled = true;
     this.abort.abort();
-    this.cancelPendingApprovals('turn_interrupted', this.interruptState?.by);
-    if (this.child && !this.providerControl) { try { this.child.kill('SIGKILL'); } catch {} }
+    try { this.cancelPendingApprovals('turn_interrupted', this.interruptState?.by); }
+    finally { if (this.child && !this.providerControl) { try { this.child.kill('SIGKILL'); } catch {} } }
   }
 
   cancelPendingApprovals(reason, by = { userId: 'execution-host', name: 'Execution host' }) {
+    let failure;
     for (const [requestId, pending] of this.pendingApprovals) {
-      this.settleApproval(requestId, pending, ApprovalDecision.CANCEL, by, reason);
+      try { this.settleApproval(requestId, pending, ApprovalDecision.CANCEL, by, reason); }
+      catch (error) { failure ||= error; }
     }
+    if (failure) throw failure;
   }
 
   settleApproval(requestId, pending, decision, by, reason, at = Date.now()) {
@@ -116,7 +119,19 @@ class TurnSession {
       turnId: pending.turnId, fingerprint: pending.fingerprint };
     this.pendingApprovals.delete(requestId);
     this.settledApprovals.set(requestId, record);
-    this.onApprovalSettled(record);
+    // Cancellation must release the provider even if persisting its receipt fails.
+    // An accepted action, however, cannot proceed without that durable settlement.
+    try { this.onApprovalSettled(record); }
+    catch (error) {
+      // The callback may already reference this record in its in-memory state.
+      // Never let a later successful flush turn the failed ACCEPT into a receipt.
+      record.decision = ApprovalDecision.CANCEL;
+      record.reason = 'approval_settlement_failed';
+      record.by = { userId: 'execution-host', name: 'Execution host' };
+      try { this.emit(Events.SERVER_REQUEST_RESOLVED, { requestId, decision: record.decision, by: record.by, reason: record.reason }); }
+      finally { pending.resolve(ApprovalDecision.CANCEL); }
+      throw error;
+    }
     this.emit(Events.SERVER_REQUEST_RESOLVED, { requestId, decision, by, ...(reason ? { reason } : {}) });
     pending.resolve(decision);
     return record;

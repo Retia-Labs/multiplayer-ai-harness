@@ -478,8 +478,9 @@
       el.fleetRuntime.appendChild(o);
     }
     if (!state.runtimes.length) { const o = document.createElement('option'); o.textContent = 'No runtimes online'; el.fleetRuntime.appendChild(o); }
-    const online = state.runtimes.find((r) => r.id === prev && r.online) || state.runtimes.find((r) => r.online);
-    if (online) el.fleetRuntime.value = online.id;
+    // A restart must not retarget a draft to another machine that happens to be online.
+    const selected = state.runtimes.find((r) => r.id === prev) || state.runtimes.find((r) => r.online);
+    if (selected) el.fleetRuntime.value = selected.id;
     renderProjects(); renderProviderPicker();
     updateAddProjectAvailability();
 
@@ -510,6 +511,7 @@
 
   function renderProviderPicker(thread) {
     const r = thread ? state.runtimes.find((x) => x.id === thread.runtimeId) : selectedRuntime();
+    if (!state.activeThreadId) el.send.disabled = !r?.online;
     const providers = (r && r.providers) || [{ id: 'demo', label: 'Demo agent', configured: true, models: ['demo-agent'] }];
     const want = (thread && thread.settings && thread.settings.provider) || el.providerSelect.value || 'demo';
     el.providerSelect.innerHTML = '';
@@ -1533,10 +1535,14 @@
     panel.append(uiNode('p', 'small', 'This endpoint: ' + (state.encryptedState?.state || 'starting')));
     if (state.encryptedIdentity) panel.append(uiNode('p', 'ew-fingerprint mono', state.encryptedIdentity.fingerprint));
     const desktop = window.harnessDesktop;
-    if (desktop?.confirmEncryptionAuthority && state.membership?.role === 'owner' &&
+    if (desktop?.confirmEncryptionAuthority && state.membership?.role === 'owner' && state.encryptedState?.membershipIdentity?.owner &&
         !(state.localEncryptedSetup?.runtimeId === runtime?.id && state.localEncryptedSetup.authority)) {
       panel.append(uiButton('Authorize this execution host', 'authorize-encrypted-host', async () => {
-        await desktop.confirmEncryptionAuthority({ teamId: state.teamId, identity: state.encrypted.endpoint.identity() });
+        const teamId = state.teamId;
+        await refreshEncrypted();
+        const identity = state.encryptedState?.membershipIdentity?.owner;
+        if (state.teamId !== teamId || !identity) throw new Error('Verify the original team owner fingerprint before authorizing this execution host.');
+        await desktop.confirmEncryptionAuthority({ teamId, identity });
         await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
       }));
     }
@@ -1658,6 +1664,10 @@
     if (result.error) {
       state.catchupExplain = result.error === 'host_unconfirmed' ? 'Verify the execution host before opening this history.'
         : 'History unavailable: ' + result.error + '. Previously verified records remain available.';
+      if (result.historyRecovery?.state === 'host_offline') state.catchupExplain += ' Reconnect the execution host to request another authenticated history transfer.';
+      else if (result.historyRecovery?.state === 'requested') state.catchupExplain += ' A fresh history transfer has been requested; the task remains unavailable until verification succeeds.';
+      else if (result.historyRecovery?.state === 'throttled') state.catchupExplain += ' History delivery retries are briefly paused; the task remains unavailable until verification succeeds.';
+      else if (result.historyRecovery?.state === 'unavailable') state.catchupExplain += ' History transfer could not be requested: ' + result.historyRecovery.code + '.';
     } else {
       state.encryptedSnapshots.set(id, result.snapshot); state.encryptedTitles.set(id, result.snapshot.title || id);
       state.catchupSnapshot = result.snapshot; state.catchup = result.projection; state.catchupExplain = null;
@@ -1955,6 +1965,53 @@
     if (!canControlTask()) for (const button of controls.querySelectorAll('button')) if (button.dataset.action !== 'copy-private-task') button.disabled = true;
     root.append(controls);
   }
+  function originalRemovalAvailability() {
+    const membership = state.encryptedState?.membershipIdentity;
+    const identity = state.encryptedIdentity;
+    const same = (left, right) => !!left && !!right && ['user', 'device', 'curve25519', 'ed25519'].every(key => left[key] === right[key]);
+    if (membership?.state !== 'verified' || identity?.user !== membership.owner?.user || same(identity, membership.owner)) {
+      return { allowed: false, reason: 'Use a different verified device of the original owner. A surviving verified teammate can verify a replacement.' };
+    }
+    const desktop = window.harnessDesktop;
+    if (!desktop?.encryptedSetup || !desktop?.confirmFreshnessAuthority) {
+      return { allowed: false, reason: 'Open the installed app on an execution host and complete its local appointment before removing the original device.' };
+    }
+    const local = state.localEncryptedSetup, selected = local?.freshnessAuthority;
+    const runtimeId = activeEncryptedTask()?.runtimeId || selectedRuntime()?.id;
+    if (local?.teamId !== state.teamId || local.runtimeId !== runtimeId || !same(local.authority, membership.owner) ||
+        selected?.state !== 'active' || !/^[a-f0-9]{32}$/.test(selected.activationId || '') ||
+        !same(selected.genesis, membership.owner) || !same(selected.signer, identity)) {
+      return { allowed: false, reason: 'First appoint this exact verified replacement in Membership recovery on this host. Each execution host requires its own local confirmation.' };
+    }
+    return { allowed: true, runtimeId, activationId: selected.activationId };
+  }
+  function renderOriginalDeviceRemoval(card, endpoint) {
+    card.append(uiNode('p', 'small', 'Original team device. Its historical fingerprint remains the verifier of the first membership record after device removal. Previously received history cannot be erased.'));
+    if (endpoint.state === 'revoked') {
+      card.append(uiNode('p', 'small', 'Original device removed. Other hosts apply removal separately; any host still using this device needs its own local membership recovery. Approval rights and provider accounts are unchanged.'));
+      return;
+    }
+    const availability = originalRemovalAvailability();
+    const remove = uiButton('Remove original device', 'revoke-original-device', async () => {
+      const teamId = state.teamId, runtimeId = availability.runtimeId, activationId = availability.activationId;
+      const requireCurrent = () => {
+        const current = originalRemovalAvailability();
+        const target = state.encryptedState?.endpoints.find(value => value.userId === endpoint.userId && value.device === endpoint.device);
+        if (state.teamId !== teamId || !current.allowed || current.runtimeId !== runtimeId || current.activationId !== activationId || !target?.isOriginal) {
+          throw new Error(current.reason || 'The selected local appointment changed. Review the current host and original device before retrying.');
+        }
+        return target;
+      };
+      await refreshEncrypted(); requireCurrent();
+      if (!confirm('Remove original device ' + endpoint.device + '? Its historical public fingerprint stays the team’s original verifier. Previously received history cannot be erased. Each host applies removal separately; hosts still using this device need local membership recovery. Approval rights and provider accounts do not transfer.')) return;
+      await refreshEncrypted();
+      await state.encrypted.revokeDevice(requireCurrent()); await refreshEncrypted();
+      toast('Original device removal recorded. Check each host’s authenticated application status.');
+    });
+    remove.disabled = !availability.allowed; card.append(remove);
+    card.append(uiNode('p', availability.allowed ? 'small' : 'cu-missing', availability.reason ||
+      'This host has appointed your current replacement. Other hosts apply removal independently and may need their own local appointment. No approval rights or provider credentials transfer.'));
+  }
   function renderAccessContent(root, projectId) {
     const section = uiSection('Shared work. Clear boundaries.', 'Team membership, verified devices, project history and approval rights are separate. Project access includes existing shared history and future tasks.');
     if (state.authorityNeeded) for (const authority of state.authorityEndpoints || []) {
@@ -1984,7 +2041,8 @@
           toast('Project grant submitted. Key delivery requires the host to apply the grant.'); await refreshEncrypted();
         }));
       }
-      if (endpoint.state === 'verified' && state.membership?.role === 'owner') card.append(uiButton('Remove device', 'revoke-device', async () => {
+      if (endpoint.isOriginal) renderOriginalDeviceRemoval(card, endpoint);
+      else if (endpoint.state === 'verified' && state.membership?.role === 'owner' && state.encryptedState?.membershipIdentity?.state === 'verified') card.append(uiButton('Remove device', 'revoke-device', async () => {
         if (!confirm('Remove ' + endpoint.device + '? Previously received history cannot be erased. Offline hosts remain pending until they acknowledge removal.')) return;
         await state.encrypted.revokeDevice(endpoint); await refreshEncrypted();
       }));
@@ -1997,6 +2055,17 @@
       const pending = revocation.pendingHosts || revocation.pending || [];
       section.append(uiNode('p', revocation.applied ? 'small' : 'ew-error', 'Removal of ' + revocation.device + ': ' +
         (revocation.applied === true ? 'applied by acknowledged hosts' : pending.length ? 'pending hosts ' + pending.join(', ') : 'pending authenticated host acknowledgements')));
+      for (const [status, hosts] of [['applied', revocation.appliedBy || []], ['pending', pending]]) for (const runtimeId of hosts) {
+        const local = state.localEncryptedSetup;
+        const recoveryRequired = local?.runtimeId === runtimeId && local.teamId === state.teamId &&
+          local.freshnessAuthority?.state === 'revoked' && local.freshnessAuthority.signer?.device === revocation.device;
+        const name = state.runtimes.find(runtime => runtime.id === runtimeId)?.name || runtimeId;
+        const row = uiNode('p', status === 'pending' || recoveryRequired ? 'ew-error' : 'small', name + ': ' +
+          (status === 'pending' ? 'removal pending. Reconnect or update this host; it may need local membership recovery.'
+            : recoveryRequired ? 'removal applied; local membership recovery required.' : 'removal applied.'));
+        row.dataset.runtimeId = runtimeId; row.dataset.revocationDevice = revocation.device; row.dataset.hostState = status;
+        section.append(row);
+      }
     }
     section.append(uiNode('p', 'ew-explain', 'Removing a device excludes future content after the affected hosts apply the new state. It cannot erase plaintext or keys the device already received.'));
     root.append(section);
@@ -2005,7 +2074,8 @@
     if (!state.accessOpen) return;
     const root = $('#access-view');
     if (root.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
-    const signature = JSON.stringify([state.encryptedState, state.authorityNeeded, state.projectAccess, activeEncryptedTask()?.projectId, el.fleetProject.value]);
+    const signature = JSON.stringify([state.encryptedState, state.authorityNeeded, state.projectAccess, state.localEncryptedSetup,
+      activeEncryptedTask()?.projectId, el.fleetProject.value, selectedRuntime()?.id]);
     if (root.dataset.signature === signature) return;
     root.dataset.signature = signature; root.replaceChildren(); renderAccessContent(root, activeEncryptedTask()?.projectId || el.fleetProject.value || null);
   }

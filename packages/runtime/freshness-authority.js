@@ -25,16 +25,23 @@ class FreshnessAuthority {
   record() {
     const value = this.state.load(this.key);
     if (!value) return null;
+    const implicit = value.kind === 'implicit-genesis';
+    let signer;
+    try { signer = identity(value.signer); } catch { fail('freshness_state_invalid'); }
     if (value.version !== 1 || value.teamId !== this.teamId || value.runtimeId !== this.runtimeId ||
-        !sameIdentity(value.genesis, this.genesis) || !sameIdentity(identity(value.signer), value.signer) ||
-        value.signer.user !== this.genesis.user || !/^[a-f0-9]{32}$/.test(value.activationId || '') ||
+        !sameIdentity(value.genesis, this.genesis) || !sameIdentity(signer, value.signer) ||
+        signer.user !== this.genesis.user ||
         !validCheckpoint(value.checkpoint) || !['active', 'revoked'].includes(value.state)) fail('freshness_state_invalid');
+    if (implicit ? value.state !== 'revoked' || !sameIdentity(signer, this.genesis) || Object.hasOwn(value, 'activationId') :
+      value.kind !== undefined || !/^[a-f0-9]{32}$/.test(value.activationId || '')) fail('freshness_state_invalid');
+    if (value.state === 'revoked' && (!validCheckpoint(value.revokedAt) || value.revokedAt.seq < value.checkpoint.seq ||
+      (value.revokedAt.seq === value.checkpoint.seq && value.revokedAt.hash !== value.checkpoint.hash))) fail('freshness_state_invalid');
     return value;
   }
   signer() { return this.record()?.signer || this.genesis; }
   context() {
     const record = this.record();
-    return record ? { runtimeId: this.runtimeId, activationId: record.activationId } : undefined;
+    return record && record.kind !== 'implicit-genesis' ? { runtimeId: this.runtimeId, activationId: record.activationId } : undefined;
   }
   verifiedSigner(head) {
     const signer = this.signer();
@@ -44,9 +51,11 @@ class FreshnessAuthority {
     return this.record()?.state === 'revoked' || head.endpoints.some(row => row.state === 'revoked' && sameIdentity(row, this.signer()));
   }
   markRevoked(head) {
-    const record = this.record();
-    if (!record) fail('freshness_state_invalid');
     const floor = checkpoint(head);
+    // An upgraded host may still implicitly use the original device. Its removal
+    // creates a disabled selection, never a fabricated local appointment.
+    const record = this.record() || { version: 1, kind: 'implicit-genesis', teamId: this.teamId,
+      runtimeId: this.runtimeId, genesis: this.genesis, signer: this.genesis, checkpoint: floor };
     this.state.saveMany([[this.authorizationKey, floor], [this.key, { ...record, state: 'revoked', revokedAt: floor }]]);
     this.proposals.clear();
   }

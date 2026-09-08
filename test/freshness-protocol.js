@@ -209,7 +209,7 @@ test('v2 proofs bind runtime, activation, team, nonce, version and exact device 
   assert.equal((await host.enrollment.state(f.team.id)).currentProof.activationId, newActivation.activationId);
 });
 
-test('revocation disables a selected replacement at both answer boundaries; original genesis rotation stays unavailable', async t => {
+test('revocation disables a selected replacement at both answer boundaries; the original cannot revoke itself', async t => {
   const f = await fixture(t); await f.confirmReplacement();
   const host = f.host(), request = f.request();
   await host.enrollment.request('/challenge', request);
@@ -225,5 +225,5 @@ test('revocation disables a selected replacement at both answer boundaries; orig
   await assert.rejects(() => host.enrollment.request('/challenge', request), /membership_proof_invalid/);
   assert.equal((await host.enrollment.state(f.team.id)).currentProof, null);
   await assert.rejects(() => f.original.enrollment.revokeEndpoint(f.team.id, { userId: f.owner.id, device: 'ORIGINAL' }),
-    /membership_authority_rotation_required/, 'this bounded slice does not replace or revoke the immutable genesis authority');
+    /membership_authority_rotation_required/, 'original-device removal requires a distinct verified owner endpoint');
 });

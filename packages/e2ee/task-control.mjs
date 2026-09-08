@@ -19,7 +19,7 @@ export const ENVELOPE_TYPE = 'plexus.control.v1';
 export const CONTROL_TYPE = 'plexus.task.control.v1';
 export const HISTORY_TYPE = 'plexus.task.history.v1';
 export const RECEIPT_TYPE = 'plexus.task.receipt.v1';
-export const ACTIONS = ['help.request', 'help.settle', 'task.outcome', 'responsibility.handover', 'link.add', 'link.remove',
+export const ACTIONS = ['help.request', 'help.settle', 'task.outcome', 'responsibility.handover', 'link.add', 'link.remove', 'task.history',
   'turn.start', 'turn.steer', 'turn.interrupt', 'approval.resolve', 'approval.grant', 'approval.revoke', 'task.diff'];
 export const RECEIPT_STATES = ['accepted', 'queued', 'delivered', 'rejected', 'unknown'];
 const commandIdentity = value => typeof value === 'string' && /^cmd_[a-f0-9]{32}$/.test(value);

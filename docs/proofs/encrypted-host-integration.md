@@ -299,8 +299,96 @@ to the original signer, and another appointment requires a different verified ow
 Local checkpoints cannot reveal a removal withheld before that host has ever seen it. The
 native confirmation explicitly requires a trusted comparison of membership state; offline
 hosts remain pending. This path does not add a global freshness service. The original
-bootstrap device still cannot be revoked by this slice, and customer-material-only recovery
-and independent privacy/control review remain unfinished.
+bootstrap device could not be revoked at that revision; the follow-up below adds that
+operation. Customer-material-only recovery and independent privacy/control review remain
+unfinished.
+
+### Original device removal
+
+The follow-up based on `5a27ab1` permits a different, currently verified endpoint of the
+original owner account to revoke the original device. The first signed record and its
+four-field public identity remain immutable. Original self-removal, pending/foreign
+signers and account tokens without the device signature cannot authorize the operation.
+The removed device cannot mutate membership, re-enroll itself, or answer a current v1
+challenge. Proof publication rechecks the durable signed head after asynchronous
+verification so removal committed during verification wins.
+
+An already appointed replacement host continues using its locally selected signer. A
+host still implicitly using the original persists an `implicit-genesis` revoked record,
+with no fabricated activation identifier, atomically with its authorization checkpoint.
+It cancels work and remains paused across SQLite reopening until a separate local
+appointment. Both online and disconnected host paths apply the signed removal before
+attempting to obtain a proof from that removed device. Each host rotates every locally
+known room, including tasks omitted by the relay, before its own authenticated receipt.
+One host's receipt does not count for another host.
+
+Failed pin or checkpoint storage also cancels all active work before reporting the disk
+error and emits no successful application receipt. The live host retains its highest
+authenticated observation in memory as well as checking its durable checkpoint. A relay
+cannot make that process forget the observed removal once storage recovers, even when
+another owner device honestly signs a fresh nonce against a withheld older view. This
+in-memory safeguard does not claim that a failed disk write survived process loss.
+
+Each new turn records its exact locally configured approval device, or no approver.
+Removing that device cancels affected live turns and clears their delegated grants;
+cancellation receipts preserve the reason. Persistence failure cannot leave later tasks
+running or approval promises unresolved. A failed accepted settlement resolves to cancel,
+preventing its workspace action. Later ordinary turns can run without restoring approval
+authority, provider credentials or old grants. Membership reconciliation rechecks its
+generation and floor after waiting for affected turn receipts.
+
+A failed accepted-decision write changes the pending settlement to an explicit host
+cancellation before resolving the provider. In-memory state, later successful SQLite
+flushes, retry replies and encrypted history all retain that cancellation rather than
+silently recording the failed acceptance.
+
+The shared Access UI marks the original device using authenticated genesis. Its guided
+removal requires the current exact verified replacement to have an active appointment on
+the selected local host. A second host's initial authorization pins the authenticated
+original identity, rather than confusing a replacement renderer with a new genesis.
+Explicit host selection survives that host's restart; the composer is unavailable while
+that selected host is offline. The UI presents independent pending/applied host status
+and explains that removal cannot erase previously disclosed history.
+
+Public regressions are `test/genesis-revocation-protocol.js`,
+`test/genesis-host-revocation.js`, `test/implicit-authority-state.js`,
+`test/approval-authority-removal.js` and `test/genesis-removal-ui-browser.js`.
+The host tests use real endpoint cryptography and public hub routes; SQLite reconstruction
+retains an SDK store and is not by itself evidence of OS-backed Electron persistence.
+Continuous source-Electron evidence and aggregate results are tracked in
+[issues-02-17-integration.md](issues-02-17-integration.md).
+
+### Cross-host history delivery and retry
+
+The two-host desktop scenario exposed a consumed-message bug. Reading an already
+confirmed host drained another host's history handoff before that second fingerprint
+was confirmed. Olm consumed the first decryption; replaying the same sealed message
+after confirmation could not recreate its authenticated history transfer. The single-host
+late-confirmation fixture had not exercised that ordering.
+
+The client now defers unconfirmed-host envelopes before SDK consumption. Relay-visible
+routing may only postpone decoding; the SDK seal and exact customer-confirmed host pin
+still authenticate accepted history. Authenticated outer and inner handoffs are retained
+in an encrypted local retry journal before import, allowing missing task listings and
+temporary import failures to recover after reload. HKDF and AES-GCM bind the journal to
+its purpose, service, account, team and exact local endpoint using the existing store key.
+Transfer keys and decoded history are not persisted as plaintext. Tampered or foreign
+journals fail visibly without replacing trusted state.
+
+SDK storage and the application journal do not form one transaction. A still-authorized
+client can recover a lost/consumed handoff by sending a fresh `task.history` request over
+the existing encrypted control channel. The host checks current device and project
+standing, exports only that task, and addresses a new sealed handoff only to the
+authenticated requesting device. It does not call a provider, restart a turn, grant
+approval authority or append a fabricated task action. The submission receipt is not
+proof of recipient delivery; only successful authenticated replay establishes recovery.
+Existing command deduplication applies, while a new request ID asks for new ciphertext.
+
+Client requests are throttled per task. The original integrity error stays visible until
+the complete log verifies, so a fresh handoff cannot conceal log tampering. An unavailable
+host cannot resend history, and a removed endpoint cannot use this request to recover
+access to new content. Public checks live in `test/encrypted-mailbox-browser.js` and
+`test/task-history-retry.js`.
 
 ### Safe prerequisite for customer-material authority recovery
 

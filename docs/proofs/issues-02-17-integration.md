@@ -93,7 +93,7 @@ proofs remain applicable to their original revisions and scopes.
 | --- | --- | --- |
 | [#2](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/2) | One real ChatGPT-backed encrypted scenario exercises actual writes, native shared steering/interrupt, approval, handoff and resume; command deduplication and competing approvals have deterministic coverage. API mode selection, account continuity and private resume binding are implemented and locally tested with synthetic credentials. | Separate authorized real API-account test and supported multi-human entitlement arrangement. GitHub Actions testing is excluded from this pass; current Windows execution remains unverified. |
 | [#3](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/3) | Established SDK storage/recovery foundation retained; signed membership, provenance, replay and revocation tests strengthened. | Qualified review of the new integrated privacy/control protocol; retained platform proofs do not review this new protocol. |
-| [#4](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/4) | Rebuilt macOS installer passes installation, bundled startup, pairing, project selection, a real Codex encrypted task, failure/retry and uninstall. | Current Windows changes require a Windows run. Public signing remains the later distribution slice. |
+| [#4](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/4) | macOS installed-app proofs cover bundled startup, pairing, project selection, encrypted execution, failure/retry and uninstall. The latest rebuilt installer runs a demo task; earlier installed real-Codex evidence retains its separately recorded revision. | Current Windows changes require a Windows run. Public signing remains the later distribution slice. |
 | [#5](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/5) | Team, invitations, host consent, project/policy limits and direct-request boundaries exercised. Device state reflects actual verification. | New cryptographic integration retains the independent-review gate. |
 | [#6](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/6) | Opaque task persistence, ordered replay, integrity failure, browser restart and production host execution are connected and tested. | Full external-release platform and adversarial review gates remain. |
 | [#7](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/7) | Production encrypted execution, actual Codex host-tool edits, durable identity, explicit local provider consent and actionable errors implemented. The supported native scenario passes actual project-read refusals. | Restricted to Codex 0.153.4, macOS arm64 and gpt-5.4-mini. Real execution is verified with the file-backed ChatGPT login; API login has synthetic/preflight coverage only. Installed real-provider evidence is recorded separately below. Older read-only opt-ins remain disabled. |
@@ -104,8 +104,8 @@ proofs remain applicable to their original revisions and scopes.
 | [#12](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/12) | Named encrypted help, inbox resolution/cancellation and late context connected; help is separate from provider input. | External messaging and content-bearing OS notifications are outside this slice. |
 | [#13](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/13) | Diff/source review, handoff, authorized recipients and independent task outcomes exercised. The continuous real-provider scenario proves Bob's acknowledged correction changes actual Monday text to Tuesday, then handoff preserves that corrected diff. | Same supported provider/platform/authentication limits as #7. |
 | [#14](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/14) | Encrypted related links, safe rendering, private task navigation and association removal exercised. | Association does not publish anything to the external tracker. |
-| [#15](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/15) | Customer setup drill, wrong-key refusal, replacement, clean browser history restore and explicit re-enrollment exercised; desktop keys use OS storage. Local appointment supports a replacement owner verified by a surviving teammate, preserving the enrollment genesis and host checkpoint. | Customer-material-only authority recovery and original bootstrap-device revocation remain unfinished. Desktop site-data/locked-storage permutations and platform coverage retain their explicit limits. |
-| [#16](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/16) | Signed state, rollback resistance, future session rotation and verified per-host acknowledgments exercised. | Hosts remain pending until they apply removal; no erasure of old plaintext/history. |
+| [#15](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/15) | Customer setup drill, wrong-key refusal, replacement, clean browser history restore and explicit re-enrollment exercised; desktop keys use OS storage. Local appointment supports a replacement owner verified by a surviving teammate, preserving the enrollment genesis and host checkpoint. Original-device removal now preserves that root and durably pauses hosts still using the removed device. | Customer-material-only authority recovery remains unfinished. Desktop site-data/locked-storage permutations and platform coverage retain their explicit limits. |
+| [#16](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/16) | Signed state, rollback resistance, future session rotation and verified per-host acknowledgments exercised, including original-device removal and independent online/offline hosts. Removal cancels affected approval grants and work, including storage-failure cases. | Hosts remain pending until they apply removal; no erasure of old plaintext/history. |
 | [#17](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/17) | Restart/crash markers, stale approvals, interrupted writes, relay append failure, re-pair races and explicit recovery state exercised. Local appointment enables reconnect with a teammate-verified replacement owner. | Without a surviving verified teammate, history recovery alone cannot restore authority; automatic provider/action replay remains prohibited. |
 
 ## Evidence and reproducibility
@@ -142,8 +142,8 @@ regression are in [encrypted-host-integration.md](encrypted-host-integration.md)
 Fresh membership challenges depend on the host's locally selected owner signing
 endpoint. A surviving verified teammate can enroll a replacement owner device, after
 which the host operator may explicitly appoint it locally. Clean history recovery
-alone does not recover that authority. The customer-material-only path and original
-bootstrap-device revocation remain unfinished. Account/relay metadata cannot silently
+alone does not recover that authority. The customer-material-only path remains
+unfinished. Account/relay metadata cannot silently
 repin a host or lower its applied authorization checkpoint.
 
 The older native CLI can read a generated sibling file under its read-only sandbox.
@@ -329,8 +329,8 @@ The separate OS dialog screenshot attempt returned no image, so native dialog la
 remains visually unverified. Earlier installed and real-provider evidence above retains
 its original revision and scope.
 
-Original bootstrap-device revocation and recovery using customer material without
-any surviving verified teammate remain unimplemented. This completes the locally
+At this pass's revision, original bootstrap-device revocation and recovery using customer material without
+any surviving verified teammate remained unimplemented. This completed the locally
 tested trusted-teammate branch; it is not full closure of issues #15–17
 or specialist approval of the privacy/control protocol. GitHub Actions remain
 excluded, and current Windows execution is not inferred from local macOS checks.
@@ -359,3 +359,72 @@ Review totals: Standards had four actionable findings and one duplication observ
 all addressed; Spec had three implementation findings, all addressed. The remaining
 acceptance limits are the explicit provider, platform, independent-review and
 sole-authority recovery gates above.
+
+## Original-device removal and cross-host history follow-up
+
+This pass is based on `5a27ab1`. A different verified device of the original owner
+account can now revoke the original device while preserving the immutable signed
+genesis. Each execution host independently applies and acknowledges removal. An
+appointed host continues under its replacement signer; an implicit-original host
+persists a revoked selection and requires its own local appointment. Current proofs,
+project/device checks and rollback protection remain mandatory.
+
+The failure-path review repaired proof publication during concurrent removal,
+cancellation stopping at the first failed save, cancellation skipped by failed host
+checkpoint storage, and a same-process rollback after storage recovered. The host
+retains authenticated observations in memory as well as checking its durable floor;
+it does not claim that a failed disk write survived process loss. Failed approval
+settlement now records a host cancellation consistently in saved state, retry replies
+and history, with no workspace effect.
+
+The two-host Electron flow found two further product defects. A selected host could
+silently change during its native project restart; selection now remains on that host
+with unavailable controls while offline. Reading a confirmed host could consume a
+second host's history handoff before its fingerprint was confirmed. Unconfirmed
+messages now stay sealed. Authenticated handoffs use an encrypted local retry journal
+for missing-task/import failures, and a fresh authenticated `task.history` request
+repairs lost messages while the authorized host is available. No provider or approval
+action runs on that read-only path. An independently reproduced loop retrying already
+consumed packets is fixed with a bounded refusal-digest cache for explicit SDK
+undecryptable results. Unknown-host messages and transient SDK exceptions retain
+their separate retry behavior.
+
+The focused host/storage run passed **31/31**; the public mailbox regression passed
+**6/6**. The independent consumed-message probe now restores real history and records
+zero retained packets, repeat SDK openings or undecryptable results on three later
+polls. Evidence is under `.artifacts/genesis-revocation/` and
+`.artifacts/desktop-genesis-revocation/`; the latter retains the original mailbox
+failure and corrected result. The final full `npm test` chain exited zero on the frozen
+source, including **40 authority/revocation**, **20 local confirmation/IPC**, **17
+encrypted-control**, **6 mailbox** checks and all **15 production-browser workflows**.
+Its log is `.artifacts/genesis-revocation/npm-test.log`. The initial missing-Chromium-path run
+and earlier passing runs before later fixes are preserved separately.
+
+The continuous two-source-Electron plus Chrome scenario passed **7/7**, with zero
+uncaught renderer errors. It verifies unchanged genesis, exact local appointment,
+independent pending/applied host receipts, post-removal file writes, separate approval
+authority, durable implicit-host pause, retained old history and refusal of new
+ciphertext/controls to the removed device. Seven captures were inspected: five at
+1487×1058 and two at 390×844. Setup/Access reuse `shell` + `setup`; the approval state
+uses `decision`. Existing shared primitives, flat device sections and Fleet setup
+remain; no design references or baselines changed. Native dialog behavior and wording
+were tested, but native dialog appearance remains visually unverified.
+
+A fresh macOS arm64 installer independently passed **5/5** build/install/runtime/
+retry/uninstall checks, including eighteen desktop smoke assertions and the induced
+startup-failure cases explicitly labelled `RECOVERY TEST` in the log. It ran outside
+the checkout without Node on its PATH and reported no uncaught renderer errors.
+This installed proof uses the demo provider; the seven-step two-host scenario is a
+source-app proof. Installer SHA-256:
+`e7cfee61d9e07cda90b3e06922e43c3331f835b7f4c8270b4303634aba15d35e`.
+The exact build record is `.artifacts/genesis-revocation/installed-darwin-arm64.json`;
+the log is `installed-proof.log` in that directory. Both describe the modified tree
+based on `5a27ab1`, without GitHub Actions or paid provider calls.
+
+Independent Standards and Spec reviews are retained as
+`.artifacts/genesis-revocation/standards-review.md` and `spec-review.md`, with the
+additional journal review in `mailbox-review.md`. Their completion-time qualifications
+are separate from the later aggregate/install results. No unresolved implementation
+finding remains in the reviewed slice. Customer-material-only authority recovery,
+real API-account coverage/entitlement, specialist privacy/control review and current
+Windows verification remain explicit limits. This is not full closure of issues 2–17.

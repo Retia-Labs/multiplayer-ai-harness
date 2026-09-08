@@ -126,10 +126,13 @@ function translateApproval(event, actorName) {
   return { type: 'decision.recorded', payload: {
     actor: actorName || event.by?.userId || event.by?.name || 'unknown',
     text: event.reason === 'turn_interrupted' ? 'Approval cancelled because the turn was interrupted'
+      : event.reason === 'approval_authority_revoked' ? 'Approval cancelled because its approving device was removed'
+      : event.reason === 'approval_settlement_failed' ? 'Approval cancelled because the host could not save the decision'
       : event.reason === 'provider_disconnected' ? 'Approval cancelled because the provider disconnected'
       : event.reason === 'approval_expired' ? 'Approval expired without a response'
       : 'Approval ' + event.decision,
-    basis: event.requestId, decision: event.decision, ...(event.turnId ? { turnId: event.turnId } : {})
+    basis: event.requestId, decision: event.decision, ...(event.turnId ? { turnId: event.turnId } : {}),
+    ...(event.reason ? { reason: event.reason } : {})
   } };
 }
 
