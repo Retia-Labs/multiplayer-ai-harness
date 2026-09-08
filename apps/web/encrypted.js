@@ -143,6 +143,18 @@
       const state = await this.enrolment.state(this.teamId);
       const all = state.endpoints || [];
       const mine = all.find((e) => e.userId === this.userId && e.device === this.device);
+      let membershipIdentity = null;
+      try {
+        const head = await this.enrolment.signedHead(this.teamId, state);
+        const identity = this.endpoint.identity();
+        const admitted = head.endpoints?.find(endpoint => ['user', 'device', 'curve25519', 'ed25519'].every(key => endpoint[key] === identity[key]));
+        membershipIdentity = { owner: head.owner || null, state: admitted?.state || 'pending',
+          checkpoint: { seq: head.seq, hash: head.hash } };
+      } catch (error) {
+        // A clean device still needs the original authority comparison. Relay endpoint
+        // labels cannot make that device eligible for host-local authority recovery.
+        if (error.code !== 'membership_authority_required') throw error;
+      }
       // Remember hosts already seen by this device. A relay omitting an offline host
       // later cannot turn its missing revocation proof into a reassuring "applied".
       const knownHosts = new Set(heldJSON(this.storageKey(HOST_ROSTER_ITEM), []));
@@ -160,6 +172,7 @@
         state: mine ? mine.state : 'unannounced',
         confirmedBy: mine ? mine.confirmedBy : null,
         durable: !!(this.support && this.support.persistent),
+        membershipIdentity,
         endpoints: all.map((e) => ({ ...e, fingerprint: fingerprint(e) })),
         revocations,
         pendingHosts: [...new Set(revocations.flatMap(entry => entry.pendingHosts))]
@@ -227,6 +240,17 @@
 
     confirmedHost(runtimeId) { return heldJSON(this.storageKey(HOST_ITEM, runtimeId), null); }
 
+    async controlHost(runtimeId) {
+      const writer = this.confirmedHost(runtimeId);
+      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      // A customer-authenticated backup can restore this exact recipient pin while
+      // leaving the clean SDK store without device trust. Match the live published
+      // keys before restoring that trust; never adopt a replacement from the relay.
+      // Trusting the recipient grants this client no membership or approval rights.
+      await this.endpoint.confirmEndpoint(writer, { confirmed: true });
+      return writer;
+    }
+
     // ---- reading ----
 
     // Tasks this account may fetch. Being able to fetch one is not being able to read it,
@@ -241,8 +265,7 @@
     // endpoint that would seal a task to whichever key a relay named would be handing its
     // objective to whoever answered.
     async createTask(runtimeId, projectId, payload) {
-      const writer = this.confirmedHost(runtimeId);
-      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      const writer = await this.controlHost(runtimeId);
       const task = {
         version: 1, id: this.m.newId('et'), teamId: this.teamId,
         runtimeId, projectId, creatorUserId: this.userId
@@ -363,8 +386,7 @@
     // ---- asking a named teammate ----
 
     async sendControl(task, action, payload, { commandId } = {}) {
-      const writer = this.confirmedHost(task.runtimeId);
-      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      const writer = await this.controlHost(task.runtimeId);
       const enrollment = await this.enrolmentState();
       if (enrollment.state !== 'verified') throw Object.assign(new Error('endpoint_' + enrollment.state), { code: 'endpoint_' + enrollment.state });
       const sent = await this.m.sendTaskControl(this.endpoint, writer, { task, action, payload,

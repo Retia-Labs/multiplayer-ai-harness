@@ -59,7 +59,9 @@
     "test:catchup:view": "node test/catchup-view.js",
     "test:catchup:encrypted": "node test/catchup-encrypted-browser.js",
     "test:encrypted-controls": "node --test test/encrypted-runtime-e2e.js test/task-control-receipts.js test/encrypted-run-events.js",
-    "test:enrollment-authority": "node --test test/enrollment-authority.js",
+    "test:enrollment-authority": "node --test test/enrollment-authority.js test/freshness-protocol.js test/authority-revocation.js",
+    "test:local-authority": "node --test test/local-runtime-rpc.js test/local-runtime-control.js",
+    "test:desktop:authority-recovery": "node test/desktop-authority-recovery.js",
     "test:recovery-trust": "node --test test/recovery-trust.js",
     "test:durable-host": "node --test test/durable-host.js",
     "test:runtime-lifecycle": "node --test test/encrypted-runtime-lifecycle.js",
@@ -67,7 +69,7 @@
     "test:client-storage": "node test/encrypted-client-storage-browser.js",
     "proof:codex:interactive": "node test/codex-interactive-real.js",
     "test:encrypted-workspace": "node test/encrypted-workspace-browser.js",
-    "test:collaboration-integration": "npm run test:e2ee:identity && npm run test:enrollment-authority && npm run test:encrypted-controls && npm run test:runtime-lifecycle && npm run test:recovery-trust && npm run test:help-inbox && npm run test:handover && npm run test:related-work && npm run test:recovery && npm run test:recover-after-loss && npm run test:revocation && npm run test:confined-writes && npm run test:client-storage && npm run test:encrypted-workspace"
+    "test:collaboration-integration": "npm run test:e2ee:identity && npm run test:enrollment-authority && npm run test:local-authority && npm run test:encrypted-controls && npm run test:runtime-lifecycle && npm run test:recovery-trust && npm run test:help-inbox && npm run test:handover && npm run test:related-work && npm run test:recovery && npm run test:recover-after-loss && npm run test:revocation && npm run test:confined-writes && npm run test:client-storage && npm run test:encrypted-workspace"
   },
   "license": "MIT",
   "devDependencies": {

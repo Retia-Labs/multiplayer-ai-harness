@@ -79,7 +79,7 @@ must plan this migration before enabling the repaired encrypted runtime for exis
 ## Reconnect requires the live authority
 
 On startup or disconnect the host disables reconciliation-dependent controls and creates a
-new random challenge. The pinned bootstrap owner signs a response binding that challenge
+new random challenge. The locally selected owner device signs a response binding that challenge
 to the current membership sequence and digest. The host verifies the signature, challenge,
 team and exact accepted log head before enabling controls. Replaying an earlier response
 cannot satisfy a newly created challenge. Failure to fetch or validate membership does not
@@ -89,13 +89,12 @@ fall back to cached authorization.
 must run this only with an opened trusted endpoint and its persisted membership checkpoint;
 it must not make an account-session substitute for the owner signing key.
 
-**Availability tradeoff:** the current protocol requires the pinned owner endpoint online
-when an execution host reconnects. Another verified teammate is not automatically a
-membership authority. If the owner endpoint is offline, the task's historical content may
-remain readable, but the host remains unavailable for new remote controls. If the pinned
-owner identity is permanently lost, this implementation does not yet provide a tested
-cryptographic authority-replacement ceremony. Do not describe a successful history restore
-as resolving that condition.
+**Availability tradeoff:** the selected owner endpoint must be online when an execution host
+reconnects. Another verified teammate is not automatically a membership authority. After
+owner-device loss, a surviving verified teammate may enroll a replacement owner device;
+the execution host's operator must then separately appoint that exact device locally, as
+described below. History restore alone cannot perform either transition. Recovery without
+any surviving verified teammate still needs the customer-material authority path.
 
 A live host learns subsequent authenticated changes as it polls. Until it applies a
 revocation, the removed device may retain future-content access on that host's current
@@ -213,8 +212,8 @@ successfully reads recovered history still has a different identity and must be 
 before it participates in future content or controls.
 
 In particular, customer recovery material that contains history room keys does **not** let
-a clean replacement device sign a live challenge as the previous pinned owner. A supported,
-tested authority-replacement protocol is still required for that failure case. Do not
+a clean replacement device sign a live challenge as the previous pinned owner. The separate
+local appointment below supports a teammate-verified replacement device. Do not
 restore obsolete approval rights or silently repin a host from relay/account metadata to
 make recovery appear successful.
 
@@ -223,6 +222,15 @@ history is unrecoverable. There is no operator content-recovery path. Copies alr
 exported may still be readable by whoever holds their matching key; later rotation cannot
 retract them. A successful history backup does not imply that later tasks or later rotated
 sessions are continuously backed up.
+
+The desktop recovery scenario exposed a separate client integration defect: restoring an
+authenticated host fingerprint did not restore that recipient's SDK device trust. The UI
+therefore showed a confirmed host while task creation failed with `endpoint_unverified`.
+Before task creation or control delivery, the client now confirms the already-pinned exact
+host keys against the SDK's live directory. Different published keys still fail comparison;
+the relay cannot select a replacement recipient. This restores recipient trust only, not
+membership or action-approval rights. Failed creation also remains visible beside the
+Fleet composer instead of only in the hidden task pane and a transient toast.
 
 ### Exact recovery scope and the lost-owner constraint
 
@@ -238,17 +246,16 @@ backup contains that signer's private key.
 The present clean recovery path restores history, leaves the replacement endpoint pending,
 and permits a surviving verified teammate to confirm it through the authenticated enrollment
 flow. That is a real endpoint-trust transition, rather than an automatic trust grant from a
-backup. The added regression exercises all three steps after destroying the original owner
-signing machine. Re-enrollment succeeds, but the host still cannot reconcile because the
-replacement cannot answer the original owner's challenge. The first part satisfies the
-narrow history/re-enrollment scenario; it does not establish a complete replacement path
-for a functioning team after the sole freshness signer is lost.
+backup. The added regression exercises these steps after closing the original owner signing
+machine. Re-enrollment alone leaves the host unavailable; explicit local appointment then
+enables challenges addressed to the replacement. This completes the trusted-teammate branch
+of authority replacement, while customer-material-only authority recovery remains unfinished.
 
 **The single-device availability dependency is introduced by the new freshness protection.**
-It is not an explicit product requirement. It prevents a malicious relay from resuming a
-host solely with a previously valid membership prefix, but adds an operational recovery
-constraint that must be resolved or accepted explicitly before claiming the entire #15
-replacement criterion or #17 reconnect experience complete. Issue #16's requirement that
+It is not an explicit product requirement. Local appointment now provides an explicit escape
+from that dependency when a verified teammate survives. The remaining material-only branch
+must be implemented before claiming the entire #15 replacement criterion or #17 reconnect
+experience complete. Issue #16's requirement that
 recovery cannot roll back current authorization rules out simply disabling this check,
 trusting a relay-selected replacement, or repinning from an account login.
 
@@ -259,30 +266,41 @@ participants can possess the same room sessions. A proof of reading those sessio
 does not prove a right to become the membership authority. Existing backups cannot be made
 into such proof retroactively after every relevant signing authority is gone.
 
-### Additional trusted owner devices
+### Local appointment of a verified replacement
 
-The signed log already distinguishes an exact verified endpoint from its account. An
-authenticated endpoint belonging to the owner account may perform owner-account operations
-such as revoking another device. It currently receives no explicit delegation to answer
-current-membership challenges: `answerChallenges()` checks the exact bootstrap identity,
-and the host checks that same pinned key. Confirmation can come from any existing verified
-teammate, so treating every confirmed owner-account device as a freshness authority would
-also broaden who can indirectly establish that authority.
+The implementation following `e7865f2` separates the immutable enrollment genesis from the
+host's selected freshness signer. A verified replacement must belong to the original owner
+account, with all four identity fields matching the signed membership log. Teammate
+verification alone cannot change the host's selection.
 
-There is a further revocation problem with a blanket relaxation. A once-confirmed additional
-owner device can be revoked. A malicious relay can withhold that removal from an offline
-host and the removed device can still sign a fresh nonce over the old valid prefix. Checking
-only that the responder appears verified in the received log does not establish the current
-authorization state. The durable checkpoint rejects changes below a state the host already
-saw; it cannot reveal an unseen removal. The present root is deliberately not revocable
-without an authority-rotation ceremony, so substituting an ordinary revocable device changes
-that property. This work does not silently make that substitution.
+The installed app requests a proposal through its own child-process IPC channel. The runtime
+replays signed membership above its applied checkpoint and binds the proposal to the exact
+candidate, host, team, head, prior checkpoint, selection and process generation. Native
+confirmation is single-use and expires after two minutes. Work active or pending at either
+validation step refuses appointment. The runtime commits the selection and authorization
+checkpoint in one SQLite transaction, invalidates old polling, and the desktop restarts that
+same execution host. Cancellation and failed validation do not appoint a device.
 
-Explicit, purpose-scoped authority delegation to an additional owner device could reduce
-the single-device dependency. It needs a defined successor/delegation policy and a freshness
-source that remains valid when a delegate is removed or a relay hides the latest epoch.
-Device participation alone is not that policy. A planned rotation signed by the still-live
-authority is another useful path, but cannot repair the already-lost-authority case.
+Fresh challenges use `plexus.membership.current.v2`, binding the runtime and random local
+activation identifier as well as team, nonce and signed head. Only the selected verified
+device answers. Existing hosts retain their original v1 protocol until explicitly changed.
+Neither protocol lets a relay nominate an authority. Enrollment genesis, provider consent,
+credentials and action-approval authority remain separate; recovered devices need independent
+approval consent before resolving agent actions.
+
+When a host applies the selected device's signed revocation, it durably disables that
+selection and cancels execution before another relay read. Pending starts cannot execute
+after cancellation. Rotation covers all durable task IDs, including rooms omitted by a relay
+after restart and rooms recorded before their first event. Current members of listed tasks
+then receive the new sessions; omitted rooms stay host-only until later admission. Only
+after rotation is the application acknowledgment sent. A revoked selection never falls back
+to the original signer, and another appointment requires a different verified owner device.
+
+Local checkpoints cannot reveal a removal withheld before that host has ever seen it. The
+native confirmation explicitly requires a trusted comparison of membership state; offline
+hosts remain pending. This path does not add a global freshness service. The original
+bootstrap device still cannot be revoked by this slice, and customer-material-only recovery
+and independent privacy/control review remain unfinished.
 
 ### Safe prerequisite for customer-material authority recovery
 

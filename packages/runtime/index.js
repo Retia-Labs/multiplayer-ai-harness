@@ -213,6 +213,7 @@ class Runtime {
     writeOwnerFileAtomic(path.join(this.dataDir, 'encrypted-setup.json'), JSON.stringify({
       runtimeId: this.id, teamId: this.teamId, state: this.encryptionState,
       authority: this.encryptionAuthority,
+      freshnessAuthority: this.encryptedHost?.freshness?.record() || null,
       approvalAuthority: this.approvalAuthority,
       projects: [...this.encryptedProjects].map(([id, dir]) => ({ id, name: path.basename(dir) })),
       endpoint: this.encryptedHost?.endpoint?.identity() || null
@@ -794,6 +795,7 @@ if (require.main === module) {
     approvalAuthority: cfg.approvalAuthority || null,
     log: (m) => console.log('[runtime]', m)
   });
+  const detachLocalControl = require('./local-control').attachLocalControl(rt);
   (async () => {
     if (args.codexHostTools) {
       const workspace = [...(cfg.projects || []), ...args.projects][0];
@@ -807,6 +809,7 @@ if (require.main === module) {
   let shutdown;
   const stop = () => {
     if (shutdown) { process.exit(1); return; }
+    detachLocalControl();
     const deadline = setTimeout(() => process.exit(1), 1500);
     shutdown = Promise.resolve().then(() => rt.stop()).then(() => {
       clearTimeout(deadline); process.exit(0);

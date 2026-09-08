@@ -100,6 +100,91 @@ async function hostFixture(f, t) {
   return { host, task, writer, tasks, replay: (records) => { replay = records; } };
 }
 
+async function replacementEndpoint(f, t, device = 'REPLACEMENT') {
+  const endpoint = await Endpoint.create({ user: matrixUser(f.owner.id), device,
+    transport: new HubKeyTransport({ url: f.url, token: f.owner.token, device }) });
+  t.after(() => endpoint.close());
+  const enrollment = new EnrollmentTransport({ url: f.url, token: f.owner.token, endpoint });
+  await enrollment.pinAuthority(f.team.id, f.ownerEndpoint.identity());
+  await enrollment.announce(f.team.id, announcement(endpoint));
+  return { endpoint, enrollment, confirm: () => f.enrollment.confirm(f.team.id, 'OWNER', { userId: f.owner.id, ...announcement(endpoint) }) };
+}
+
+test('local authority appointment refuses unverified or foreign candidates and relay rollback', async t => {
+  const f = await fixture(t), h = await hostFixture(f, t);
+  const candidate = await replacementEndpoint(f, t);
+  await assert.rejects(() => h.host.prepareFreshnessAuthority(candidate.endpoint.identity()), /freshness_candidate_unverified/);
+  await assert.rejects(() => h.host.prepareFreshnessAuthority(f.teammateEndpoint.identity()), /freshness_candidate_not_owner/);
+  await assert.rejects(() => h.host.prepareFreshnessAuthority(f.ownerEndpoint.identity()), /freshness_candidate_unchanged/);
+  const older = (await f.enrollment.state(f.team.id)).authorityLog;
+  await candidate.confirm();
+  await h.host.reconcileMembership();
+  h.replay(older);
+  await assert.rejects(() => h.host.prepareFreshnessAuthority(candidate.endpoint.identity()), /membership_rollback/);
+  assert.equal(h.host.freshness.record(), null);
+});
+
+test('a local confirmation cannot survive changed membership or a disconnected host generation', async t => {
+  const f = await fixture(t), h = await hostFixture(f, t);
+  const candidate = await replacementEndpoint(f, t); await candidate.confirm();
+  let proposal = await h.host.prepareFreshnessAuthority(candidate.endpoint.identity());
+  await f.enrollment.grant(f.team.id, h.task.projectId, f.teammate.id);
+  await assert.rejects(() => h.host.commitFreshnessAuthority(proposal.proposalId), /freshness_confirmation_changed/);
+  await assert.rejects(() => h.host.commitFreshnessAuthority(proposal.proposalId), /freshness_confirmation_required/);
+  proposal = await h.host.prepareFreshnessAuthority(candidate.endpoint.identity());
+  h.host.disconnect();
+  await assert.rejects(() => h.host.commitFreshnessAuthority(proposal.proposalId), /freshness_confirmation_changed/);
+  assert.equal(h.host.freshness.record(), null);
+});
+
+test('failed durable authority activation keeps both the old pin and applied checkpoint', async t => {
+  const f = await fixture(t), h = await hostFixture(f, t);
+  const candidate = await replacementEndpoint(f, t); await candidate.confirm();
+  const key = 'authorization:' + f.team.id;
+  const before = h.host.state.load(key);
+  const proposal = await h.host.prepareFreshnessAuthority(candidate.endpoint.identity());
+  // A storage failure on the second record must roll back the earlier checkpoint write.
+  h.host.state.db.exec("CREATE TRIGGER refuse_freshness BEFORE INSERT ON encrypted_task_state WHEN NEW.id LIKE 'freshness:%' BEGIN SELECT RAISE(ABORT, 'synthetic_storage_failure'); END;");
+  await assert.rejects(() => h.host.commitFreshnessAuthority(proposal.proposalId), /synthetic_storage_failure/);
+  assert.deepEqual(h.host.state.load(key), before);
+  assert.equal(h.host.freshness.record(), null);
+  assert.equal(h.host.freshness.signer().ed25519, f.ownerEndpoint.identity().ed25519);
+});
+
+test('applied replacement revocation persists its disabled pin and never falls back to the original signer', async t => {
+  const f = await fixture(t), h = await hostFixture(f, t);
+  const candidate = await replacementEndpoint(f, t); await candidate.confirm();
+  const proposal = await h.host.prepareFreshnessAuthority(candidate.endpoint.identity());
+  const receipt = await h.host.commitFreshnessAuthority(proposal.proposalId);
+  await h.host.beginReconcile();
+  assert.deepEqual(await f.enrollment.answerChallenges(f.team.id), { answered: 0 });
+  await candidate.enrollment.answerChallenges(f.team.id);
+  await h.host.reconcileMembership();
+  const older = (await f.enrollment.state(f.team.id)).authorityLog;
+  await f.enrollment.revokeEndpoint(f.team.id, { userId: f.owner.id, device: 'REPLACEMENT' });
+  const applied = await h.host.applyRevocations();
+  assert.equal(applied.requiresAuthority, true);
+  assert.ok(applied.rotated.includes(h.task.id));
+  const saved = h.host.freshness.record();
+  assert.equal(saved.state, 'revoked');
+  assert.equal(saved.activationId, receipt.activationId);
+  const floor = h.host.state.load('authorization:' + f.team.id);
+  assert.ok(floor.seq > older.length);
+  const { FreshnessAuthority } = require('../packages/runtime/freshness-authority');
+  const { EncryptedTaskState } = require('../packages/runtime/encrypted-task');
+  const reopened = new EncryptedTaskState(h.host.statePath);
+  try {
+    const restored = new FreshnessAuthority({ state: reopened, teamId: f.team.id, runtimeId: h.host.runtime.id,
+      genesis: f.ownerEndpoint.identity() });
+    assert.equal(restored.record().state, 'revoked');
+    assert.equal(restored.signer().ed25519, candidate.endpoint.identity().ed25519);
+    assert.deepEqual(reopened.load('authorization:' + f.team.id), floor);
+  } finally { reopened.close(); }
+  h.replay(older); h.host.disconnect();
+  await assert.rejects(() => h.host.collect(), /membership_freshness_authority_revoked/);
+  assert.equal(h.host.freshness.signer().ed25519, candidate.endpoint.identity().ed25519);
+});
+
 test('the execution host refuses a relay rollback after it applied signed device revocation', async (t) => {
   const f = await fixture(t);
   const h = await hostFixture(f, t);
@@ -289,7 +374,7 @@ test('each confirmed device of the same participant receives future task access'
   assert.equal(reader.state.responsible, f.owner.id);
 });
 
-test('customer history recovery does not replace a lost owner authority, even after teammate re-enrollment', async (t) => {
+test('customer history recovery and teammate re-enrollment require explicit local authority replacement', async (t) => {
   const f = await fixture(t);
   const h = await hostFixture(f, t);
   const { EncryptedTaskReader } = require('../packages/e2ee/task-log.mjs');
@@ -334,11 +419,23 @@ test('customer history recovery does not replace a lost owner authority, even af
   await assert.rejects(() => replacement.request('/answer-challenge', { teamId: f.team.id,
     runtimeId: h.host.runtime.id, proof: { ...proofBody, signature } }), /membership_proof_invalid/);
 
-  // Existing verified teammates can restore endpoint participation. That delegation
-  // does not presently delegate the distinct current-membership freshness authority.
+  // Existing verified teammates restore participation, but cannot silently appoint
+  // a new freshness signer on somebody else's execution host.
   await f.teammateEnrollment.pinAuthority(f.team.id, originalIdentity);
   await f.teammateEnrollment.confirm(f.team.id, 'TEAMMATE', { userId: f.owner.id, ...announcement(clean) });
   assert.equal((await replacement.state(f.team.id)).endpoints.find(e => e.device === 'REPLACEMENT').state, 'verified');
   assert.deepEqual(await replacement.answerChallenges(f.team.id), { answered: 0 });
   await assert.rejects(() => h.host.collect(), /membership_reconciliation_required/);
+
+  const proposal = await h.host.prepareFreshnessAuthority(clean.identity());
+  assert.equal(proposal.candidate.ed25519, clean.identity().ed25519);
+  assert.deepEqual(await replacement.answerChallenges(f.team.id), { answered: 0 });
+  const receipt = await h.host.commitFreshnessAuthority(proposal.proposalId);
+  assert.equal(receipt.signer.ed25519, clean.identity().ed25519);
+  assert.equal(h.host.authority.ed25519, originalIdentity.ed25519, 'the historical trust root never changes');
+  await h.host.beginReconcile();
+  assert.deepEqual(await replacement.answerChallenges(f.team.id), { answered: 1 });
+  await h.host.collect();
+  assert.equal(h.host.reconciled, true);
+  assert.equal(h.host.runtime.approvalAuthority, undefined, 'replacement does not grant approval authority');
 });

@@ -624,6 +624,7 @@
 
   // ================= views =================
   function showFleet() {
+    $('#encrypted-composer-error')?.remove();
     closeEncryptedSurfaces(); hideWorkViews(); document.body.classList.remove('navigation-open');
     if (state.subscribedId) send({ type: 'thread.unsubscribe', threadId: state.subscribedId });
     state.activeThreadId = null; state.activeThread = null; state.subscribedId = null; state.viewers = [];
@@ -1474,9 +1475,16 @@
   }
   function showEncryptedError(error) {
     const code = error.code || error.message || 'Action unavailable';
-    const explanation = FRIENDLY[code] || hostToolsFailureMessage(code) || code;
+    const explanation = code === 'endpoint_key_mismatch'
+      ? 'The execution host keys do not match the verified fingerprint. Confirm the host identity through a trusted channel before sending more work.'
+      : FRIENDLY[code] || hostToolsFailureMessage(code) || code;
     toast(esc(explanation));
     const message = $('#ew-error'); if (message) message.textContent = explanation;
+    if (!activeEncryptedTask() && !el.fleetView.classList.contains('hidden')) {
+      let detail = $('#encrypted-composer-error');
+      if (!detail) { detail = uiNode('p', 'ew-error'); detail.id = 'encrypted-composer-error'; detail.setAttribute('role', 'alert'); el.composer.append(detail); }
+      detail.textContent = explanation;
+    }
   }
   function activeEncryptedTask() { return state.encryptedTasks.find(task => task.id === state.activeThreadId) || null; }
   function encryptedSnapshot() { return state.encryptedSnapshots.get(state.activeThreadId) || null; }
@@ -1518,14 +1526,15 @@
     if (!state.encrypted) return;
     const runtime = selectedRuntime();
     if (state.setupHostPrompt && (state.setupHostPrompt.runtimeId !== runtime?.id || state.setupHostPrompt.teamId !== state.teamId)) state.setupHostPrompt = null;
-    const signature = JSON.stringify([state.encryptedState?.state, state.encryptedIdentity?.fingerprint, state.localEncryptedSetup, state.localCodexStatus, runtime?.id, runtime?.encryptedEndpoint, state.encrypted.confirmedHost(runtime?.id), state.setupHostPrompt]);
+    const signature = JSON.stringify([state.encryptedState?.state, state.encryptedIdentity?.fingerprint, state.localEncryptedSetup, state.localCodexStatus, runtime?.id, runtime?.encryptedEndpoint, state.encrypted.confirmedHost(runtime?.id), state.setupHostPrompt, state.encryptedState?.membershipIdentity]);
     if (root.dataset.signature === signature) return;
     root.dataset.signature = signature; root.replaceChildren();
     const panel = uiSection('Encrypted execution', 'Choose the machine and project that will run this task. Provider usage belongs to the account configured on that machine.');
     panel.append(uiNode('p', 'small', 'This endpoint: ' + (state.encryptedState?.state || 'starting')));
     if (state.encryptedIdentity) panel.append(uiNode('p', 'ew-fingerprint mono', state.encryptedIdentity.fingerprint));
     const desktop = window.harnessDesktop;
-    if (desktop?.confirmEncryptionAuthority && state.membership?.role === 'owner') {
+    if (desktop?.confirmEncryptionAuthority && state.membership?.role === 'owner' &&
+        !(state.localEncryptedSetup?.runtimeId === runtime?.id && state.localEncryptedSetup.authority)) {
       panel.append(uiButton('Authorize this execution host', 'authorize-encrypted-host', async () => {
         await desktop.confirmEncryptionAuthority({ teamId: state.teamId, identity: state.encrypted.endpoint.identity() });
         await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
@@ -1537,6 +1546,7 @@
         await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
       }));
     }
+    renderFreshnessAuthority(panel, runtime);
     if (desktop?.configureCodex) {
       const status = state.localCodexStatus;
       panel.append(uiNode('p', 'small', status?.available
@@ -1562,7 +1572,65 @@
     }
     root.append(panel);
   }
+  function renderFreshnessAuthority(panel, runtime) {
+    const local = state.localEncryptedSetup;
+    const desktop = window.harnessDesktop;
+    if (!runtime?.id) return;
+    if (local?.runtimeId !== runtime.id || local?.teamId !== state.teamId) {
+      panel.append(uiSection('Membership recovery on the execution host',
+        'Open the installed app on this execution machine to appoint a verified replacement owner device. A remote browser cannot change the host’s selected membership signer.'));
+      return;
+    }
+    if (!local.authority) return;
+    const identity = state.encrypted.endpoint.identity();
+    const original = local.authority;
+    const selected = local.freshnessAuthority;
+    const signer = selected?.signer || original;
+    const sameDevice = ['user', 'device', 'curve25519', 'ed25519'].every(key => signer[key] === identity[key]);
+    const membership = state.encryptedState?.membershipIdentity;
+    const originalAuthorityMatches = ['user', 'device', 'curve25519', 'ed25519'].every(key => membership?.owner?.[key] === original[key]);
+    const owner = original.user === identity.user && originalAuthorityMatches;
+    const verified = membership?.state === 'verified';
+    const section = uiSection('Membership recovery on this host',
+      'A verified replacement device for the original owner can confirm current membership for this execution host. The original team identity stays unchanged.');
+    section.dataset.state = selected?.state || 'original';
+    section.append(uiNode('p', 'small', 'Current membership signer: ' + signer.device +
+      (selected?.state === 'revoked' ? ' · revoked; current membership cannot be confirmed' : sameDevice ? ' · this device' : ' · another device')));
+    section.append(uiNode('p', 'ew-fingerprint mono', window.PlexusEncrypted.fingerprint(signer)));
+    section.append(uiNode('p', 'small', 'This restores membership confirmation on this host only. It does not restore approval rights or provider credentials. Other hosts need separate local confirmation.'));
+    if (!desktop?.confirmFreshnessAuthority) {
+      section.append(uiNode('p', 'cu-missing', 'Open the installed app on the execution machine to appoint a replacement device.'));
+    } else if (membership?.state === 'revoked' || selected?.state === 'revoked' && sameDevice) {
+      section.append(uiNode('p', 'cu-missing', 'This device is revoked. Use a different owner device and have a surviving verified teammate compare its fingerprint before appointing it locally.'));
+    } else if (!owner || !verified) {
+      section.append(uiNode('p', 'cu-missing', !membership?.owner
+        ? 'Compare the original team owner fingerprint in Team & access. A surviving verified teammate must then verify this replacement device.'
+        : !originalAuthorityMatches ? 'The verified team identity does not match this host’s original authority. Compare the original fingerprint with a trusted teammate before continuing.'
+        : original.user !== identity.user ? 'Only a verified replacement device of the original team owner can be appointed here.'
+          : 'A surviving verified teammate must compare and verify this device in Team & access before it can confirm membership. Restored history alone does not authorize it.'));
+    } else if (!sameDevice) {
+      section.append(uiButton('Use this verified device for membership recovery', 'authorize-freshness-authority', async () => {
+        const teamId = state.teamId, runtimeId = runtime.id;
+        try {
+          const result = await desktop.confirmFreshnessAuthority({ teamId, identity });
+          if (!result?.confirmed) return;
+          if (state.teamId !== teamId || selectedRuntime()?.id !== runtimeId) return;
+          await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
+          toast('This host now uses the replacement membership signer. Other hosts, approval rights and provider credentials are unchanged.');
+        } catch (error) {
+          const code = error.code || error.message || '';
+          throw new Error(code.includes('freshness_host_busy')
+            ? 'Finish or interrupt the active agent turn, then retry membership recovery on this host.'
+            : code.includes('local_runtime_restart_failed')
+              ? 'The replacement signer was saved, but the execution host did not restart. Retry local host startup and check its selected signer before continuing.'
+              : 'Membership recovery could not be verified. Refresh local setup to check the selected signer before retrying. The replacement device must be verified by a surviving teammate.');
+        }
+      }));
+    } else section.append(uiNode('p', 'small', 'This device is already the selected membership signer for this host.'));
+    panel.append(section);
+  }
   async function selectEncryptedTask(id) {
+    $('#encrypted-composer-error')?.remove();
     if (state.subscribedId) send({ type: 'thread.unsubscribe', threadId: state.subscribedId });
     state.subscribedId = null; state.activeThreadId = id; state.activeThread = null; state.setupHostPrompt = null;
     state.draftTarget = null; el.input.value = ''; state.catchupSnapshot = state.encryptedSnapshots.get(id) || null;
@@ -1608,6 +1676,7 @@
   }
   async function sendEncryptedMessage(text, settings) {
     el.send.disabled = true;
+    $('#encrypted-composer-error')?.remove();
     try {
       if (!state.encrypted || state.encryptedState?.state !== 'verified') throw new Error('Verify this endpoint in Team & access before starting or steering work.');
       let task = activeEncryptedTask();

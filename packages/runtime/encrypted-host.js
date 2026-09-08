@@ -18,7 +18,7 @@
 const crypto = require('node:crypto');
 const { createDurableEndpoint } = require('./durable-endpoint');
 const { replayMembership, verifySignature, currentMembershipBody, accountId } = require('../e2ee/membership.mjs');
-const { canonical } = require('../protocol/encrypted-task.mjs');
+const { canonical, roomFor } = require('../protocol/encrypted-task.mjs');
 const { HubKeyTransport } = require('../e2ee/hub-key-transport.mjs');
 const { EncryptedTaskTransport } = require('../e2ee/task-log.mjs');
 const { matrixUser } = require('../protocol/encrypted-task.mjs');
@@ -27,6 +27,7 @@ const { normalizeLink, normalizeLinkTitle } = require('../protocol/related-work.
 const { routing } = require('../e2ee/task-log.mjs');
 const { EncryptedTaskState, EncryptedFixtureHost } = require('./encrypted-task');
 const { EncryptedTaskRun } = require('./encrypted-run');
+const { FreshnessAuthority } = require('./freshness-authority');
 // Match the relay's answer window. Start locally before POST so a delayed request
 // never makes this endpoint retain a nonce longer than the relay accepts it.
 const MEMBERSHIP_CHALLENGE_TTL_MS = 60000;
@@ -61,6 +62,9 @@ class EncryptedHost {
   async start() {
     if (!this.runtime.teamId) throw new Error('runtime_unpaired');
     this.state = new EncryptedTaskState(this.statePath);
+    this.freshness = this.authority ? new FreshnessAuthority({ state: this.state, teamId: this.runtime.teamId,
+      runtimeId: this.runtime.id, genesis: this.authority }) : null;
+    this.freshness?.record(); // Corrupt or foreign local pins never fall back to genesis.
     this.endpoint = await this.endpointFactory({
       user: matrixUser(this.runtime.id),
       device: this.device,
@@ -93,7 +97,9 @@ class EncryptedHost {
     const challenge = this.challenge = crypto.randomBytes(24).toString('hex');
     this.challengeExpiresAt = Date.now() + MEMBERSHIP_CHALLENGE_TTL_MS;
     try {
-      await this.enrollmentRequest('/challenge', { teamId: this.runtime.teamId, challenge });
+      const context = this.freshness?.context();
+      await this.enrollmentRequest('/challenge', { teamId: this.runtime.teamId, challenge,
+        ...(context ? { signer: this.freshness.signer(), activationId: context.activationId } : {}) });
     } catch (error) {
       if (generation === this.reconcileGeneration) { this.challenge = null; this.challengeExpiresAt = 0; }
       throw error;
@@ -102,43 +108,105 @@ class EncryptedHost {
     return challenge;
   }
 
+  async readMembership() {
+    if (!this.authority) throw Object.assign(new Error('membership_authority_required'), { code: 'membership_authority_required' });
+    const received = await this.enrollmentRequest('?team=' + encodeURIComponent(this.runtime.teamId));
+    const current = await replayMembership(received.authorityLog, { teamId: this.runtime.teamId,
+      authority: this.authority, checkpoint: this.state.load('authorization:' + this.runtime.teamId) });
+    this.checkMembershipFloor(current, received.authorityLog);
+    return { received, current };
+  }
+
+  checkMembershipFloor(current, records) {
+    // Signature verification awaits the SDK. Another request may apply a newer
+    // checkpoint during it; that must not be overwritten by this older response.
+    const floor = this.state.load('authorization:' + this.runtime.teamId);
+    if (floor && (current.seq < floor.seq || (current.seq === floor.seq ? current.hash !== floor.hash :
+      records[floor.seq]?.previous !== floor.hash))) {
+      throw Object.assign(new Error('membership_rollback'), { code: 'membership_rollback' });
+    }
+  }
+
+  async prepareFreshnessAuthority(candidate) {
+    if (!this.freshness) throw Object.assign(new Error('freshness_host_unavailable'), { code: 'freshness_host_unavailable' });
+    const { current } = await this.readMembership();
+    return this.freshness.prepare(candidate, current, this.reconcileGeneration);
+  }
+
+  async commitFreshnessAuthority(proposalId, { beforeCommit = () => {}, afterCommit = () => {} } = {}) {
+    if (!this.freshness) throw Object.assign(new Error('freshness_host_unavailable'), { code: 'freshness_host_unavailable' });
+    const { current } = await this.readMembership();
+    beforeCommit();
+    const result = this.freshness.commit(proposalId, current, this.reconcileGeneration);
+    this.membership = current;
+    this.disconnect();
+    afterCommit();
+    return result;
+  }
+
   async reconcileMembership() {
     if (!this.authority) throw Object.assign(new Error('membership_authority_required'), { code: 'membership_authority_required' });
-    if (!this.reconciled && (!this.challenge || Date.now() >= this.challengeExpiresAt)) await this.beginReconcile();
+    if (this.freshness?.record()?.state === 'revoked') {
+      this.disconnect();
+      await this.runtime.encryptedExecution?.close();
+      throw Object.assign(new Error('membership_freshness_authority_revoked'), { code: 'membership_freshness_authority_revoked' });
+    }
     const generation = this.reconcileGeneration;
     const challenge = this.challenge;
     const needsProof = !this.reconciled;
-    const received = await this.enrollmentRequest('?team=' + encodeURIComponent(this.runtime.teamId));
     const key = 'authorization:' + this.runtime.teamId;
-    const prior = this.state.load(key);
-    let current;
+    let received, current;
     try {
-      current = await replayMembership(received.authorityLog, {
-        teamId: this.runtime.teamId, authority: this.authority, checkpoint: prior
-      });
+      ({ received, current } = await this.readMembership());
+      if (this.freshness?.isRevoked(current)) {
+        this.freshness.markRevoked(current);
+        this.membership = current;
+        // Applying removal must stop execution before a relay gets another chance
+        // to withhold a response. Every entry point, not just polling, observes it.
+        this.disconnect();
+        await this.runtime.encryptedExecution?.close();
+        throw Object.assign(new Error('membership_freshness_authority_revoked'), { code: 'membership_freshness_authority_revoked' });
+      }
+      const signer = this.freshness?.signer() || this.authority;
+      const context = this.freshness?.context();
+      if (context && !this.freshness.verifiedSigner(current)) {
+        throw Object.assign(new Error('freshness_candidate_unverified'), { code: 'freshness_candidate_unverified' });
+      }
+      if (generation !== this.reconcileGeneration) {
+        throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+      }
+      // Read authenticated removals before asking a selected signer to answer. The
+      // relay correctly refuses a revoked signer, but that must not prevent this
+      // host from applying the removal when it reconnects with an older active pin.
+      if (needsProof && (!challenge || Date.now() >= this.challengeExpiresAt)) {
+        await this.beginReconcile();
+        throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+      }
       if (needsProof) {
         const proof = received.currentProof;
-        const body = currentMembershipBody(this.runtime.teamId, challenge, current);
+        const body = currentMembershipBody(this.runtime.teamId, challenge, current, context);
         // An owner may answer just before a project/grant advances the signed log.
         // The relay hides answered challenges, so renew an authenticated ancestor
         // proof now; accepting it or waiting for nonce expiry would be incorrect.
         if (proof?.challenge === challenge && proof.teamId === this.runtime.teamId && proof.type === body.type &&
             Number.isSafeInteger(proof.seq) && proof.seq > 0 && proof.seq < current.seq &&
             received.authorityLog[proof.seq]?.previous === proof.hash &&
-            await verifySignature(this.authority, currentMembershipBody(this.runtime.teamId, challenge, proof), proof.signature)) {
+            await verifySignature(signer, currentMembershipBody(this.runtime.teamId, challenge, proof, context), proof.signature)) {
           if (generation === this.reconcileGeneration && this.challenge === challenge &&
               !this.reconciled && Date.now() < this.challengeExpiresAt) await this.beginReconcile();
           throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
         }
         if (!proof || proof.seq !== current.seq || proof.hash !== current.hash || proof.challenge !== challenge ||
             proof.teamId !== this.runtime.teamId || proof.type !== body.type ||
-            !await verifySignature(this.authority, body, proof.signature)) throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+            (context && (proof.runtimeId !== context.runtimeId || proof.activationId !== context.activationId)) ||
+            !await verifySignature(signer, body, proof.signature)) throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
       }
       // Disconnect or nonce renewal invalidates every earlier in-flight response.
       // A signed answer received after its window ends must use the next challenge.
       if (generation !== this.reconcileGeneration || (needsProof && Date.now() >= this.challengeExpiresAt)) {
         throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
       }
+      this.checkMembershipFloor(current, received.authorityLog);
     } catch (error) { if (generation === this.reconcileGeneration) this.reconciled = false; throw error; }
     this.state.save(key, { seq: current.seq, hash: current.hash });
     this.membership = current;
@@ -241,22 +309,44 @@ class EncryptedHost {
   // What this cannot do is unsay what was already said. Events the removed endpoint had
   // already decrypted stay decrypted, on their machine, forever. See REVOCATION_LIMITS.
   async applyRevocations(tasks) {
-    const current = await this.reconcileMembership();
+    let current, hostOnly = false;
+    try { current = await this.reconcileMembership(); }
+    catch (error) {
+      if (error.code !== 'membership_freshness_authority_revoked') throw error;
+      // Reconciliation already cancelled execution. Reuse the authenticated head
+      // that caused removal; a second fetch must not be a prerequisite for applying it.
+      current = this.membership;
+      const floor = this.state.load('authorization:' + this.runtime.teamId);
+      if (!current || current.seq < floor.seq || (current.seq === floor.seq && current.hash !== floor.hash)) {
+        ({ current } = await this.readMembership());
+        this.freshness.markRevoked(current);
+        this.membership = current;
+      }
+      hostOnly = true;
+    }
     const marker = 'revocations:' + this.runtime.teamId;
     const saved = this.state.load(marker) || { seq: 0, pendingAcks: [] };
     const through = saved.seq;
     const pending = current.revocations.filter((r) => r.seq > through);
-    if (!pending.length && !saved.pendingAcks?.length) return { applied: [], rotated: [] };
+    if (!pending.length && !saved.pendingAcks?.length) return { applied: [], rotated: [], requiresAuthority: hostOnly };
     const listed = tasks || (await this.tasks.list(this.runtime.teamId)).tasks || [];
     const owned = listed.filter((task) => task.runtimeId === this.runtime.id && this.projects.has(task.projectId));
     const rotated = [];
-    for (const task of pending.length ? owned : []) {
+    if (pending.length) {
+      // Include durable checkpoints from before this process started. The relay
+      // cannot skip a room by omitting its task during a restart and later return it.
+      for (const id of new Set([...owned.map(task => task.id), ...this.state.taskIds(), ...this.openedTasks.keys()])) {
+        await this.endpoint.shareVerifiedTaskKey(roomFor(id), [this.endpoint.identity()], { rotate: true });
+        rotated.push(id);
+      }
+    }
+    for (const task of pending.length && !hostOnly ? owned : []) {
       const holders = await this.participants(task.projectId);
       const members = (await this.verifiedEndpointList()).filter((m) => holders.has(m.userId)).map((m) => m.identity);
       const { adapter } = await this.openTask(task);
-      // The host remains a recipient even when all participant grants were removed.
-      await adapter.admit(task, [this.endpoint.identity(), ...members], { rotate: true });
-      rotated.push(task.id);
+      // Rotation above covered every durable room. Re-share only to current members
+      // of tasks available now; omitted rooms stay host-only until admitted later.
+      await adapter.admit(task, [this.endpoint.identity(), ...members]);
     }
     // Commit locally before acknowledging. The relay cannot manufacture this application state.
     const pendingAcks = [...(saved.pendingAcks || []), ...pending];
@@ -271,7 +361,7 @@ class EncryptedHost {
       applied.push(revocation);
       this.state.save(marker, { seq: current.seq, pendingAcks: pendingAcks.filter((entry) => !applied.includes(entry)) });
     }
-    return { applied, rotated };
+    return { applied, rotated, requiresAuthority: hostOnly };
   }
 
   // Control messages teammates have sealed to this host, applied to the tasks they name.

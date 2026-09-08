@@ -68,10 +68,18 @@ export class EnrollmentTransport {
     if (!this.endpoint) return { answered: 0 };
     const state = await this.state(teamId);
     const head = await this.signedHead(teamId, state);
-    if (!head.owner || !sameIdentity(head.owner, this.endpoint.identity())) return { answered: 0 };
+    const own = this.endpoint.identity();
+    if (!head.owner || own.user !== head.owner.user ||
+        !head.endpoints.some((entry) => entry.state === 'verified' && sameIdentity(entry, own))) return { answered: 0 };
     let answered = 0;
     for (const request of state.challenges || []) {
-      const body = currentMembershipBody(teamId, request.challenge, head);
+      const addressed = request.signer !== undefined || request.activationId !== undefined;
+      if (addressed ? !sameIdentity(request.signer, own) : !sameIdentity(head.owner, own)) continue;
+      let body;
+      try {
+        body = currentMembershipBody(teamId, request.challenge, head,
+          addressed ? { runtimeId: request.runtimeId, activationId: request.activationId } : undefined);
+      } catch { continue; } // Malformed relay routing cannot downgrade an addressed proof to v1.
       await this.request('/answer-challenge', { teamId, runtimeId: request.runtimeId,
         proof: { ...body, signature: await this.endpoint.sign(canonical(body)) } });
       answered++;

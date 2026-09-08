@@ -106,6 +106,7 @@ class EncryptedExecution {
     this.pending.add(task.id);
     try { await this.ensureTaskCreated(task, opened, provider.id); }
     catch (error) { this.pending.delete(task.id); throw error; }
+    if (this.closed) { this.pending.delete(task.id); refuse('host_stopped'); }
     // Persist before the provider can execute. A crash from this point is an explicit
     // recovery-required state, even if no output made it back yet.
     const saved = { state: 'running', turnId, settings: chosen, openApprovals: {}, providerState: providerState(),
@@ -126,6 +127,7 @@ class EncryptedExecution {
         } finally { session?.interrupt(); }
       },
       runTurn: async (emit) => {
+        if (this.closed) refuse('host_stopped');
         session = new TurnSession({ thread, turnId, by: actor, input: requested,
           provider, model: chosen.model, settings: chosen, executor: this.runtime.executor,
           history: opened.reader.state.messages.map((message) => ({ ...message,

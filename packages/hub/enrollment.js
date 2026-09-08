@@ -12,11 +12,12 @@
 // an account, an invitation link or a task id is not either of them - which is the whole
 // claim being made here, and the reason this is a separate module from membership.
 //
-// The hub cannot check cryptography. It records who vouched for whom and refuses to let
-// an unvouched endpoint be recorded as vouched; the fingerprint comparison itself happens
-// on the confirming endpoint, against material carried out of band.
+// The hub verifies signatures as an early filter; endpoints independently check their
+// pinned roots. Fingerprint comparison happens on the confirming endpoint, against
+// material carried out of band, and the relay cannot choose a host's freshness authority.
 const { PROJECT_ID, canonical, digest } = require('../protocol/encrypted-task.mjs');
-const { initialMembership, applyOperation, operationBody, replayMembership, verifySignature, accountId, GENESIS } = require('../e2ee/membership.mjs');
+const { initialMembership, applyOperation, operationBody, replayMembership, verifySignature, accountId, sameIdentity,
+  currentMembershipBody, GENESIS } = require('../e2ee/membership.mjs');
 
 const problem = (code, status = 400) => Object.assign(new Error(code), { code, status });
 const DEVICE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -26,6 +27,10 @@ const STATES = ['pending', 'verified', 'revoked'];
 
 const fingerprint = (value) => value && typeof value === 'object' && !Array.isArray(value) &&
   DEVICE.test(value.device || '') && KEY.test(value.curve25519 || '') && KEY.test(value.ed25519 || '');
+const freshnessSigner = (value) => fingerprint(value) && accountId(value.user) &&
+  Object.keys(value).length === 4 && ['user', 'device', 'curve25519', 'ed25519'].every((key) => typeof value[key] === 'string');
+const verifiedOwnerEndpoint = (head, signer) => head.owner?.user === signer?.user &&
+  head.endpoints.some((entry) => entry.state === 'verified' && sameIdentity(entry, signer));
 
 class Enrollment {
   constructor(store) {
@@ -389,7 +394,8 @@ class Enrollment {
           endpoints: this.endpoints(teamId),
           authorityLog: this.authorityLog(teamId),
           challenges: [...this.challenges.values()].filter((c) => c.teamId === teamId && !c.proof && c.expiresAt > Date.now())
-            .map(({ runtimeId, challenge }) => ({ runtimeId, challenge })),
+            .map(({ runtimeId, challenge, signer, activationId }) => ({ runtimeId, challenge,
+              ...(signer ? { signer, activationId } : {}) })),
           ...(principal.runtimeId ? { currentProof: this.challenges.get(teamId + '/' + principal.runtimeId)?.proof || null } : {}),
           revocations: this.revocations(teamId),
           projects: principal.runtimeId ? [] : this.projectsFor(teamId, account.id),
@@ -398,8 +404,18 @@ class Enrollment {
       }
       if (req.method !== 'POST') throw problem('method_not_allowed', 405);
       if (parts[0] === 'challenge') {
-        if (!principal.runtimeId || !/^[a-f0-9]{48}$/.test(body.challenge || '')) throw problem('invalid_membership_challenge');
+        if (!principal.runtimeId || typeof body.challenge !== 'string' || !/^[a-f0-9]{48}$/.test(body.challenge)) throw problem('invalid_membership_challenge');
+        const addressed = body.signer !== undefined || body.activationId !== undefined;
+        if (addressed) {
+          if (!freshnessSigner(body.signer) || typeof body.activationId !== 'string' || !/^[a-f0-9]{32}$/.test(body.activationId) ||
+              Object.keys(body).some((key) => !['teamId', 'challenge', 'signer', 'activationId'].includes(key))) throw problem('invalid_membership_challenge');
+          const records = this.authorityLog(teamId);
+          if (!records.length) throw problem('membership_proof_invalid', 403);
+          const head = await replayMembership(records, { teamId, authority: records[0].signer });
+          if (!verifiedOwnerEndpoint(head, body.signer)) throw problem('membership_proof_invalid', 403);
+        }
         this.challenges.set(teamId + '/' + principal.runtimeId, { teamId, runtimeId: principal.runtimeId,
+          ...(addressed ? { signer: body.signer, activationId: body.activationId } : {}),
           challenge: body.challenge, proof: null, expiresAt: Date.now() + 60000 });
         return reply(200, { pending: true });
       }
@@ -410,8 +426,17 @@ class Enrollment {
         const owner = records[0]?.signer;
         const proof = body.proof;
         if (!request || request.expiresAt < Date.now() || !proof || proof.challenge !== request.challenge ||
-            proof.teamId !== teamId || proof.type !== 'plexus.membership.current.v1' || accountId(owner?.user) !== account.id ||
-            !await verifySignature(owner, operationBody(proof), proof.signature)) throw problem('membership_proof_invalid', 403);
+            proof.teamId !== teamId || accountId(owner?.user) !== account.id) throw problem('membership_proof_invalid', 403);
+        const context = request.signer ? { runtimeId: request.runtimeId, activationId: request.activationId } : undefined;
+        const expected = currentMembershipBody(teamId, request.challenge, proof, context);
+        const signer = request.signer || owner;
+        if (canonical(operationBody(proof)) !== canonical(expected) ||
+            !await verifySignature(signer, expected, proof.signature)) throw problem('membership_proof_invalid', 403);
+        if (request.signer) {
+          const head = await replayMembership(records, { teamId, authority: owner });
+          if (!verifiedOwnerEndpoint(head, signer)) throw problem('membership_proof_invalid', 403);
+        }
+        if (this.challenges.get(teamId + '/' + body.runtimeId) !== request || request.expiresAt <= Date.now()) throw problem('membership_proof_invalid', 403);
         request.proof = proof;
         return reply(200, { answered: true });
       }

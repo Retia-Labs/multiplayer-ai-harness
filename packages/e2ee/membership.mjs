@@ -48,6 +48,8 @@ export function applyOperation(current, body) {
       if (!target || (!isOwner && actor !== target.userId)) fail('endpoint_revocation_refused');
       const existing = next.endpoints.find((e) => e.userId === target.userId && e.device === target.device);
       if (!existing) fail('endpoint_not_verified');
+      // A host-local freshness appointment does not rotate this immutable genesis.
+      // Removing the original root still requires a separate authority ceremony.
       if (sameIdentity(existing, current.owner)) fail('membership_authority_rotation_required');
       existing.state = 'revoked';
       next.revocations.push({ userId: target.userId, device: target.device, seq });
@@ -99,6 +101,11 @@ export async function signMembership(endpoint, head, action, payload) {
   const body = { version: 1, teamId: head.teamId, seq: head.seq + 1, previous: head.hash, signer, action, payload };
   return { ...body, signature: await endpoint.sign(canonical(body)) };
 }
-export function currentMembershipBody(teamId, challenge, head) {
-  return { type: 'plexus.membership.current.v1', teamId, challenge, seq: head.seq, hash: head.hash };
+export function currentMembershipBody(teamId, challenge, head, context) {
+  if (context === undefined) return { type: 'plexus.membership.current.v1', teamId, challenge, seq: head.seq, hash: head.hash };
+  if (!context || typeof context.runtimeId !== 'string' || !context.runtimeId || context.runtimeId.length > 256 ||
+      typeof context.activationId !== 'string' || !/^[a-f0-9]{32}$/.test(context.activationId) ||
+      typeof challenge !== 'string' || !/^[a-f0-9]{48}$/.test(challenge)) fail('invalid_membership_challenge');
+  return { type: 'plexus.membership.current.v2', teamId, challenge, runtimeId: context.runtimeId,
+    activationId: context.activationId, seq: head.seq, hash: head.hash };
 }

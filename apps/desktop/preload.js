@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('harnessDesktop', {
   configureCodex: () => ipcRenderer.invoke('desktop:configureCodex'),
   confirmEncryptionAuthority: (authority) => ipcRenderer.invoke('desktop:confirmEncryptionAuthority', authority),
   confirmApprovalAuthority: (authority) => ipcRenderer.invoke('desktop:confirmApprovalAuthority', authority),
+  confirmFreshnessAuthority: (authority) => ipcRenderer.invoke('desktop:confirmFreshnessAuthority', authority),
   // Selection in the native dialog is the authorization. The main process persists it
   // for the local runtime and deliberately does not expose the filesystem path here.
   pickFolder: (runtimeId) => ipcRenderer.invoke('desktop:pickFolder', runtimeId),

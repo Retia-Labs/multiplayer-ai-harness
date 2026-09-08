@@ -5,7 +5,7 @@ const {DatabaseSync}=require('node:sqlite');
 const {createHash}=require('node:crypto');
 const {EncryptedTaskReader,EncryptedTaskWriter,routing}=require('../e2ee/task-log.mjs');
 const {handOffHistory}=require('../e2ee/enrollment.mjs');
-const {canonical,roomFor}=require('../protocol/encrypted-task.mjs');
+const {canonical,roomFor,TASK_ID}=require('../protocol/encrypted-task.mjs');
 class EncryptedTaskState {
   constructor(file) {
     this.db=new DatabaseSync(file);
@@ -13,6 +13,14 @@ class EncryptedTaskState {
   }
   load(id) {const r=this.db.prepare('SELECT state FROM encrypted_task_state WHERE id=?').get(id);return r?JSON.parse(r.state):null;}
   save(id,state) {this.db.prepare('INSERT INTO encrypted_task_state VALUES (?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state').run(id,JSON.stringify(state));}
+  // Task checkpoints predate authority replacement. Enumerate those durable IDs,
+  // so a restarted host can rotate every known room even when the relay omits it.
+  taskIds() {return this.db.prepare('SELECT id FROM encrypted_task_state').all().map(row=>row.id).filter(id=>TASK_ID.test(id));}
+  saveMany(entries) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try { for (const [id, state] of entries) this.save(id, state); this.db.exec('COMMIT'); }
+    catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   close(){this.db.close();}
 }
 class EncryptedFixtureHost {
@@ -26,6 +34,9 @@ class EncryptedFixtureHost {
     if(!project || !this.runtime.projects.has(project))throw new Error('project_not_authorized');
     const expected=this.creators.get(task.creatorUserId);
     if(!expected)throw new Error('task_creator_unverified');
+    // Record the room before any SDK operation can share its first session. A crash
+    // before event one must not leave an untracked session available after removal.
+    if(!this.state.load(task.id))this.state.save(task.id,{});
     const reader=new EncryptedTaskReader({endpoint:this.endpoint,task,writer:this.endpoint.identity()});
     const writer=new EncryptedTaskWriter({reader,transport:this.transport,load:()=>this.state.load(task.id),save:(value)=>this.state.save(task.id,value)});
     await writer.resume();

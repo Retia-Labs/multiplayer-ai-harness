@@ -16,6 +16,7 @@ const { createPairingCode } = require('../../packages/protocol');
 const { ORIGIN, installRenderer, requireRenderer, endpointStoreKey } = require('./renderer');
 const { attachCryptoBroker } = require('../../packages/e2ee/desktop-crypto-broker');
 const { desktopProfile } = require('./profile');
+const { createFreshnessConfirmation } = require('./local-runtime-rpc');
 
 // Packaged, everything lives under the asar and `getAppPath()` is its root. In a checkout
 // that call returns whatever directory Electron was pointed at, which is not the same
@@ -76,7 +77,7 @@ function spawnService(label, script, args, env) {
   // Without this, a spawn that fails outright throws an unhandled error event and the app
   // dies with nothing on screen - the exact failure mode this slice is meant to remove.
   child.on('message', (message) => {
-    if (label === 'runtime' && message.type === 'runtime.ready') child.runtimeReady = message;
+    if (label === 'runtime' && message?.type === 'runtime.ready') child.runtimeReady = message;
   });
   child.on('error', (err) => status(label, 'failed', `could not start: ${err.message}`));
   const keep = (s) => {
@@ -206,6 +207,19 @@ async function waitForRuntime(tries = 60) {
   return null;
 }
 
+const confirmFreshnessAuthority = createFreshnessConfirmation({
+  getRuntime: () => runtimeLaunch && runtimeChild ? { child: runtimeChild, runtimeId: localRuntimeId() } : null,
+  confirm: async options => (await dialog.showMessageBox(win, options)).response === 1,
+  restart: async captured => {
+    if (quitting || runtimeChild !== captured.child || localRuntimeId() !== captured.runtimeId) throw new Error('freshness_host_unavailable');
+    await stopService(captured.child);
+    if (quitting || runtimeChild !== captured.child || localRuntimeId() !== captured.runtimeId) throw new Error('freshness_host_unavailable');
+    const replacement = launchRuntime();
+    const ready = await waitForRuntime();
+    if (!ready || runtimeChild !== replacement || localRuntimeId() !== captured.runtimeId) throw new Error('freshness_host_unavailable');
+  }
+});
+
 async function boot() {
   const dataDir = profile.dataDir;
   fs.mkdirSync(dataDir, { recursive: true });
@@ -295,6 +309,10 @@ ipcMain.handle('desktop:encryptedSetup', (event) => {
   requireRenderer(event, win);
   try { return JSON.parse(fs.readFileSync(path.join(runtimeLaunch.dataDir, 'encrypted-setup.json'), 'utf8')); }
   catch { return { runtimeId: localRuntimeId(), projects: [], state: 'starting' }; }
+});
+ipcMain.handle('desktop:confirmFreshnessAuthority', (event, request) => {
+  requireRenderer(event, win);
+  return confirmFreshnessAuthority(request);
 });
 ipcMain.handle('desktop:codexStatus', (event) => {
   requireRenderer(event, win);

@@ -97,16 +97,16 @@ proofs remain applicable to their original revisions and scopes.
 | [#5](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/5) | Team, invitations, host consent, project/policy limits and direct-request boundaries exercised. Device state reflects actual verification. | New cryptographic integration retains the independent-review gate. |
 | [#6](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/6) | Opaque task persistence, ordered replay, integrity failure, browser restart and production host execution are connected and tested. | Full external-release platform and adversarial review gates remain. |
 | [#7](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/7) | Production encrypted execution, actual Codex host-tool edits, durable identity, explicit local provider consent and actionable errors implemented. The supported native scenario passes actual project-read refusals. | Restricted to Codex 0.153.4, macOS arm64 and gpt-5.4-mini. Real execution is verified with the file-backed ChatGPT login; API login has synthetic/preflight coverage only. Installed real-provider evidence is recorded separately below. Older read-only opt-ins remain disabled. |
-| [#8](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/8) | Signed enrollment, explicit project grants, late teammate history, delayed host confirmation and reload exercised through the renderer. | Lost sole authority is the recovery limit described below. |
+| [#8](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/8) | Signed enrollment, explicit project grants, late teammate history, delayed host confirmation and reload exercised through the renderer. A teammate-verified replacement owner can be appointed locally as a host's freshness signer. | Recovery without any surviving verified teammate remains unfinished. |
 | [#9](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/9) | Sourced catch-up, actual patches, current provider, decisions, approvals and freshness connected to authenticated events. | No generated summary or server plaintext projection is introduced. |
 | [#10](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/10) | Actor/turn binding, deduplication, queued/delivered receipts and interruption exercised through real native acknowledgments and encrypted production controls. | Native production use retains #7's supported-configuration limits. |
 | [#11](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/11) | Exact action grants, competing responses, expiry, mutation refusal and stale-after-restart behavior exercised with real local filesystem effects. | No broad session approval or general exactly-once external-effect guarantee. |
 | [#12](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/12) | Named encrypted help, inbox resolution/cancellation and late context connected; help is separate from provider input. | External messaging and content-bearing OS notifications are outside this slice. |
 | [#13](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/13) | Diff/source review, handoff, authorized recipients and independent task outcomes exercised. The continuous real-provider scenario proves Bob's acknowledged correction changes actual Monday text to Tuesday, then handoff preserves that corrected diff. | Same supported provider/platform/authentication limits as #7. |
 | [#14](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/14) | Encrypted related links, safe rendering, private task navigation and association removal exercised. | Association does not publish anything to the external tracker. |
-| [#15](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/15) | Customer setup drill, wrong-key refusal, replacement, clean browser history restore and explicit re-enrollment exercised; desktop keys use OS storage. | History-only recovery cannot replace a permanently lost sole membership signing authority. Desktop site-data/locked-storage permutations and platform coverage retain their explicit limits. |
+| [#15](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/15) | Customer setup drill, wrong-key refusal, replacement, clean browser history restore and explicit re-enrollment exercised; desktop keys use OS storage. Local appointment supports a replacement owner verified by a surviving teammate, preserving the enrollment genesis and host checkpoint. | Customer-material-only authority recovery and original bootstrap-device revocation remain unfinished. Desktop site-data/locked-storage permutations and platform coverage retain their explicit limits. |
 | [#16](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/16) | Signed state, rollback resistance, future session rotation and verified per-host acknowledgments exercised. | Hosts remain pending until they apply removal; no erasure of old plaintext/history. |
-| [#17](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/17) | Restart/crash markers, stale approvals, interrupted writes, relay append failure, re-pair races and explicit recovery state exercised. | Sole-authority loss prevents authenticated reconnect; automatic provider/action replay remains prohibited. |
+| [#17](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/17) | Restart/crash markers, stale approvals, interrupted writes, relay append failure, re-pair races and explicit recovery state exercised. Local appointment enables reconnect with a teammate-verified replacement owner. | Without a surviving verified teammate, history recovery alone cannot restore authority; automatic provider/action replay remains prohibited. |
 
 ## Evidence and reproducibility
 
@@ -139,12 +139,12 @@ regression are in [encrypted-host-integration.md](encrypted-host-integration.md)
 
 ## Gates that a green test suite does not remove
 
-The fresh membership challenge currently depends on the pinned owner signing
-endpoint. Clean history recovery does not recover that private signing authority.
-A trusted teammate can verify a replacement endpoint, but cannot make it sign as
-the lost authority. A supported authority replacement needs a separately designed,
-registered and reviewed recovery mechanism. Silently repinning from account/relay
-metadata would reintroduce the rollback problem this work repairs.
+Fresh membership challenges depend on the host's locally selected owner signing
+endpoint. A surviving verified teammate can enroll a replacement owner device, after
+which the host operator may explicitly appoint it locally. Clean history recovery
+alone does not recover that authority. The customer-material-only path and original
+bootstrap-device revocation remain unfinished. Account/relay metadata cannot silently
+repin a host or lower its applied authorization checkpoint.
 
 The older native CLI can read a generated sibling file under its read-only sandbox.
 Its saved `codexReadOnly` flag no longer enables production execution. The separate
@@ -266,6 +266,74 @@ Deliberately induced Electron failures now print `RECOVERY TEST` before showing 
 expected error screen, distinguishing those scenarios from unexpected test failures.
 GitHub Actions testing is excluded at the user's direction. Current Windows
 execution and real API-account usage are not inferred from these local results.
+
+## Trusted replacement authority follow-up
+
+The later trusted-replacement pass, based on `e7865f2`, adds an explicitly local
+appointment for an owner device verified by a surviving teammate. The original
+membership genesis stays pinned. The new selection and the host's authorization
+checkpoint commit atomically; a single-use native confirmation binds the device,
+team, host, signed head and previous selection. The host restarts before using v2
+challenges addressed to that selection. Membership recovery grants no action-approval
+rights and imports no provider credentials.
+
+Its independent host review reproduced and repaired four defects: cancellation
+depending on a second relay fetch, a durable task omitted after restart retaining
+an old session key, polling resuming between persistence and its generation fence,
+and reconnect being unable to apply a selected signer's revocation because challenge
+creation was refused first. The final focused host/local-control run passed **27/27**;
+its log is `.artifacts/authority-recovery/final-host-tests.log`.
+
+The actual desktop recovery scenario additionally found a client integration bug:
+the authenticated backup restored a host fingerprint while the SDK lacked trust in
+that recipient, making new task creation fail with `endpoint_unverified`. Creation
+and control delivery now restore SDK trust only after the live keys match the exact
+stored pin. A different published host key remains a refusal. Fleet retains a failed
+creation's explanation beside the composer and clears it on retry or context change.
+
+This pass uses the existing `shell` and `setup` templates, `uiSection`, `uiNode`,
+`uiButton`, fingerprint presentation and composer error styling. The new states are
+original signer, pending recovery, verified replacement, selected replacement,
+revoked selection, remote-only setup and refused task creation. Existing native
+confirmation is extended without changing design references or introducing prototype
+state. The initial Standards and independent host Spec records are
+`.artifacts/authority-recovery/standards-review.md` and `spec-review.md`.
+
+The final full `npm test` chain exited zero after the production changes were frozen,
+including **26 authority/protocol/revocation checks**, **20 local confirmation/IPC
+checks** and all **15 production-browser workflows**. Its log is
+`.artifacts/authority-recovery/final-npm-test.log`.
+
+`npm run test:desktop:authority-recovery` passed **11/11** continuous recovery checks
+using actual Electron with its durable SDK broker and a separate Chrome teammate.
+The scenario restores history on a clean renderer, enrolls a replacement, cancels
+then accepts local appointment, executes a new file write, refuses recovered approval
+rights, obtains separate native consent for an exact action, and applies replacement
+revocation. A further clean browser substitutes valid SDK-generated host keys and
+passes three refusal assertions: no task submission, no pending control, and retention
+of the authenticated pin with an actionable error. All three renderer contexts report
+zero uncaught errors. Results are `.artifacts/desktop-authority-recovery/results.json`
+and `restored-host-trust.json`.
+
+Ten renderer captures cover seven desktop states at 1487×1058 and three mobile
+states at 390×844. The revoked-device explanation and exact-key mismatch alert are
+readable and wrap without horizontal overflow. The existing production departure
+from the accepted Setup reference remains: setup is a vertical panel within Fleet,
+with technical host IDs and the large mobile Fleet heading, rather than the reference's
+guided setup layout. No reference or baseline was changed to conceal that difference.
+
+This recovery scenario runs the source Electron application against the uncommitted
+tree based on `e7865f2`; it is not a newly installed-artifact proof and uses the demo
+provider without paid calls. Native dialog choices are supplied by the test fixture.
+The separate OS dialog screenshot attempt returned no image, so native dialog layout
+remains visually unverified. Earlier installed and real-provider evidence above retains
+its original revision and scope.
+
+Original bootstrap-device revocation and recovery using customer material without
+any surviving verified teammate remain unimplemented. This completes the locally
+tested trusted-teammate branch; it is not full closure of issues #15–17
+or specialist approval of the privacy/control protocol. GitHub Actions remain
+excluded, and current Windows execution is not inferred from local macOS checks.
 
 ## Standards review
 
