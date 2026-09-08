@@ -47,7 +47,7 @@ export async function backupHistory(endpoint, transport, { scope, taskIds, recov
   if (typeof recoveryKey !== 'string' || recoveryKey.length < MIN_RECOVERY_KEY) fail('recovery_key_too_weak');
   if (!Array.isArray(taskIds) || !taskIds.length) fail('recovery_scope_required');
   const rooms = taskIds.map(roomFor);
-  const ciphertext = await endpoint.exportHistory(rooms, recoveryKey);
+  const ciphertext = await endpoint.exportRecoveryHistory(rooms, recoveryKey);
   await transport.put(scope, ciphertext);
   return { scope, tasks: taskIds.length, bytes: ciphertext.length };
 }
@@ -60,20 +60,29 @@ export async function backupHistory(endpoint, transport, { scope, taskIds, recov
  */
 export async function restoreHistory(endpoint, transport, { scope, taskIds, recoveryKey, roomFor }) {
   if (typeof recoveryKey !== 'string' || recoveryKey.length < MIN_RECOVERY_KEY) fail('recovery_key_too_weak');
-  if (!Array.isArray(taskIds) || !taskIds.length) fail('recovery_scope_required');
+  if (taskIds !== undefined && (!Array.isArray(taskIds) || !taskIds.length)) fail('recovery_scope_required');
   const held = await transport.get(scope);
-  const rooms = taskIds.map(roomFor);
+  const rooms = taskIds ? taskIds.map(roomFor) : null;
   let imported;
   try {
-    imported = await endpoint.importHistory(held.ciphertext, recoveryKey, rooms);
+    imported = await endpoint.importRecoveryHistory(held.ciphertext, recoveryKey, rooms);
   } catch (error) {
     // Wrong key and wrong scope are different mistakes with different fixes, and the second
     // one is not a failure of the material - it is asking for history this backup never held.
     if (String(error && error.message) === 'recovery_scope_mismatch') fail('recovery_scope_mismatch');
     fail('recovery_material_rejected');
   }
+  const restoredTaskIds = taskIds || [...new Set(imported.history.map(entry => {
+    const match = /^!(et_[a-f0-9]{32}):plexus\.local$/.exec(entry.roomId);
+    if (!match) fail('recovery_scope_mismatch');
+    return match[1];
+  }))];
   return {
-    restored: { tasks: taskIds.length, sessions: imported.sessions, imported: imported.imported },
+    restored: { tasks: restoredTaskIds.length, taskIds: restoredTaskIds, sessions: imported.sessions, imported: imported.imported,
+      history: Object.fromEntries(restoredTaskIds.map(taskId => {
+        const entries = imported.history.filter(entry => entry.roomId === roomFor(taskId));
+        return [taskId, { writer: entries[0].writer, sessions: entries.map(entry => entry.sessionId) }];
+      })) },
     // Stated every time, because the failure mode here is somebody assuming otherwise.
     notRestored: {
       endpointTrust: 'This device is new to everyone else. It has to announce itself and be confirmed again before any teammate will accept anything from it.',
@@ -109,12 +118,17 @@ export function confirmRecoveryDrill(issuedKey, typed) {
  */
 export async function rotateRecovery(endpoint, transport, { scope, taskIds, roomFor }) {
   const issued = await endpoint.enableRecovery();
-  await backupHistory(endpoint, transport, { scope, taskIds, recoveryKey: issued.recoveryKey, roomFor });
   return {
     recoveryKey: issued.recoveryKey,
-    replaced: true,
+    replaced: false,
     caveat: 'The previous backup is overwritten. Anybody who already downloaded it and holds the old key can still open that copy.'
   };
+}
+
+export async function completeRecoveryRotation(endpoint, transport, { scope, taskIds, roomFor, recoveryKey, typed }) {
+  confirmRecoveryDrill(recoveryKey, typed);
+  const backed = await backupHistory(endpoint, transport, { scope, taskIds, recoveryKey, roomFor });
+  return { ...backed, replaced: true };
 }
 
 // What the product is allowed to promise, in one place, so no screen invents a better story.

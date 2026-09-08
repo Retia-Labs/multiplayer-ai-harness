@@ -17,8 +17,11 @@
   const KEY_ITEM = 'plexus.endpoint.storeKey';
   const DEVICE_ITEM = 'plexus.endpoint.device';
   const HOST_ITEM = 'plexus.host.';       // + runtimeId -> the confirmed writer identity
+  const HOST_ROSTER_ITEM = 'plexus.known-hosts.';
   const CHECKPOINT_ITEM = 'plexus.task.'; // + taskId    -> {seq,hash}
   const ADMITTED_ITEM = 'plexus.admitted.';
+  const MAILBOX_ITEM = 'plexus.mailbox.';
+  const RECOVERY_TRUST_ITEM = 'plexus.recovered-history.';
 
   const held = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
   const hold = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
@@ -56,20 +59,21 @@
   // desktop's OS-sealed key and it is the honest limit of a web page: clearing site data
   // destroys this identity, and #8 treats what comes back as a new device that has to be
   // confirmed again - the correct outcome rather than a bug to route around.
-  function storeKey() {
-    const saved = held(KEY_ITEM);
+  function storeKey(account) {
+    const saved = held(KEY_ITEM + '.' + account);
     if (saved) return Array.from(atob(saved), (c) => c.charCodeAt(0));
     const bytes = crypto.getRandomValues(new Uint8Array(32));
-    hold(KEY_ITEM, btoa(String.fromCharCode.apply(null, bytes)));
+    hold(KEY_ITEM + '.' + account, btoa(String.fromCharCode.apply(null, bytes)));
     return Array.from(bytes);
   }
 
-  function deviceName() {
-    const saved = held(DEVICE_ITEM);
+  function deviceName(account = '') {
+    const item = DEVICE_ITEM + '.' + account;
+    const saved = held(item);
     if (saved) return saved;
     const name = 'WEB' + Array.from(crypto.getRandomValues(new Uint8Array(4)),
       (v) => v.toString(16).padStart(2, '0')).join('').toUpperCase();
-    hold(DEVICE_ITEM, name);
+    hold(item, name);
     return name;
   }
 
@@ -81,24 +85,38 @@
       this.token = token;
       this.userId = userId;
       this.teamId = teamId;
-      this.device = deviceName();
+      this.device = deviceName(userId);
       this.endpoint = null;
+      this.receipts = new Map();
+      this.pendingCommands = new Map();
+      this.mailboxWork = Promise.resolve();
+      this.prefix = userId + '.' + teamId + '.';
+      this.url = location.origin;
     }
+
+    storageKey(kind, id = '') { return kind + this.prefix + id; }
 
     async open() {
       const m = this.m = await modules();
       this.support = await m.Endpoint.storageSupport();
+      // A temporarily unavailable store must never replace the saved device's keys with
+      // a fresh memory identity. This applies to browser and desktop product clients.
+      if (!this.support.persistent) throw Object.assign(new Error('Encrypted storage is unavailable. Restore storage access and try again.'), { code: 'endpoint_storage_unavailable' });
+      const desktopKey = global.harnessDesktop?.endpointStoreKey
+        ? await global.harnessDesktop.endpointStoreKey() : null;
       this.endpoint = await m.Endpoint.create({
         user: m.matrixUser(this.userId),
         device: this.device,
-        // Without a persistent store this identity dies with the tab, so that is reported
-        // rather than silently producing a device to be re-confirmed on every reload.
-        ...(this.support.persistent ? { storeName: STORE_NAME, storeKey: storeKey() } : {}),
-        transport: new m.HubKeyTransport({ url: location.origin, token: this.token, device: this.device })
+        recoveredHistory: heldJSON(this.storageKey(RECOVERY_TRUST_ITEM), []),
+        storeName: STORE_NAME + '-' + this.userId,
+        storeKey: desktopKey ? (Array.isArray(desktopKey) ? desktopKey : desktopKey.key) : storeKey(this.userId),
+        transport: new m.HubKeyTransport({ url: this.url, token: this.token, device: this.device })
       });
-      this.tasks = new m.EncryptedTaskTransport({ url: location.origin, token: this.token });
-      this.recovery = new m.RecoveryTransport({ url: location.origin, token: this.token });
-      this.enrolment = new m.EnrollmentTransport({ url: location.origin, token: this.token });
+      this.tasks = new m.EncryptedTaskTransport({ url: this.url, token: this.token });
+      this.recovery = new m.RecoveryTransport({ url: this.url, token: this.token });
+      this.enrolment = new m.EnrollmentTransport({ url: this.url, token: this.token, endpoint: this.endpoint,
+        loadCheckpoint: team => heldJSON(this.storageKey('plexus.membership.', team), null),
+        saveCheckpoint: (team, head) => hold(this.storageKey('plexus.membership.', team), JSON.stringify(head)) });
       const identity = this.endpoint.identity();
       return { ...identity, fingerprint: fingerprint(identity), durable: this.support.persistent };
     }
@@ -121,17 +139,54 @@
       return this.enrolment.announce(this.teamId, announcement);
     }
 
-    async enrolmentState() {
+    async enrolmentState({ hosts = [] } = {}) {
       const state = await this.enrolment.state(this.teamId);
       const all = state.endpoints || [];
       const mine = all.find((e) => e.userId === this.userId && e.device === this.device);
+      // Remember hosts already seen by this device. A relay omitting an offline host
+      // later cannot turn its missing revocation proof into a reassuring "applied".
+      const knownHosts = new Set(heldJSON(this.storageKey(HOST_ROSTER_ITEM), []));
+      for (const host of hosts) if (host.runtimeId || host.id) knownHosts.add(host.runtimeId || host.id);
+      for (const revocation of state.revocations || []) {
+        for (const runtimeId of [...(revocation.pendingHosts || []), ...(revocation.appliedBy || [])]) knownHosts.add(runtimeId);
+      }
+      hold(this.storageKey(HOST_ROSTER_ITEM), JSON.stringify([...knownHosts]));
+      const revocations = await this.m.verifyRevocationReceipts(state.revocations || [], {
+        hosts: [...knownHosts].map(runtimeId => ({ runtimeId, identity: this.confirmedHost(runtimeId) })),
+        authorityLog: state.authorityLog || []
+      });
       return {
         device: this.device,
         state: mine ? mine.state : 'unannounced',
         confirmedBy: mine ? mine.confirmedBy : null,
         durable: !!(this.support && this.support.persistent),
-        endpoints: all.map((e) => ({ ...e, fingerprint: fingerprint(e) }))
+        endpoints: all.map((e) => ({ ...e, fingerprint: fingerprint(e) })),
+        revocations,
+        pendingHosts: [...new Set(revocations.flatMap(entry => entry.pendingHosts))]
       };
+    }
+
+    async projectAccess(projectId) { return this.enrolment.state(this.teamId, projectId); }
+    async authorityEndpoints() {
+      const state = await this.enrolment.state(this.teamId);
+      const identity = state.authorityLog?.[0]?.signer;
+      return identity ? [{ ...identity, fingerprint: fingerprint(identity) }] : [];
+    }
+    async confirmAuthority(identity) {
+      await this.endpoint.confirmEndpoint(identity, { confirmed: true });
+      return this.enrolment.pinAuthority(this.teamId, identity);
+    }
+    async grantProject(projectId, { userId, role = 'participant' }) {
+      return this.enrolment.grant(this.teamId, projectId, userId, role);
+    }
+    async revokeDevice(target) { return this.enrolment.revokeEndpoint(this.teamId, target); }
+    async answerChallenges() {
+      if (!this.enrolment.answerChallenges) return { answered: 0 };
+      try { return await this.enrolment.answerChallenges(this.teamId); }
+      catch (error) {
+        if (error.code === 'membership_authority_required') return { answered: 0, pending: 'authority_confirmation_required' };
+        throw error;
+      }
     }
 
     // Confirm a teammate's endpoint. The caller is expected to have shown the fingerprint
@@ -164,11 +219,13 @@
     async confirmHost(runtimeId, target) {
       await this.endpoint.confirmEndpoint(target, { confirmed: true });
       const writer = { user: target.user, device: target.device, curve25519: target.curve25519, ed25519: target.ed25519 };
-      hold(HOST_ITEM + runtimeId, JSON.stringify(writer));
+      hold(this.storageKey(HOST_ITEM, runtimeId), JSON.stringify(writer));
+      const known = new Set(heldJSON(this.storageKey(HOST_ROSTER_ITEM), [])); known.add(runtimeId);
+      hold(this.storageKey(HOST_ROSTER_ITEM), JSON.stringify([...known]));
       return writer;
     }
 
-    confirmedHost(runtimeId) { return heldJSON(HOST_ITEM + runtimeId, null); }
+    confirmedHost(runtimeId) { return heldJSON(this.storageKey(HOST_ITEM, runtimeId), null); }
 
     // ---- reading ----
 
@@ -190,17 +247,60 @@
         version: 1, id: this.m.newId('et'), teamId: this.teamId,
         runtimeId, projectId, creatorUserId: this.userId
       };
+      if (this.enrolment.ownProject) await this.enrolment.ownProject(this.teamId, projectId);
       await this.m.createEncryptedTask(this.endpoint, this.tasks, { task, writer, payload });
       return task;
     }
 
     // Take delivery of whatever the hub is holding, so keys shared with this endpoint - a
     // task key, or a history handoff - take effect before a replay is attempted.
-    async receiveKeys() {
-      const envelopes = await this.endpoint.transport.drain();
+    receiveKeys() {
+      const work = this.mailboxWork.then(() => this.dispatchMailbox());
+      this.mailboxWork = work.catch(() => {});
+      return work;
+    }
+
+    async dispatchMailbox() {
+      const mailboxKey = this.storageKey(MAILBOX_ITEM, this.device);
+      // Keep encrypted envelopes durably before decoding. Confirming a host later must not
+      // lose a history handoff that happened to arrive before its fingerprint was checked.
+      const saved = heldJSON(mailboxKey, []);
+      const fresh = await this.endpoint.transport.drain();
+      const envelopes = saved.concat(fresh);
       if (!envelopes.length) return { received: 0 };
-      await this.endpoint.open(envelopes);
-      return { received: envelopes.length };
+      hold(mailboxKey, JSON.stringify(envelopes));
+      const tasks = await this.list();
+      const remaining = [];
+      for (const envelope of envelopes) {
+        let events;
+        try { events = await this.endpoint.open([envelope]); }
+        catch { remaining.push(envelope); continue; }
+        let retain = false;
+        for (const event of events) {
+          if (event.type !== this.m.ENVELOPE_TYPE) continue;
+          const task = tasks.find(candidate => candidate.id === event.content?.task?.id);
+          if (!task) { retain = true; continue; }
+          const writer = this.confirmedHost(task.runtimeId);
+          if (!writer) { retain = true; continue; }
+          try {
+            if (event.content?.type === this.m.HISTORY_TYPE) {
+              const transfer = this.m.readTaskHistory(event, task);
+              if (transfer) await this.acceptHandoff(task.id, transfer.history, writer);
+            } else if (event.content?.type === this.m.RECEIPT_TYPE) {
+              const receipt = this.m.readTaskReceipt(event, task, writer);
+              if (receipt) this.receipts.set(receipt.commandId, receipt);
+            }
+          } catch (error) {
+            // Failed authentication remains a refusal. Keep the sealed material so a
+            // transient key-directory outage is retryable rather than destructive.
+            retain = true;
+            this.mailboxError = error.code || error.message;
+          }
+        }
+        if (retain) remaining.push(envelope);
+      }
+      hold(mailboxKey, JSON.stringify(remaining));
+      return { received: fresh.length, pending: remaining.length };
     }
 
     // A history handoff from a teammate who granted this endpoint access to a project. The
@@ -208,8 +308,10 @@
     // memory would hold the keys to its own history and refuse to read it after a reload.
     async acceptHandoff(taskId, handoff, writer) {
       const accepted = await this.m.acceptProjectAccess(this.endpoint, { history: handoff }, { writer });
-      const admitted = new Set(heldJSON(ADMITTED_ITEM + taskId, []).concat(accepted.sessions));
-      hold(ADMITTED_ITEM + taskId, JSON.stringify([...admitted]));
+      if (accepted.teamId !== this.teamId || !accepted.rooms.includes(this.m.roomFor(taskId))) throw new Error('project_history_scope_mismatch');
+      const admittedKey = this.storageKey(ADMITTED_ITEM, taskId);
+      const admitted = new Set(heldJSON(admittedKey, []).concat(accepted.sessions));
+      hold(admittedKey, JSON.stringify([...admitted]));
       return { imported: accepted.imported, sessions: accepted.sessions };
     }
 
@@ -228,8 +330,8 @@
       await this.receiveKeys();
       const reader = new this.m.EncryptedTaskReader({
         endpoint: this.endpoint, task, writer,
-        checkpoint: heldJSON(CHECKPOINT_ITEM + task.id, undefined),
-        admittedSessions: heldJSON(ADMITTED_ITEM + task.id, []),
+        checkpoint: heldJSON(this.storageKey(CHECKPOINT_ITEM, task.id), undefined),
+        admittedSessions: heldJSON(this.storageKey(ADMITTED_ITEM, task.id), []),
         onStatus: ctx.onStatus || (() => {})
       });
       let snapshot;
@@ -239,7 +341,10 @@
         return { error: error.code || 'task_integrity_failed', seq: reader.seq };
       }
       // Only a replay that verified may move the floor a later one is checked against.
-      hold(CHECKPOINT_ITEM + task.id, JSON.stringify(reader.checkpoint()));
+      hold(this.storageKey(CHECKPOINT_ITEM, task.id), JSON.stringify(reader.checkpoint()));
+      for (const receipt of snapshot.receipts || []) {
+        this.receipts.set(receipt.commandId, { ...this.receipts.get(receipt.commandId), ...receipt });
+      }
       return {
         snapshot,
         projection: this.m.catchUp(snapshot, {
@@ -257,6 +362,41 @@
 
     // ---- asking a named teammate ----
 
+    async sendControl(task, action, payload, { commandId } = {}) {
+      const writer = this.confirmedHost(task.runtimeId);
+      if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
+      const enrollment = await this.enrolmentState();
+      if (enrollment.state !== 'verified') throw Object.assign(new Error('endpoint_' + enrollment.state), { code: 'endpoint_' + enrollment.state });
+      const sent = await this.m.sendTaskControl(this.endpoint, writer, { task, action, payload,
+        ...(commandId ? { commandId } : {}) });
+      this.pendingCommands.set(sent.commandId, { task, action, payload });
+      if (!this.receipts.has(sent.commandId)) this.receipts.set(sent.commandId, sent);
+      return this.receipts.get(sent.commandId);
+    }
+
+    receipt(commandId) { return this.receipts.get(commandId) || null; }
+    async retry(commandId) {
+      const held = this.pendingCommands.get(commandId);
+      if (!held) throw new Error('unknown_command');
+      return this.sendControl(held.task, held.action, held.payload, { commandId });
+    }
+    startTurn(task, payload, options) { return this.sendControl(task, 'turn.start', payload, options); }
+    steer(task, payload, options) {
+      if (!payload.expectedTurnId) throw new Error('turn_binding_required');
+      return this.sendControl(task, 'turn.steer', payload, options);
+    }
+    interrupt(task, payload, options) {
+      if (!payload.turnId) throw new Error('turn_binding_required');
+      return this.sendControl(task, 'turn.interrupt', payload, options);
+    }
+    resolveApproval(task, payload, options) {
+      if (!payload.requestId || !payload.turnId || !payload.fingerprint) throw new Error('approval_binding_required');
+      return this.sendControl(task, 'approval.resolve', payload, options);
+    }
+    grantApproval(task, payload, options) { return this.sendControl(task, 'approval.grant', payload, options); }
+    revokeApproval(task, payload, options) { return this.sendControl(task, 'approval.revoke', payload, options); }
+    requestDiff(task, options) { return this.sendControl(task, 'task.diff', {}, options); }
+
     // Ask somebody about this task. The question never reaches a provider: it is sealed to
     // the host, which records it as a question for a person. Nothing on this path can turn
     // into agent input, which is the point of it being a separate call from starting a turn.
@@ -267,10 +407,8 @@
       if (!text) throw Object.assign(new Error('help_needs_a_question'), { code: 'help_needs_a_question' });
       const id = 'help_' + Array.from(crypto.getRandomValues(new Uint8Array(8)),
         (v) => v.toString(16).padStart(2, '0')).join('');
-      await this.m.sendTaskControl(this.endpoint, writer, {
-        task, action: 'help.request', payload: { id, question: text, recipient }
-      });
-      return { id };
+      const sent = await this.sendControl(task, 'help.request', { id, question: text, recipient });
+      return { id, ...sent };
     }
 
     // The recipient dealt with it, or the asker withdrew it. The host decides which of those
@@ -278,10 +416,8 @@
     async settleHelp(task, id, outcome) {
       const writer = this.confirmedHost(task.runtimeId);
       if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
-      await this.m.sendTaskControl(this.endpoint, writer, {
-        task, action: 'help.settle', payload: { id, outcome: outcome === 'cancelled' ? 'cancelled' : 'resolved' }
-      });
-      return { id, outcome };
+      const sent = await this.sendControl(task, 'help.settle', { id, outcome: outcome === 'cancelled' ? 'cancelled' : 'resolved' });
+      return { id, outcome, ...sent };
     }
 
     // ---- recovery ----
@@ -310,6 +446,11 @@
     // Step two: they type it back, and only then is anything stored.
     async completeRecoverySetup(issuedKey, typed, { scope, taskIds }) {
       this.m.confirmRecoveryDrill(issuedKey, typed);
+      const tasks = await this.list();
+      for (const task of tasks.filter(task => taskIds.includes(task.id))) {
+        const read = await this.catchUp(task);
+        if (read.error) throw new Error(read.error);
+      }
       return this.m.backupHistory(this.endpoint, this.recovery, {
         scope, taskIds, recoveryKey: issuedKey, roomFor: this.m.roomFor
       });
@@ -321,9 +462,27 @@
 
     // On a clean device: the customer's key, and nothing from the operator.
     async restoreFromRecovery({ scope, taskIds, recoveryKey }) {
-      return this.m.restoreHistory(this.endpoint, this.recovery, {
+      const restored = await this.m.restoreHistory(this.endpoint, this.recovery, {
         scope, taskIds, recoveryKey, roomFor: this.m.roomFor
       });
+      const tasks = await this.list();
+      const recoveredTrust = heldJSON(this.storageKey(RECOVERY_TRUST_ITEM), []);
+      for (const [taskId, history] of Object.entries(restored.restored.history)) {
+        const task = tasks.find(task => task.id === taskId);
+        if (!task || history.writer.user !== this.m.matrixUser(task.runtimeId)) continue;
+        // The customer-authenticated manifest restores the old host pin, not any authority
+        // for this new endpoint to act on that host. Enrollment stays pending.
+        hold(this.storageKey(HOST_ITEM, task.runtimeId), JSON.stringify(history.writer));
+        hold(this.storageKey(ADMITTED_ITEM, taskId), JSON.stringify(history.sessions));
+        for (const sessionId of history.sessions) recoveredTrust.push({ roomId: this.m.roomFor(taskId), sessionId, writer: history.writer });
+      }
+      hold(this.storageKey(RECOVERY_TRUST_ITEM), JSON.stringify([...new Map(recoveredTrust.map(entry => [entry.roomId + '/' + entry.sessionId, entry])).values()]));
+      this.recovered = true;
+      return restored;
+    }
+
+    canReadHistory(taskId) {
+      return heldJSON(this.storageKey(RECOVERY_TRUST_ITEM), []).some(entry => entry.roomId === this.m.roomFor(taskId));
     }
 
     // ---- related work ----
@@ -337,24 +496,21 @@
       const href = this.m.normalizeLink(url);
       const id = 'lnk_' + Array.from(crypto.getRandomValues(new Uint8Array(8)),
         (v) => v.toString(16).padStart(2, '0')).join('');
-      await this.m.sendTaskControl(this.endpoint, writer, {
-        task, action: 'link.add', payload: { id, url: href, ...(title ? { title: String(title) } : {}) }
-      });
-      return { id, url: href };
+      const sent = await this.sendControl(task, 'link.add', { id, url: href, ...(title ? { title: String(title) } : {}) });
+      return { id, url: href, ...sent };
     }
 
     async removeLink(task, id) {
       const writer = this.confirmedHost(task.runtimeId);
       if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
-      await this.m.sendTaskControl(this.endpoint, writer, { task, action: 'link.remove', payload: { id } });
-      return { id };
+      return { id, ...await this.sendControl(task, 'link.remove', { id }) };
     }
 
     // The link somebody copies to point a teammate at this task. It carries an identifier and
     // nothing else: no key, no token, no title. Whoever opens it still has to be signed in,
     // still has to be on the team, and still has to hold an endpoint somebody confirmed.
     privateLink(task) {
-      return location.origin + '/t/' + task.id;
+      return (global.harnessDesktop?.hubUrl || location.origin).replace(/\/$/, '') + '/t/' + task.id;
     }
 
     // ---- finishing, and handing over ----
@@ -364,10 +520,7 @@
     async recordOutcome(task, outcome) {
       const writer = this.confirmedHost(task.runtimeId);
       if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
-      await this.m.sendTaskControl(this.endpoint, writer, {
-        task, action: 'task.outcome', payload: { outcome: outcome === 'cancelled' ? 'cancelled' : 'completed' }
-      });
-      return { outcome };
+      return { outcome, ...await this.sendControl(task, 'task.outcome', { outcome: outcome === 'cancelled' ? 'cancelled' : 'completed' }) };
     }
 
     // Hand responsibility to somebody already on the project. This moves responsibility and
@@ -376,11 +529,7 @@
     async handOverResponsibility(task, { to, note }) {
       const writer = this.confirmedHost(task.runtimeId);
       if (!writer) throw Object.assign(new Error('host_unconfirmed'), { code: 'host_unconfirmed' });
-      await this.m.sendTaskControl(this.endpoint, writer, {
-        task, action: 'responsibility.handover',
-        payload: { to, ...(note ? { note: String(note) } : {}) }
-      });
-      return { to };
+      return { to, ...await this.sendControl(task, 'responsibility.handover', { to, ...(note ? { note: String(note) } : {}) }) };
     }
 
     // Every open question addressed to this account, across the tasks this endpoint can

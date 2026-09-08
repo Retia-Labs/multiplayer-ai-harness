@@ -16,7 +16,7 @@ const Events = {
   TURN_ABANDONED: 'turn/abandoned',               // { turnId, reason: 'host_restarted' }
   // Accepted is not delivered. This fires when an instruction actually reaches the
   // model call, which is the first moment the agent can be said to have received it.
-  TURN_STEER_DELIVERED: 'turn/steer/delivered',   // { turnId, seq, by }
+  TURN_STEER_DELIVERED: 'turn/steer/delivered',   // { turnId, steerSeq, by }; seq is the hub log cursor
   // Help is addressed to a person. It is a separate event because it must never be
   // reachable from the path that feeds an agent.
   HELP_REQUESTED: 'help/requested',               // { requestId, text, by, to? }

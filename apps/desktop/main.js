@@ -13,6 +13,9 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const { createPairingCode } = require('../../packages/protocol');
+const { ORIGIN, installRenderer, requireRenderer, endpointStoreKey } = require('./renderer');
+const { attachCryptoBroker } = require('../../packages/e2ee/desktop-crypto-broker');
+const { desktopProfile } = require('./profile');
 
 // Packaged, everything lives under the asar and `getAppPath()` is its root. In a checkout
 // that call returns whatever directory Electron was pointed at, which is not the same
@@ -30,6 +33,9 @@ const children = [];
 const serviceLogs = { hub: [], runtime: [] };
 let runtimeChild = null;
 let runtimeLaunch = null;
+let connectedHubUrl = null;
+let profile = null;
+let quitting = false;
 
 // An installed app has no console to print to, so a startup failure would otherwise be
 // invisible to the user and unreportable to us. Everything the shell prints also goes here.
@@ -100,6 +106,8 @@ function spawnService(label, script, args, env) {
 function launchRuntime() {
   if (!runtimeLaunch) return null;
   runtimeChild = spawnService('runtime', runtimeLaunch.script, runtimeLaunch.args, runtimeLaunch.env);
+  // The broker serves bundled crypto code and keeps the host's SDK store persistent.
+  attachCryptoBroker(runtimeChild, { dataDir: runtimeLaunch.dataDir });
   return runtimeChild;
 }
 
@@ -199,17 +207,16 @@ async function waitForRuntime(tries = 60) {
 }
 
 async function boot() {
-  const dataDir = path.join(app.getPath('userData'), 'harness');
+  const dataDir = profile.dataDir;
   fs.mkdirSync(dataDir, { recursive: true });
   const userName = process.env.HARNESS_USER || os.userInfo().username;
   const remote = process.env.HUB_HTTP_URL || null;
-  let httpUrl = remote;
+  const httpUrl = profile.hubUrl;
 
   status('hub', 'working', remote ? 'Connecting to ' + remote : 'Starting the local team service…');
   if (!remote) {
     const port = parseInt(process.env.HUB_PORT || '7777', 10);
-    spawnService('hub', path.join(ROOT, 'packages', 'hub', 'server.js'), [String(port)], { HUB_DB: path.join(dataDir, 'hub.sqlite') });
-    httpUrl = `http://127.0.0.1:${port}`;
+    spawnService('hub', path.join(ROOT, 'packages', 'hub', 'server.js'), [String(port)], { HUB_DB: profile.localHubDatabase });
   }
   const hub = await waitForHub(httpUrl);
   if (!hub.ok) {
@@ -220,6 +227,7 @@ async function boot() {
     throw new Error(hint);
   }
   status('hub', 'ready', remote ? 'Connected to ' + remote : 'Local team service running');
+  connectedHubUrl = httpUrl;
 
   // A remote hub does not remove the need for a local execution host: the agent still runs
   // on this machine. This used to skip the runtime entirely whenever HUB_HTTP_URL was set,
@@ -229,7 +237,7 @@ async function boot() {
   const projects = (process.env.HARNESS_PROJECTS || '').split(path.delimiter).filter(Boolean).flatMap((p) => ['--project', p]);
   runtimeLaunch = {
     script: path.join(ROOT, 'packages', 'runtime', 'index.js'),
-    args: ['--hub', httpUrl.replace(/^http/, 'ws'), '--name', userName, '--data', dataDir, ...projects],
+    args: ['--hub', httpUrl.replace(/^http/, 'ws'), '--name', userName, '--data', dataDir, '--encrypted-tasks-only', ...projects],
     env: { HARNESS_PAIRING_CODE: PAIRING_CODE }, dataDir
   };
   launchRuntime();
@@ -242,7 +250,7 @@ async function boot() {
   if (!registered) throw new Error('The execution host did not connect. Try again or inspect the data folder logs.');
 
   status('ui', 'working', 'Opening the workspace…');
-  await win.loadURL(httpUrl + '/?name=' + encodeURIComponent(userName));
+  await win.loadURL(ORIGIN + '/?name=' + encodeURIComponent(userName));
 }
 
 async function createWindow() {
@@ -250,12 +258,19 @@ async function createWindow() {
     width: 1360, height: 860, minWidth: 960, minHeight: 620,
     title: 'Plexus', backgroundColor: '#080a09', autoHideMenuBar: true,
     icon: path.join(ROOT, 'apps', 'web', 'brand', 'plexus-app-icon-256.png'),
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false,
+      ...(profile ? { partition: profile.partition } : {}) }
   });
+  // The crypto broker is deliberately hidden, so it must not keep this bootstrap
+  // app alive after its only product window closes.
+  win.on('closed', () => { win = null; app.quit(); });
   // The window exists before the services do, so startup is visible instead of being a
   // blank frame or - worse - no window at all when something fails.
   await win.loadFile(path.join(__dirname, 'boot.html'));
   win.webContents.setWindowOpenHandler(({ url }) => { if (url.startsWith('https://')) shell.openExternal(url); return { action: 'deny' }; });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith(ORIGIN + '/')) event.preventDefault();
+  });
 }
 
 async function runBoot() {
@@ -266,9 +281,106 @@ async function runBoot() {
   }
 }
 
-ipcMain.handle('desktop:pairingCode', async () => localPairingCode());
-ipcMain.handle('desktop:runtimeId', async () => localRuntimeId());
-ipcMain.handle('desktop:pickFolder', (_event, runtimeId) => pickAndAuthorizeProject(runtimeId));
+ipcMain.on('desktop:hubUrl', (event) => {
+  requireRenderer(event, win); event.returnValue = connectedHubUrl;
+});
+ipcMain.handle('desktop:pairingCode', async (event) => { requireRenderer(event, win); return localPairingCode(); });
+ipcMain.handle('desktop:runtimeId', async (event) => { requireRenderer(event, win); return localRuntimeId(); });
+ipcMain.handle('desktop:pickFolder', (event, runtimeId) => { requireRenderer(event, win); return pickAndAuthorizeProject(runtimeId); });
+ipcMain.handle('desktop:endpointStoreKey', (event) => {
+  requireRenderer(event, win);
+  return endpointStoreKey(profile.dataDir);
+});
+ipcMain.handle('desktop:encryptedSetup', (event) => {
+  requireRenderer(event, win);
+  try { return JSON.parse(fs.readFileSync(path.join(runtimeLaunch.dataDir, 'encrypted-setup.json'), 'utf8')); }
+  catch { return { runtimeId: localRuntimeId(), projects: [], state: 'starting' }; }
+});
+ipcMain.handle('desktop:codexStatus', (event) => {
+  requireRenderer(event, win);
+  const { resolveCodex, version, authStatus } = require('../../packages/runtime/codex-probe');
+  const resolved = resolveCodex();
+  if (!resolved.ok) return { available: false, code: 'codex_unavailable' };
+  return { available: true, version: version(resolved), authMode: authStatus(resolved).mode };
+});
+ipcMain.handle('desktop:configureCodex', async (event) => {
+  requireRenderer(event, win);
+  const { resolveCodex, version, authStatus, codexHome } = require('../../packages/runtime/codex-probe');
+  const { SUPPORTED_CODEX_VERSION } = require('../../packages/runtime/codex-host-profile');
+  const resolved = resolveCodex();
+  const supported = resolved.ok && process.platform === 'darwin' && process.arch === 'arm64' &&
+    version(resolved) === SUPPORTED_CODEX_VERSION;
+  const authFile = path.join(codexHome(), 'auth.json');
+  if (!supported || authStatus(resolved).mode !== 'chatgpt' || !fs.existsSync(authFile)) {
+    await dialog.showMessageBox(win, { type: 'info', title: 'Codex setup unavailable',
+      message: 'This Codex configuration cannot yet be enabled for shared tasks.',
+      detail: 'Use Codex ' + SUPPORTED_CODEX_VERSION + ' on an Apple silicon Mac, signed in with a local ChatGPT login. Other versions, platforms, API logins and keyring-only logins still require verification. The older read-only CLI can read outside the selected workspace and remains disabled.',
+      buttons: ['OK'], defaultId: 0 });
+    return { enabled: false, code: 'provider_not_isolated' };
+  }
+  const choice = await dialog.showMessageBox(win, { type: 'question', title: 'Use Codex on this host',
+    message: 'Allow shared tasks to use this machine’s Codex ChatGPT account?',
+    detail: 'Project files are supplied through this host’s authorized read and change tools. Changes follow the host’s approval policy. This uses your existing local login and refreshes that same login when needed. Usage belongs to this provider account.',
+    buttons: ['Cancel', 'Enable Codex'], defaultId: 0, cancelId: 0 });
+  if (choice.response !== 1) return { enabled: false };
+  const file = path.join(runtimeLaunch.dataDir, 'runtime.json');
+  const config = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+  const workspace = config.projects?.[0];
+  if (!workspace) throw new Error('codex_host_tools_workspace_required');
+  const { HostToolsCodexAppServerBackend } = require('../../packages/runtime/codex-app-server');
+  const provider = new HostToolsCodexAppServerBackend({ bin: resolved.path, authFile,
+    profileDir: path.join(runtimeLaunch.dataDir, 'codex-host-profile') });
+  await provider.checkHost({ workspace, settings: { effort: 'medium' } });
+  const temp = file + '.provider-' + process.pid;
+  fs.writeFileSync(temp, JSON.stringify({ ...config, codexHostTools: { bin: path.resolve(resolved.path), authFile } }, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(temp, file);
+  await stopService(runtimeChild); launchRuntime();
+  return { enabled: true };
+});
+ipcMain.handle('desktop:confirmEncryptionAuthority', async (event, { teamId, identity } = {}) => {
+  requireRenderer(event, win);
+  if (!runtimeLaunch || typeof teamId !== 'string' || !identity ||
+      !['user', 'device', 'curve25519', 'ed25519'].every((key) => typeof identity[key] === 'string' && identity[key].length < 200)) {
+    throw new Error('invalid_encryption_authority');
+  }
+  const choice = await dialog.showMessageBox(win, { type: 'question',
+    title: 'Trust this team encryption authority?',
+    message: 'Allow this verified endpoint to authorize this execution host?',
+    detail: 'Compare this fingerprint with the team owner’s trusted device:\n' + identity.ed25519 +
+      '\n\nUser: ' + identity.user + '\nDevice: ' + identity.device +
+      '\n\nThis trusts membership and encryption changes. It does not grant action-approval rights.',
+    buttons: ['Cancel', 'Trust endpoint'], defaultId: 0, cancelId: 0 });
+  if (choice.response !== 1) return { confirmed: false };
+  const file = path.join(runtimeLaunch.dataDir, 'runtime.json');
+  const config = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+  const next = { ...config, encryptionAuthority: { ...identity, teamId } };
+  const temp = file + '.authority-' + process.pid;
+  fs.writeFileSync(temp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(temp, file);
+  await stopService(runtimeChild); launchRuntime();
+  return { confirmed: true };
+});
+ipcMain.handle('desktop:confirmApprovalAuthority', async (event, { teamId, identity } = {}) => {
+  requireRenderer(event, win);
+  if (!runtimeLaunch || typeof teamId !== 'string' || !identity ||
+      !['user', 'device', 'curve25519', 'ed25519'].every(key => typeof identity[key] === 'string' && identity[key].length < 200)) {
+    throw new Error('invalid_approval_authority');
+  }
+  const choice = await dialog.showMessageBox(win, { type: 'question',
+    title: 'Choose this host’s approval authority',
+    message: 'Allow this exact device to approve and delegate actions on this host?',
+    detail: 'This is separate from team administration and encryption membership. Each task action still has an exact scope and deadline.\n\nUser: ' +
+      identity.user + '\nDevice: ' + identity.device + '\nFingerprint: ' + identity.ed25519,
+    buttons: ['Cancel', 'Authorize approver'], defaultId: 0, cancelId: 0 });
+  if (choice.response !== 1) return { confirmed: false };
+  const file = path.join(runtimeLaunch.dataDir, 'runtime.json');
+  const config = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+  const temp = file + '.approver-' + process.pid;
+  fs.writeFileSync(temp, JSON.stringify({ ...config, approvalAuthority: { ...identity, teamId } }, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(temp, file);
+  await stopService(runtimeChild); launchRuntime();
+  return { confirmed: true };
+});
 let retryPromise = null;
 ipcMain.handle('desktop:retryBoot', () => {
   if (retryPromise) return retryPromise;
@@ -284,7 +396,25 @@ ipcMain.handle('desktop:retryBoot', () => {
 });
 ipcMain.handle('desktop:openDataFolder', async () => shell.openPath(app.getPath('userData')));
 
-app.whenReady().then(async () => { openLog(); await createWindow(); return runBoot(); });
-app.on('activate', async () => { if (BrowserWindow.getAllWindows().length === 0) { await createWindow(); runBoot(); } });
+app.whenReady().then(async () => {
+  openLog();
+  try {
+    profile = desktopProfile({ userData: app.getPath('userData'), dataRoot: process.env.HARNESS_DATA,
+      hubUrl: process.env.HUB_HTTP_URL || 'http://127.0.0.1:' + (process.env.HUB_PORT || '7777') });
+    installRenderer({ root: ROOT, hubUrl: () => connectedHubUrl, partition: profile.partition });
+  } catch (error) {
+    await createWindow(); status('hub', 'failed', 'Invalid team service address. Use an HTTP or HTTPS address without credentials.');
+    status('ui', 'failed', error.message); return;
+  }
+  await createWindow(); return runBoot();
+});
+app.on('activate', async () => { if (!quitting && (!win || win.isDestroyed())) { await createWindow(); runBoot(); } });
+app.on('before-quit', (event) => {
+  if (quitting) return;
+  event.preventDefault(); quitting = true;
+  // Keep the broker alive while the runtime flushes its shutdown state. stopService
+  // bounds each wait and kills a child that fails to acknowledge shutdown.
+  Promise.allSettled(children.splice(0).map(stopService)).finally(() => app.quit());
+});
 app.on('window-all-closed', () => app.quit());
 app.on('quit', () => { for (const c of children) { try { c.kill(); } catch {} } });

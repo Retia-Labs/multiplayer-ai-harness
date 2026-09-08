@@ -48,13 +48,17 @@ function writeOwnerFileAtomic(file, contents) {
 const PRESET_ORDER = ['read-only', 'agent-untrusted', 'agent', 'full-access'];
 
 class Runtime {
-  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, maxPreset = 'agent', encryptedTasksOnly = false, codexReadOnly = false, log = () => {} }) {
+  constructor({ hubUrl, org = 'local', userName, dataDir, projects = [], providers = {}, executor = 'local', name, maxPreset = 'agent', encryptedTasksOnly = false, codexReadOnly = false, codexHostTools = null, encryptionAuthority = null, approvalAuthority = null, encryptedEndpointFactory, log = () => {} }) {
     this.hubUrl = hubUrl;
     this.org = org;
     this.encryptedTasksOnly = encryptedTasksOnly;
-    // Off unless an operator asks for it. Even then it is the read-only Codex, because that
-    // is the only mode whose project confinement has been measured rather than assumed.
+    // Retain old configuration for migration, but never treat read-only as a read boundary.
+    // The installed provider successfully read a sibling file in the isolation proof.
     this.codexReadOnly = codexReadOnly === true;
+    this.codexHostTools = codexHostTools &&
+      typeof codexHostTools.bin === 'string' && path.isAbsolute(codexHostTools.bin) &&
+      typeof codexHostTools.authFile === 'string' && path.isAbsolute(codexHostTools.authFile)
+      ? { bin: codexHostTools.bin, authFile: codexHostTools.authFile } : null;
     this.userName = userName || os.userInfo().username;
     this.dataDir = dataDir || path.join(os.homedir(), '.harness');
     fs.mkdirSync(this.dataDir, { recursive: true });
@@ -76,6 +80,21 @@ class Runtime {
         dir: path.resolve(dir), name: path.basename(dir), branch: null, dirty: null
       });
     }
+    const mapped = this.store.getKv('encryptedProjects', {});
+    this.encryptedProjects = new Map();
+    for (const dir of this.projects.keys()) {
+      mapped[dir] ||= 'ep_' + crypto.randomBytes(16).toString('hex');
+      this.encryptedProjects.set(mapped[dir], dir);
+    }
+    this.store.setKv('encryptedProjects', mapped);
+    this.encryptionAuthority = encryptionAuthority;
+    this.approvalAuthority = approvalAuthority;
+    this.encryptedEndpointFactory = encryptedEndpointFactory;
+    this.encryptionState = 'awaiting-team';
+    this.encryptedGeneration = 0;
+    this.encryptedHost = null;
+    this.encryptedExecution = null;
+    this.encryptedClosing = Promise.resolve();
     this.sessions = new Map(); // threadId -> TurnSession
     this.activeCommands = new Set();
     // Only the operator of this machine decides which teams may drive it and how far a
@@ -100,23 +119,24 @@ class Runtime {
       list.push({ id, label: { openai: 'OpenAI', anthropic: 'Anthropic', openrouter: 'OpenRouter' }[id], configured: !!(cfg && cfg.apiKey), models: DEFAULT_MODELS[id] || [] });
     }
     list.push({ id: 'ollama', label: 'Ollama / local', configured: true, models: DEFAULT_MODELS.ollama });
-    list.push(this.codexReadOnly
-      ? { id: 'codex-cli', label: 'Codex CLI (read-only, host-applied edits)', configured: true,
-          reason: 'the provider runs read-only, the only mode whose confinement was measured; file changes it proposes are applied by this host through its own project-confined writer',
-          writes: true, providerWrites: false, models: [] }
-      : { id: 'codex-cli', label: 'Codex CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
+    list.push(this.codexHostTools
+      ? { id: 'codex-cli', label: 'Codex', configured: true, writes: true, providerWrites: false,
+          reason: 'reads and changes use this host’s authorized workspace tools; the supported provider version and isolated configuration are checked before each turn',
+          models: ['gpt-5.4-mini'] }
+      : { id: 'codex-cli', label: 'Codex CLI (isolation pending)', configured: false,
+          reason: 'the read-only CLI can read outside the authorized workspace; enable the supported host-tool configuration locally', models: [] });
     list.push({ id: 'claude-code', label: 'Claude Code CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
     return list;
   }
 
   provider(id) {
     if (id === 'demo') return { id: 'demo' };
-    if (id === 'codex-cli' && this.codexReadOnly) {
-      // Opened for the one configuration measured to hold. The provider still cannot write -
-      // it never gets a writable shell - and the file changes it proposes are applied by this
-      // host, through the same workspace writer every other tool goes through.
-      const { ConfinedCodexExecBackend } = require('./codex-exec');
-      return new ConfinedCodexExecBackend({ bin: process.env.CODEX_BIN || 'codex' });
+    if (id === 'codex-cli' && this.codexHostTools) {
+      const { HostToolsCodexAppServerBackend } = require('./codex-app-server');
+      const provider = new HostToolsCodexAppServerBackend({ ...this.codexHostTools,
+        profileDir: path.join(this.dataDir, 'codex-host-profile') });
+      provider.id = 'codex-cli';
+      return provider;
     }
     if (id === 'codex-cli' || id === 'codex-app-server' || id === 'claude-code') {
       throw new Error(Errors.PROVIDER_NOT_ISOLATED + ': this CLI adapter is hidden until project-confined reads and writes are proven');
@@ -135,6 +155,11 @@ class Runtime {
       platform: process.platform,
       projects: this.encryptedTasksOnly ? [] : [...this.projects.values()],
       taskProtocol: this.encryptedTasksOnly ? 'encrypted-v1' : 'legacy',
+      ...(this.encryptedTasksOnly ? {
+        encryptedProjects: [...this.encryptedProjects.keys()].map((id) => ({ id })),
+        encryptionState: this.encryptionState,
+        ...(this.encryptedHost?.endpoint ? { encryptedEndpoint: this.encryptedHost.endpoint.identity() } : {})
+      } : {}),
       providers: this.providerList(),
       executors: [{ id: 'local', label: 'Structured workspace tools', shell: false }, { id: 'crabbox', label: 'Crabbox remote runner', available: CrabboxExecutor.available() }],
       executor: this.executor.id,
@@ -156,6 +181,7 @@ class Runtime {
         this.log(`registered runtime ${this.id} (${this.name}) with hub`);
         // Reconcile before re-announcing, so nothing is published claiming to be running.
         this.reconcileAfterRestart();
+        this.ensureEncryptedHost();
         for (const t of this.store.listThreads()) {
           if (!this.encryptedTasksOnly && t.orgId === this.teamId) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
         }
@@ -169,8 +195,133 @@ class Runtime {
       else if (msg.type === 'paired') this.onPaired(msg);
       else if (msg.type === 'unpaired') this.onUnpaired();
     });
+    this.hub.on('disconnect', () => {
+      this.encryptedHost?.disconnect();
+      if (!this.stopped && this.encryptedHost) this.setEncryptionState('membership_reconciliation_required');
+    });
     this.hub.connect();
+    this.writeEncryptedSetup();
     return this;
+  }
+
+  writeEncryptedSetup() {
+    if (!this.encryptedTasksOnly) return;
+    writeOwnerFileAtomic(path.join(this.dataDir, 'encrypted-setup.json'), JSON.stringify({
+      runtimeId: this.id, teamId: this.teamId, state: this.encryptionState,
+      authority: this.encryptionAuthority,
+      approvalAuthority: this.approvalAuthority,
+      projects: [...this.encryptedProjects].map(([id, dir]) => ({ id, name: path.basename(dir) })),
+      endpoint: this.encryptedHost?.endpoint?.identity() || null
+    }));
+  }
+
+  setEncryptionState(state) {
+    if (!this.encryptedTasksOnly) return;
+    this.encryptionState = state;
+    this.writeEncryptedSetup();
+    if (!this.hub) return;
+    this.hub.hello.runtime = this.descriptor();
+    if (!this.stopped && this.hub.welcome) this.hub.send({ type: 'runtime.update', runtime: this.descriptor() });
+  }
+
+  retireEncryptedHost() {
+    this.encryptedGeneration++;
+    clearTimeout(this.encryptedPoll);
+    this.encryptedPoll = null;
+    const host = this.encryptedHost;
+    const execution = this.encryptedExecution;
+    this.encryptedHost = null;
+    this.encryptedExecution = null;
+    host?.disconnect();
+    // Retain the old generation's objects until its in-flight work has finished. A
+    // subsequent pairing must not open the same crypto store before it has closed.
+    const closing = Promise.allSettled([this.encryptedClosing, execution?.close(),
+      this.encryptedPolling, this.encryptedStarting]).then(() => host?.close());
+    this.encryptedClosing = closing;
+    closing.catch(error => this.log('encrypted host cleanup failed: ' + (error.code || 'crypto_close_failed')));
+    return closing;
+  }
+
+  ensureEncryptedHost() {
+    if (!this.encryptedTasksOnly || this.stopped || !this.teamId || this.encryptedStarting || this.encryptedHost) return;
+    if (!this.encryptionAuthority || this.encryptionAuthority.teamId !== this.teamId) {
+      this.setEncryptionState('awaiting-authority-confirmation');
+      return;
+    }
+    const generation = this.encryptedGeneration;
+    const teamId = this.teamId;
+    const current = () => !this.stopped && generation === this.encryptedGeneration && teamId === this.teamId;
+    this.encryptedStarting = (async () => {
+      await this.encryptedClosing;
+      if (!current()) return;
+      this.setEncryptionState('opening_crypto_store');
+      const { EncryptedHost } = require('./encrypted-host');
+      const { EncryptedExecution } = require('./encrypted-execution');
+      let execution;
+      const host = new EncryptedHost({ runtime: this, url: this.hubUrl.replace(/^ws/, 'http'),
+        statePath: path.join(this.dataDir, 'encrypted-host.sqlite'), projects: this.encryptedProjects,
+        authority: this.encryptionAuthority, endpointFactory: this.encryptedEndpointFactory,
+        onControl: (task, read, opened) => {
+          if (!current()) throw Object.assign(new Error('host_stopped'), { code: 'host_stopped' });
+          return execution.control(task, read, opened);
+        }, log: this.log });
+      try { await host.start(); }
+      catch (error) { await host.close(); throw error; }
+      if (!current()) { await host.close(); return; }
+      this.encryptedHost = host;
+      this.encryptedExecution = execution = new EncryptedExecution({ runtime: this, host });
+      this.setEncryptionState('membership_reconciliation_required');
+      this.encryptedPolling = this.pollEncryptedHost();
+    })().catch((error) => {
+      if (!current()) return;
+      this.setEncryptionState(error.code || 'encryption-unavailable');
+      this.log('encrypted host unavailable: ' + this.encryptionState);
+    }).finally(() => {
+      this.encryptedStarting = null;
+      if (!current() && !this.stopped && this.teamId) this.ensureEncryptedHost();
+    });
+    return this.encryptedStarting;
+  }
+
+  async pollEncryptedHost() {
+    if (this.stopped || !this.encryptedHost || !this.teamId) return;
+    const host = this.encryptedHost;
+    const execution = this.encryptedExecution;
+    const generation = this.encryptedGeneration;
+    const teamId = this.teamId;
+    const current = () => !this.stopped && generation === this.encryptedGeneration && teamId === this.teamId && host === this.encryptedHost;
+    try {
+      if (!this.hub.welcome) return;
+      await host.applyRevocations();
+      if (!current()) return;
+      await host.collect();
+      if (!current()) return;
+      if (this.encryptionState !== 'ready') this.setEncryptionState('ready');
+      const listed = await host.tasks.list(teamId);
+      for (const task of listed.tasks || []) {
+        if (!current()) return;
+        if (task.runtimeId !== this.id || !this.encryptedProjects.has(task.projectId)) continue;
+        try {
+          const opened = await host.openTask(task);
+          if (!current()) return;
+          await execution.reconcile(task, opened);
+          if (!current()) return;
+          await host.admitParticipants(task);
+          if (!current()) return;
+          if (!execution.state(task)) await execution.startTask(task, opened);
+        } catch (error) {
+          this.log('encrypted task unavailable: ' + (error.code || error.message));
+        }
+      }
+    } catch (error) {
+      if (current()) this.setEncryptionState(error.code || 'relay_unavailable');
+      this.log('encrypted reconciliation pending: ' + (error.code || 'relay_unavailable'));
+    } finally {
+      if (current()) {
+        this.encryptedPoll = setTimeout(() => { this.encryptedPolling = this.pollEncryptedHost(); }, 500);
+        this.encryptedPoll.unref?.();
+      }
+    }
   }
 
   // Printed on the host, never sent to a client: a teammate has to be told this code by
@@ -181,9 +332,11 @@ class Runtime {
   }
 
   onPaired(msg) {
+    if (this.teamId && this.teamId !== msg.teamId) this.retireEncryptedHost();
     this.teamId = msg.teamId;
     this.clearPairingChallenge();
     this.store.setKv('teamId', msg.teamId);
+    this.ensureEncryptedHost();
     this.log(`paired with team ${msg.teamId}${msg.pairedBy ? ' by ' + msg.pairedBy.name : ''}`);
     for (const t of this.store.listThreads()) {
       if (!this.encryptedTasksOnly && t.orgId === this.teamId) this.hub.send({ type: 'thread.upsert', thread: this.publicThread(t) });
@@ -197,8 +350,10 @@ class Runtime {
   }
 
   onUnpaired() {
+    this.retireEncryptedHost();
     this.teamId = null;
     this.store.setKv('teamId', '');
+    this.setEncryptionState('awaiting-team');
     // A code authorizes one pairing cycle. Rotate it even in the desktop process, whose
     // initial code came through the environment, so somebody who saw an old code cannot
     // reclaim the host after an owner detaches it.
@@ -223,12 +378,17 @@ class Runtime {
   }
 
   stop() {
+    if (this.stopped) return this.stopPromise;
     // Set before anything closes: an interrupted turn finishes asynchronously, and its
     // completion must not try to write to a store that is on its way out.
     this.stopped = true;
+    const closing = this.retireEncryptedHost();
+    this.setEncryptionState('stopped');
     for (const s of this.sessions.values()) s.interrupt();
     if (this.hub) this.hub.close();
-    this.store.close();
+    if (this.encryptedTasksOnly) this.stopPromise = closing.finally(() => this.store.close());
+    else { this.store.close(); this.stopPromise = Promise.resolve(); }
+    return this.stopPromise;
   }
 
   publicThread(t) {
@@ -571,6 +731,8 @@ function parseArgs(argv) {
     else if (a === '--runtime-name') out.name = next();
     else if (a === '--max-preset') out.maxPreset = next();
     else if (a === '--encrypted-tasks-only') out.encryptedTasksOnly = true;
+    else if (a === '--codex-read-only') out.codexReadOnly = true;
+    else if (a === '--codex-host-tools') out.codexHostTools = true;
   }
   return out;
 }
@@ -593,6 +755,13 @@ if (require.main === module) {
   const dataDir = args.dataDir || process.env.HARNESS_DATA || path.join(os.homedir(), '.harness');
   fs.mkdirSync(dataDir, { recursive: true });
   const cfg = loadConfig(dataDir);
+  let codexHostTools = cfg.codexHostTools || null;
+  if (args.codexHostTools) {
+    const { resolveCodex, codexHome } = require('./codex-probe');
+    const resolved = resolveCodex();
+    if (!resolved.ok) throw new Error('codex_unavailable');
+    codexHostTools = { bin: path.resolve(resolved.path), authFile: path.join(codexHome(), 'auth.json') };
+  }
   const rt = new Runtime({
     hubUrl: args.hub || cfg.hub || process.env.HUB_URL || 'ws://127.0.0.1:7777',
     org: args.org || cfg.org || process.env.HARNESS_ORG || 'local',
@@ -604,10 +773,23 @@ if (require.main === module) {
     name: args.name || cfg.runtimeName,
     maxPreset: args.maxPreset || cfg.maxPreset || 'agent',
     encryptedTasksOnly: args.encryptedTasksOnly || cfg.encryptedTasksOnly === true,
+    codexReadOnly: args.codexReadOnly || cfg.codexReadOnly === true,
+    codexHostTools,
+    encryptionAuthority: cfg.encryptionAuthority || null,
+    approvalAuthority: cfg.approvalAuthority || null,
     log: (m) => console.log('[runtime]', m)
   });
   rt.start().then(() => console.log(`[runtime] ${rt.name} → ${rt.hubUrl}`));
-  process.on('SIGINT', () => { rt.stop(); process.exit(0); });
+  let shutdown;
+  const stop = () => {
+    if (shutdown) { process.exit(1); return; }
+    const deadline = setTimeout(() => process.exit(1), 1500);
+    shutdown = Promise.resolve().then(() => rt.stop()).then(() => {
+      clearTimeout(deadline); process.exit(0);
+    }, () => { clearTimeout(deadline); process.exit(1); });
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
 }
 
 module.exports = { Runtime, parseArgs, providersFromEnv, commandFingerprint };

@@ -30,14 +30,30 @@ function init() {
 // cannot be passed into the next. Every use builds a fresh one, deliberately.
 const userId = (id) => new sdk.UserId(id);
 const deviceId = (id) => new sdk.DeviceId(id);
+const bytes64 = bytes => {
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 32768) binary += String.fromCharCode(...bytes.subarray(index, index + 32768));
+  return btoa(binary);
+};
+const from64 = value => Uint8Array.from(atob(value), character => character.charCodeAt(0));
+const recoveryContext = new TextEncoder().encode('plexus.verified-history.v1');
+async function recoveryEnvelopeKey(recoveryKey, salt) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(recoveryKey), 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: recoveryContext }, material,
+    { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
 
 class Endpoint {
-  constructor({ user, device, transport, log = () => {} }) {
+  constructor({ user, device, transport, recoveredHistory = [], log = () => {} }) {
     this.user = user;           // '@alice:plexus.local'
     this.device = device;       // 'ALICEDEV'
     this.transport = transport; // the hub binding; see KeyTransport below
     this.log = log;
     this.machine = null;
+    this.verifiedHistory = new Map();
+    // Application-local durable trust metadata. Only authenticated recovery imports may
+    // populate it; callers must never fill it from a relay response or a raw key export.
+    this.recoveredHistory = new Map(recoveredHistory.map(entry => [entry.roomId + '/' + entry.sessionId, entry]));
   }
 
   // `storeName` gives a persistent store, which this library backs with IndexedDB - so it
@@ -261,8 +277,12 @@ class Endpoint {
     const decrypted = await this.machine.decryptRoomEvent(JSON.stringify(event), new sdk.RoomId(roomId),
       new sdk.DecryptionSettings(sdk.TrustRequirement.Untrusted));
     const shield = decrypted.shieldState(true);
+    const historyKey = roomId + '/' + event.content?.session_id;
+    const recovered = this.recoveredHistory.get(historyKey);
+    const recoveredWriter = recovered && ['user', 'device', 'curve25519', 'ed25519']
+      .every(key => recovered.writer[key] === expected[key]);
     const admitted = shield.code === sdk.ShieldStateCode.AuthenticityNotGuaranteed &&
-      !!admittedSessions && admittedSessions.has(event.content?.session_id);
+      (recoveredWriter || (!!admittedSessions && admittedSessions.has(event.content?.session_id)));
     const allowedShield = shield.color === sdk.ShieldColor.None || admitted ||
       shield.code === sdk.ShieldStateCode.UnverifiedIdentity || shield.code === sdk.ShieldStateCode.UnsignedDevice;
     // An exported session carries the writer's keys but not its device id - the format has
@@ -273,9 +293,11 @@ class Endpoint {
     const deviceAttributed = admitted || decrypted.senderDevice?.toString() === expected.device;
     if (!allowedShield || !deviceAttributed || decrypted.sender.toString() !== expected.user ||
         decrypted.senderCurve25519Key !== expected.curve25519 ||
-        decrypted.senderClaimedEd25519Key !== expected.ed25519 || !await this.isEndpointVerified(expected.user, expected.device)) {
+        decrypted.senderClaimedEd25519Key !== expected.ed25519 ||
+        (!recoveredWriter && !await this.isEndpointVerified(expected.user, expected.device))) {
       throw new Error('task_sender_unverified');
     }
+    this.verifiedHistory.set(historyKey, { roomId, sessionId: event.content.session_id, writer: { ...expected } });
     return JSON.parse(decrypted.event);
   }
 
@@ -362,6 +384,14 @@ class Endpoint {
     return true;
   }
 
+  async sign(message) {
+    if (typeof message !== 'string') throw new Error('invalid_signed_message');
+    const signatures = await this.machine.sign(message);
+    const signature = signatures.getSignature(userId(this.user), new sdk.DeviceKeyId('ed25519:' + this.device));
+    if (!signature) throw new Error('device_signature_unavailable');
+    return signature.toBase64();
+  }
+
   async sealControl(user, device, payload) {
     if (!await this.isEndpointVerified(user, device)) throw new Error('endpoint_unverified');
     return this.sealTo(user, device, 'plexus.control.v1', payload, { verified: true });
@@ -398,6 +428,66 @@ class Endpoint {
     // The session ids are returned because the caller has to be able to say later which
     // sessions this particular handoff brought in. See decryptVerifiedTask.
     return { imported: Number(imported.importedCount), total: keys.length, sessions: keys.map((key) => key.session_id) };
+  }
+
+  // Unlike a bare room-key export, a customer backup carries the host fingerprints whose
+  // events this endpoint actually verified. Imported key metadata is not provenance.
+  async exportRecoveryHistory(roomIds, recoveryKey) {
+    const allowed = new Set(roomIds);
+    const history = [...this.verifiedHistory.values(), ...this.recoveredHistory.values()]
+      .filter(entry => allowed.has(entry.roomId));
+    const unique = new Map(history.map(entry => [entry.roomId + '/' + entry.sessionId, entry]));
+    if (roomIds.some(room => !history.some(entry => entry.roomId === room))) throw new Error('recovery_verified_history_required');
+    const exported = JSON.parse(await this.machine.exportRoomKeys(session => allowed.has(session.roomId.toString())));
+    const keys = exported.filter(key => {
+      const entry = unique.get(key.room_id + '/' + key.session_id);
+      return entry && key.sender_key === entry.writer.curve25519 && key.sender_claimed_keys?.ed25519 === entry.writer.ed25519;
+    });
+    if (!keys.length || roomIds.some(room => !keys.some(key => key.room_id === room))) throw new Error('recovery_verified_history_required');
+    const present = new Set(keys.map(key => key.room_id + '/' + key.session_id));
+    const manifest = [...unique].filter(([key]) => present.has(key)).map(([, entry]) => entry);
+    const exportedKeys = sdk.OlmMachine.encryptExportedRoomKeys(JSON.stringify(keys), recoveryKey, 500000);
+    const salt = crypto.getRandomValues(new Uint8Array(32));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await recoveryEnvelopeKey(recoveryKey, salt);
+    const plaintext = new TextEncoder().encode(JSON.stringify({ history: manifest, exportedKeys }));
+    const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: recoveryContext }, key, plaintext);
+    return JSON.stringify({ format: 'plexus.verified-history.v1', salt: bytes64(salt), iv: bytes64(iv), ciphertext: bytes64(new Uint8Array(encrypted)) });
+  }
+
+  async importRecoveryHistory(encrypted, recoveryKey, roomIds) {
+    const envelope = JSON.parse(encrypted);
+    if (envelope?.format !== 'plexus.verified-history.v1') throw new Error('recovery_verified_history_required');
+    const salt = from64(envelope.salt), iv = from64(envelope.iv);
+    if (salt.length !== 32 || iv.length !== 12) throw new Error('recovery_material_rejected');
+    const key = await recoveryEnvelopeKey(recoveryKey, salt);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: recoveryContext }, key, from64(envelope.ciphertext));
+    const decoded = JSON.parse(new TextDecoder().decode(plaintext));
+    decoded.keys = JSON.parse(sdk.OlmMachine.decryptExportedRoomKeys(decoded.exportedKeys, recoveryKey));
+    if (!Array.isArray(decoded.history) || !Array.isArray(decoded.keys)) {
+      throw new Error('recovery_verified_history_required');
+    }
+    const history = decoded.history;
+    roomIds = roomIds || [...new Set(history.map(entry => entry.roomId))];
+    const allowed = new Set(roomIds);
+    if (!history.length || history.some(entry => !allowed.has(entry.roomId)) ||
+        roomIds.some(room => !history.some(entry => entry.roomId === room))) throw new Error('recovery_scope_mismatch');
+    const manifest = new Map();
+    for (const entry of history) {
+      if (typeof entry.sessionId !== 'string' || !entry.writer ||
+          !['user', 'device', 'curve25519', 'ed25519'].every(key => typeof entry.writer[key] === 'string' && entry.writer[key])) {
+        throw new Error('recovery_material_rejected');
+      }
+      manifest.set(entry.roomId + '/' + entry.sessionId, entry);
+    }
+    if (!decoded.keys.length || decoded.keys.some(key => {
+      const entry = manifest.get(key.room_id + '/' + key.session_id);
+      return !entry || key.sender_key !== entry.writer.curve25519 || key.sender_claimed_keys?.ed25519 !== entry.writer.ed25519;
+    })) throw new Error('recovery_material_rejected');
+    const imported = await this.machine.importExportedRoomKeys(JSON.stringify(decoded.keys), () => {});
+    for (const [key, entry] of manifest) this.recoveredHistory.set(key, structuredClone(entry));
+    return { imported: Number(imported.importedCount), total: decoded.keys.length,
+      sessions: decoded.keys.map(key => key.session_id), history: structuredClone(history) };
   }
 
   close() { this.machine?.close(); this.machine = null; }

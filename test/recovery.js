@@ -23,7 +23,7 @@ const { EncryptedHost } = require('../packages/runtime/encrypted-host');
 const { EncryptedTaskReader, EncryptedTaskTransport, createEncryptedTask, newId } = require('../packages/e2ee/task-log.mjs');
 const { matrixUser, roomFor } = require('../packages/protocol/encrypted-task.mjs');
 const { EnrollmentTransport, announcement } = require('../packages/e2ee/enrollment.mjs');
-const { RecoveryTransport, backupHistory, restoreHistory, confirmRecoveryDrill, rotateRecovery, RECOVERY_LIMITS } = require('../packages/e2ee/recovery.mjs');
+const { RecoveryTransport, backupHistory, restoreHistory, confirmRecoveryDrill, rotateRecovery, completeRecoveryRotation, RECOVERY_LIMITS } = require('../packages/e2ee/recovery.mjs');
 const { TeamOps } = require('../packages/protocol');
 
 const results = [];
@@ -110,18 +110,24 @@ let hub, runtime, encrypted, clients = [];
     user: matrixUser(alex.me.id), device: 'LAPTOP',
     transport: new HubKeyTransport({ url, token: token(alex), device: 'LAPTOP' })
   });
+  enrol.bindEndpoint(laptop);
   await enrol.bootstrap(team.id, announcement(laptop));
 
   const projectId = newId('ep');
   encrypted = new EncryptedHost({
     runtime, url, statePath: path.join(tmp, 'outbox.sqlite'),
-    projects: new Map([[projectId, project]]), log: () => {}
+    projects: new Map([[projectId, project]]), authority: laptop.identity(),
+    endpointFactory: options => Endpoint.create(options), log: () => {}
   });
   const hostIdentity = await encrypted.start();
+  await encrypted.beginReconcile();
+  await enrol.answerChallenges(team.id);
+  await encrypted.reconcileMembership();
   await laptop.confirmEndpoint(hostIdentity, { confirmed: true });
 
   const tasks = new EncryptedTaskTransport({ url, token: token(alex) });
   const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId, creatorUserId: alex.me.id };
+  await enrol.ownProject(team.id, projectId);
   await createEncryptedTask(laptop, tasks, {
     task, writer: hostIdentity, payload: { title: 'Retry notes', objective: 'create NOTES.md describing ' + canary }
   });
@@ -208,9 +214,8 @@ let hub, runtime, encrypted, clients = [];
     scope: 'project:' + projectId, taskIds: [task.id], recoveryKey: issued.recoveryKey, roomFor
   });
   assert.ok(restored.restored.sessions.length, JSON.stringify(restored));
-  await replacement.confirmEndpoint(hostIdentity, { confirmed: true });
   const recoveredReader = new EncryptedTaskReader({
-    endpoint: replacement, task, writer: hostIdentity, admittedSessions: restored.restored.sessions
+    endpoint: replacement, task, writer: hostIdentity
   });
   await recoveredReader.reconnect(tasks);
   assert.ok(recoveredReader.state.objective.includes(canary));
@@ -244,6 +249,11 @@ let hub, runtime, encrypted, clients = [];
   });
   assert.notEqual(rotated.recoveryKey, issued.recoveryKey);
   assert.match(rotated.caveat, /already downloaded/);
+  assert.equal((await cleanRecovery.get('project:' + projectId)).ciphertext, blob, 'rotation preparation retains the previous working backup');
+  await completeRecoveryRotation(replacement, cleanRecovery, {
+    scope: 'project:' + projectId, taskIds: [task.id], roomFor,
+    recoveryKey: rotated.recoveryKey, typed: rotated.recoveryKey
+  });
   const afterRotation = await cleanRecovery.get('project:' + projectId);
   assert.notEqual(afterRotation.ciphertext, blob, 'the stored blob was replaced');
   pass('the key can be replaced, and the limit of doing so is stated', 'old copies stay openable by the old key');

@@ -45,6 +45,12 @@ function eventValid(e) {
     // What the machine did. A turn ending is a turn ending: the agent stopped talking, which
     // is not the same as the work being finished, and recording one as the other is how a
     // task ends up marked complete while somebody is still reviewing it.
+    case 'turn.started':return typeof p.turnId==='string' && typeof p.actor==='string';
+    case 'recovery.required':return typeof p.reason==='string' && (p.turnId===undefined||typeof p.turnId==='string');
+    case 'command.receipt':return typeof p.commandId==='string' && typeof p.actor==='string' &&
+      ['accepted','queued','delivered','rejected','unknown'].includes(p.state);
+    case 'approval.granted':return typeof p.userId==='string' && typeof p.by==='string';
+    case 'approval.revoked':return typeof p.userId==='string' && typeof p.by==='string';
     case 'turn.completed':return ['completed','failed','interrupted'].includes(p.status);
     // What a person decided about the work itself, and who decided it. Required, because an
     // outcome with nobody attached is exactly the inference #9 forbids.
@@ -67,7 +73,7 @@ function reduce(state,event) {
   if(state.events.length===0 && event.type!=='task.created') fail('task_creation_missing');
   if(state.events.length>0 && event.type==='task.created') fail('task_creation_conflict');
   const p=structuredClone(event.payload);
-  if(event.type==='task.created') {state.title=p.title;state.objective=p.objective;state.details=p;}
+  if(event.type==='task.created') {state.title=p.title;state.objective=p.objective;state.details=p;state.provider=p.provider||null;}
   if(event.type==='message.added') {
     const held=state.messages.find((m)=>m.id===p.id);
     if(held) fail('task_item_conflict');
@@ -91,8 +97,15 @@ function reduce(state,event) {
     if(state.approvals.some((a)=>a.id===p.id)) fail('task_item_conflict');
     state.approvals.push(p);
   }
-  if(event.type==='decision.recorded')state.decisions.push(p);
-  if(event.type==='turn.completed')state.turn=p.status;
+  if(event.type==='decision.recorded') {state.decisions.push(p);state.approvers=state.approvers.filter(entry=>entry.requestId!==p.basis);}
+  if(event.type==='turn.started') {state.activeTurnId=p.turnId;state.turn='running';state.recovery=null;state.approvers=[];state.provider=p.provider||null;}
+  if(event.type==='turn.completed') {state.turn=p.status;state.activeTurnId=null;state.approvers=[];}
+  if(event.type==='recovery.required') {state.recovery=p;state.activeTurnId=null;state.turn='unknown';state.approvers=[];}
+  if(event.type==='command.receipt') {
+    state.receipts=state.receipts.filter(entry=>entry.commandId!==p.commandId);state.receipts.push(p);
+  }
+  if(event.type==='approval.granted') {state.approvers=state.approvers.filter(entry=>entry.userId!==p.userId);state.approvers.push(p);}
+  if(event.type==='approval.revoked')state.approvers=state.approvers.filter(entry=>entry.userId!==p.userId);
   if(event.type==='task.completed') {
     if(state.outcome) fail('task_item_conflict');
     state.outcome=p.outcome;state.completedBy=p.by;
@@ -149,7 +162,7 @@ export class EncryptedTaskReader {
       (this.floor.seq===0 ? this.floor.hash!==null : !/^[a-f0-9]{64}$/.test(this.floor.hash)))fail('invalid_local_checkpoint');
     this.floor=structuredClone(this.floor);
     this.seq=0;this.hash=null;this.hashes=new Map();this.ids=new Set();
-    this.state={title:null,objective:null,details:null,messages:[],plan:null,tools:[],diffs:[],activity:[],approvals:[],help:[],links:[],decisions:[],turn:null,responsible:null,handover:null,outcome:null,completedBy:null,events:[]};
+    this.state={title:null,objective:null,details:null,provider:null,messages:[],plan:null,tools:[],diffs:[],activity:[],approvals:[],approvers:[],receipts:[],help:[],links:[],decisions:[],turn:null,activeTurnId:null,recovery:null,responsible:null,handover:null,outcome:null,completedBy:null,events:[]};
     this.status={state:'idle',seq:0};this.queue=Promise.resolve();
   }
   setStatus(state,code) {this.status={state,seq:this.seq,...(code?{code}:{})};this.onStatus(this.status);}

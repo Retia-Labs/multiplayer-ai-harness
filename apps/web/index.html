@@ -66,7 +66,7 @@
         <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14"/></svg>
         <input id="thread-search" type="text" placeholder="Search threads" spellcheck="false" />
       </div>
-      <div id="thread-list" class="thread-list"></div>
+      <button id="btn-access" class="nav-btn">Team &amp; access</button><div id="thread-list" class="thread-list"></div>
       <div class="sidebar-footer">
         <span id="me" class="me"></span>
         <span id="enrollment-badge" class="enroll-badge hidden">Encryption pending</span>
@@ -82,7 +82,7 @@
     <main id="main">
       <header id="topbar">
         <div class="topbar-left">
-          <span id="topbar-title" class="topbar-title">Fleet</span>
+          <button id="btn-navigation" class="chip-btn mobile-only" aria-label="Open navigation">☰</button><span id="topbar-title" class="topbar-title">Fleet</span>
           <span id="topbar-branch" class="chip mono hidden"></span>
           <span id="topbar-worktree" class="wt-badge hidden">worktree</span>
           <span id="topbar-runtime" class="chip hidden"></span>
@@ -147,7 +147,7 @@
           </div>
           <div class="fleet-section">
             <div class="fleet-section-head">Runtimes</div>
-            <div id="runtime-cards" class="runtime-cards"></div>
+            <div id="encrypted-setup" class="ew-setup"></div><div id="runtime-cards" class="runtime-cards"></div>
           </div>
           <div class="fleet-section">
             <div class="fleet-section-head">Needs attention</div>
@@ -160,7 +160,12 @@
         </div>
       </section>
 
+      <section id="access-view" class="hidden" aria-label="Team and project access" data-template="shell setup"></section>
       <!-- Thread view -->
+      <section id="encrypted-workspace" class="hidden" aria-label="Encrypted task workspace" data-template="shell review">
+        <div class="ew-main"><div id="ew-heading"></div><nav id="ew-tabs" aria-label="Task view"></nav><div id="ew-content"></div></div>
+        <aside id="ew-inspector" aria-label="Review together"><div id="ew-discussion"></div><div id="ew-target" class="small"></div><div id="ew-composer"></div><div id="ew-receipts" aria-live="polite"></div></aside>
+      </section>
       <section id="catchup-view" class="hidden" aria-label="Catch up"></section>
       <section id="inbox-view" class="hidden" aria-label="Questions for you"></section>
       <section id="recovery-view" class="hidden" aria-label="Recovery"></section>

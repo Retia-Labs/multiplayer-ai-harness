@@ -5,6 +5,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { _electron: electron } = require('playwright-core');
 const { Hub } = require('../packages/hub/server');
+const { desktopProfile } = require('../apps/desktop/profile');
 const root = path.join(__dirname, '..');
 const out = path.join(root, '.artifacts', 'desktop-bootstrap');
 fs.mkdirSync(out, { recursive: true });
@@ -66,7 +67,8 @@ const launch = (dataDir, env) => electron.launch({
     console.log('PASS: retry reaches remote hub and starts this exact local host without Node on PATH');
     await app.close(); app = null;
     const failureData = path.join(temp, 'runtime-failure');
-    const runtimeConfig = path.join(failureData, 'harness', 'runtime.json');
+    const runtimeConfig = path.join(desktopProfile({ userData: failureData, hubUrl: env.HUB_HTTP_URL,
+      dataRoot: env.HARNESS_DATA }).dataDir, 'runtime.json');
     fs.mkdirSync(path.dirname(runtimeConfig), { recursive: true });
     fs.writeFileSync(runtimeConfig, JSON.stringify({ maxPreset: 'invalid-preset' }));
     app = await launch(failureData, env);

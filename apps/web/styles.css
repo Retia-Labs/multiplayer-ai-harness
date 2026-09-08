@@ -424,3 +424,84 @@ tr.hunk td { background: var(--bg-raised); color: var(--text-faint); padding: 3p
 .cu-activity { display: flex; flex-direction: column; gap: 2px; }
 .cu-activity-text { font-size: 13px; }
 .cu-source-pane { border-top: 1px solid var(--border-soft); margin-top: 20px; padding-top: 16px; }
+
+/* Shared encrypted review/setup anatomy. Values follow the accepted Plexus pack;
+   controls use existing tokens and the browser/desktop consume this one renderer. */
+:root { --review-pad: 30px; --review-gap: 20px; --review-inspector: clamp(340px, 28.5vw, 424px); }
+.mobile-only { display: none; }
+#encrypted-workspace { display: grid; grid-template-columns: minmax(0, 1fr) var(--review-inspector); flex: 1; min-height: 0; min-width: 0; }
+.ew-main { padding: 32px var(--review-pad); overflow-y: auto; min-width: 0; }
+#ew-heading h1 { font-size: 30px; font-weight: 450; line-height: 1.2; letter-spacing: -.04em; overflow-wrap: anywhere; }
+.ew-ownership { color: var(--text-dim); margin: 16px 0 8px; line-height: 1.6; }
+#ew-tabs { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 24px 0 12px; border-bottom: 1px solid var(--border-soft); }
+#ew-tabs button { border-color: transparent; background: transparent; }
+#ew-tabs [aria-current="page"] { border-radius: 0; border-bottom: 2px solid var(--accent); }
+#ew-inspector { display: flex; flex-direction: column; min-height: 0; padding: 30px 24px; border-left: 1px solid var(--border-soft); background: var(--bg-raised); overflow: auto; }
+#ew-discussion { overflow: auto; flex: 1; min-height: 100px; }
+#ew-discussion h3, .ew-section h3 { font-size: 20px; font-weight: 450; margin-bottom: 12px; }
+.ew-message { padding: 24px 0; border-bottom: 1px solid var(--border-soft); line-height: 1.7; overflow-wrap: anywhere; }
+.ew-message h4 { font-weight: 500; margin-bottom: 12px; }
+.ew-message p { white-space: pre-wrap; }
+#ew-target { padding: 16px 0 8px; overflow-wrap: anywhere; }
+#ew-composer .composer { margin: 0; width: 100%; }
+#ew-composer .composer-controls { flex-wrap: wrap; }
+#ew-composer textarea { min-height: 112px; font-size: 14px; }
+.ew-section { padding: 24px 0; border-bottom: 1px solid var(--border-soft); line-height: 1.6; }
+.ew-section > .mini-btn { margin: 12px 8px 0 0; }
+.ew-explain { color: var(--text-dim); font-size: 14px; margin-bottom: 16px; }
+.ew-file { border: 1px solid var(--border-soft); border-radius: 5px; margin: 16px 0; overflow: hidden; }
+.ew-file h4 { padding: 16px; font-weight: 400; overflow-wrap: anywhere; border-bottom: 1px solid var(--border-soft); }
+.ew-file > button { margin: 12px 16px; }
+.ew-code-scroll { display: block; overflow: auto; max-width: 100%; padding: 12px 0; white-space: pre; }
+pre.ew-code-scroll { padding: 16px; }
+.ew-code-scroll table { font-size: 13px; line-height: 1.8; }
+.ew-code-scroll td { white-space: pre; padding: 2px 8px; }
+.ew-code-scroll td:last-child { min-width: 400px; }
+.ew-action { padding: 20px; border: 1px solid var(--border); border-radius: 5px; margin: 12px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ew-error { color: var(--amber); overflow-wrap: anywhere; margin: 12px 0; }
+.ew-error:empty { display: none; }
+.ew-receipt { padding: 12px 0; border-bottom: 1px solid var(--border-soft); overflow-wrap: anywhere; font-size: 13px; }
+.ew-details { margin-top: 20px; border-top: 1px solid var(--border-soft); padding-top: 16px; }
+.ew-details summary { cursor: pointer; padding: 8px 0; font-size: 16px; }
+.ew-field { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.ew-field input, .ew-field select, .ew-field textarea { width: 100%; min-width: 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-control); }
+.ew-field textarea { min-height: 88px; resize: vertical; }
+.ew-field input[type="checkbox"] { align-self: flex-start; width: 22px; height: 22px; }
+.ew-fingerprint { overflow-wrap: anywhere; color: var(--text-dim); line-height: 1.8; margin: 12px 0; }
+.ew-device { padding: 20px 0; border-top: 1px solid var(--border-soft); }
+.ew-device > button { margin-right: 8px; margin-top: 12px; }
+.ew-link-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px 0; overflow-wrap: anywhere; }
+.encrypted-task-row { width: 100%; text-align: left; min-height: 44px; overflow-wrap: anywhere; }
+#access-view { padding: 32px max(20px, 6vw); overflow: auto; min-height: 0; }
+#access-view .ew-section { max-width: 1040px; margin: 0 auto; }
+#access-view h3 { font-size: 30px; letter-spacing: -.04em; }
+.ew-setup { max-width: 960px; margin: 0 auto; }
+.sidebar-footer { flex-wrap: wrap; }
+#ew-content .catchup-scope { padding-top: 0; }
+@media (max-width: 1100px) {
+  #encrypted-workspace { grid-template-columns: minmax(0, 1fr); }
+  #ew-inspector { display: none; position: fixed; top: 50px; right: 0; bottom: 0; width: min(420px, 100vw); z-index: 20; box-shadow: var(--shadow); }
+  #encrypted-workspace.inspector-open #ew-inspector { display: flex; }
+}
+@media (max-width: 760px) {
+  :root { --review-pad: 20px; }
+  .mobile-only { display: inline-flex; }
+  #sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 280px; z-index: 35; transform: translateX(-100%); transition: transform var(--fast); }
+  body.navigation-open #sidebar { transform: translateX(0); box-shadow: var(--shadow); }
+  #main { min-width: 0; width: 100%; }
+  #topbar { min-height: 68px; height: 68px; padding: 0 12px; }
+  #ew-inspector { top: 68px; width: 100%; }
+  .ew-main { padding-top: 26px; }
+  #ew-heading h1 { font-size: 27px; }
+  #encrypted-workspace .mini-btn, #access-view .mini-btn { min-height: 44px; }
+  .topbar-right { gap: 4px; }
+  #topbar-runtime { display: none; }
+  #access-view { padding: 20px; }
+  .login-card { width: calc(100vw - 32px); max-width: 400px; }
+  .fleet-hero { padding-left: 20px; padding-right: 20px; }
+}
+.ew-close-discussion { display: none; }
+@media (max-width: 1100px) { .ew-close-discussion { display: inline-flex; margin-bottom: 16px; } }
+@media (max-width: 760px) { .topbar-title { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } }
+#ew-receipts { max-height: 160px; overflow-y: auto; flex: none; }
+#ew-composer { flex: none; }

@@ -1,5 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('harnessDesktop', {
+  hubUrl: location.protocol === 'plexus-app:' ? ipcRenderer.sendSync('desktop:hubUrl') : null,
+  endpointStoreKey: () => ipcRenderer.invoke('desktop:endpointStoreKey'),
+  encryptedSetup: () => ipcRenderer.invoke('desktop:encryptedSetup'),
+  codexStatus: () => ipcRenderer.invoke('desktop:codexStatus'),
+  configureCodex: () => ipcRenderer.invoke('desktop:configureCodex'),
+  confirmEncryptionAuthority: (authority) => ipcRenderer.invoke('desktop:confirmEncryptionAuthority', authority),
+  confirmApprovalAuthority: (authority) => ipcRenderer.invoke('desktop:confirmApprovalAuthority', authority),
   // Selection in the native dialog is the authorization. The main process persists it
   // for the local runtime and deliberately does not expose the filesystem path here.
   pickFolder: (runtimeId) => ipcRenderer.invoke('desktop:pickFolder', runtimeId),

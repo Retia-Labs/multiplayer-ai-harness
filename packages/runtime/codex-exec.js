@@ -6,14 +6,27 @@
 // asks the caller - so the sandbox policy is passed as a flag instead; see
 // docs/proofs/codex-shared-control.md for the app-server alternative.
 const { spawn } = require('child_process');
+const { StringDecoder } = require('node:string_decoder');
 const { Events, ItemTypes, ItemStatus } = require('../protocol');
-const { resolveCodex } = require('./codex-probe');
+const { resolveCodex, codexConfigArgs } = require('./codex-probe');
+const { failure } = require('./codex-rpc');
 
 // A steer that lands after `codex exec` has already been handed the prompt cannot be
 // injected into that process, so it is delivered as an immediate resumed turn on the same
 // Codex session. Bounded so a chatty thread cannot extend one turn indefinitely.
 const MAX_STEER_FOLLOWUPS = 4;
-const STDERR_KEEP = 4000;
+const MAX_FRAME_BYTES = 1024 * 1024;
+
+// Inspect provider diagnostics locally, but only retain fixed codes. Credentials or
+// account details in an error must never become task content or shared telemetry.
+function diagnosticCode(value) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value || {});
+  if (/usage.?limit|rate.?limit|quota|sessionBudgetExceeded/i.test(text)) return 'codex_usage_limit';
+  if (/not logged in|unauthenticated|authentication|unauthorized|invalid.api.key|401/i.test(text)) return 'codex_auth_required';
+  if (/model.*(?:not found|not available|not supported|does not exist)/i.test(text)) return 'codex_model_unavailable';
+  if (/unexpected argument|unrecognized (?:option|argument)|unknown (?:option|argument)/i.test(text)) return 'codex_protocol_unsupported';
+  return 'codex_request_failed';
+}
 
 function available(bin = 'codex') {
   return resolveCodex(bin).ok;
@@ -36,12 +49,22 @@ function translate(ev, state) {
       case 'reasoning': return { ...base, type: ItemTypes.REASONING, text: it.text || '' };
       case 'command_execution': return { ...base, type: ItemTypes.COMMAND_EXECUTION, command: it.command, cwd: state.cwd, executor: 'codex', status: mapStatus(it.status), aggregatedOutput: it.aggregated_output || '', exitCode: it.exit_code };
       case 'file_change': return { ...base, type: ItemTypes.FILE_CHANGE, status: mapStatus(it.status), changes: (it.changes || []).map((c) => ({ path: c.path, kind: c.kind === 'delete' ? 'delete' : c.kind === 'add' ? 'add' : 'update', additions: 0, deletions: 0, lines: [] })) };
-      case 'error': return { ...base, type: ItemTypes.AGENT_MESSAGE, text: '⚠ ' + (it.message || 'error') };
+      case 'error': return { ...base, type: ItemTypes.AGENT_MESSAGE, text: diagnosticCode(it.message) };
       default: return null;
     }
   };
   switch (ev.type) {
-    case 'thread.started': state.sessionId = ev.thread_id; break;
+    case 'thread.started':
+      if (typeof ev.thread_id !== 'string' || !ev.thread_id ||
+          (state.expectedSessionId && state.expectedSessionId !== ev.thread_id)) state.error = 'codex_protocol_invalid';
+      else { state.sessionId = ev.thread_id; state.threadAcknowledged = true; }
+      break;
+    case 'turn.started':
+      if (state.threadAcknowledged && !state.turnAcknowledged) {
+        state.turnAcknowledged = true;
+        state.onProviderStarted?.();
+      }
+      break;
     case 'item.started': case 'item.updated': case 'item.completed': {
       if (ev.item && ev.item.type === 'todo_list') {
         out.push({ method: Events.TURN_PLAN_UPDATED, plan: (ev.item.items || []).map((t) => ({ step: t.text, status: t.completed ? 'completed' : 'pending' })) });
@@ -62,17 +85,18 @@ function translate(ev, state) {
       break;
     }
     case 'turn.completed':
+      state.completed = true;
       if (ev.usage) state.usage = { input: ev.usage.input_tokens || 0, output: ev.usage.output_tokens || 0 };
       break;
     case 'turn.failed': case 'error':
-      state.error = (ev.error && ev.error.message) || ev.message || 'codex exec failed';
+      state.error = diagnosticCode(ev.error || ev.message);
       break;
   }
   return out;
 }
 
 function mapStatus(s) {
-  return { in_progress: ItemStatus.IN_PROGRESS, completed: ItemStatus.COMPLETED, failed: ItemStatus.FAILED, declined: ItemStatus.DECLINED }[s] || ItemStatus.COMPLETED;
+  return { in_progress: ItemStatus.IN_PROGRESS, completed: ItemStatus.COMPLETED, failed: ItemStatus.FAILED, declined: ItemStatus.DECLINED }[s] || ItemStatus.FAILED;
 }
 
 // Argument order follows `codex exec [resume [OPTIONS] [SESSION_ID]] [PROMPT]`.
@@ -92,11 +116,12 @@ function buildArgs({ prompt, cwd, sandboxPolicy, model, sessionId }) {
 }
 
 class CodexExecBackend {
-  constructor({ bin = 'codex', onRaw = null } = {}) {
+  constructor({ bin = 'codex', onRaw = null, spawnProcess = spawn } = {}) {
     this.id = 'codex-cli';
     this.label = 'Codex CLI';
     this.bin = bin;
     this.onRaw = onRaw;          // (line, ev) - the provider's own acknowledgment, for proofs
+    this.spawnProcess = spawnProcess;
     this.resolved = resolveCodex(bin);
   }
   capabilities() { return { toolCalls: true, reasoning: 'summary', images: false, steer: 'nextProviderTurn', approvals: false }; }
@@ -104,56 +129,102 @@ class CodexExecBackend {
 
   // One `codex exec` process. Resolves with the state it accumulated.
   runOnce(session, state, prompt) {
+    if (session.cancelled) return Promise.resolve();
+    state.completed = false; state.threadAcknowledged = false; state.turnAcknowledged = false;
+    state.expectedSessionId = state.sessionId;
+    state.exitCode = null;
     const args = buildArgs({
       prompt, cwd: session.cwd, sandboxPolicy: session.settings.sandboxPolicy,
       model: session.model, sessionId: state.sessionId
     });
     return new Promise((resolve) => {
-      const child = spawn(this.resolved.bin, [...this.resolved.prefix, ...args], {
+      let child;
+      try { child = this.spawnProcess(this.resolved.bin, [...this.resolved.prefix, ...codexConfigArgs(session.settings), ...args], {
         cwd: session.cwd, env: process.env,
         // Codex reads a piped stdin as extra prompt input and waits on it, so give it none.
         stdio: ['ignore', 'pipe', 'pipe']
-      });
+      }); } catch { state.error = 'codex_unavailable'; resolve(); return; }
       session.child = child;
       state.spawned.push({ pid: child.pid, args });
-      let buf = '';
+      let buf = '', ended = false;
+      const decoder = new StringDecoder('utf8');
+      const finish = (code) => {
+        if (ended) return;
+        ended = true;
+        if (buf.trim()) consume(buf);
+        buf = '';
+        state.exitCode = code;
+        resolve();
+      };
+      const invalid = (code) => {
+        state.error = code; buf = '';
+        try { child.kill(); } catch {}
+        finish(-1);
+      };
+      const consume = (line) => {
+        if (!line.trim() || state.error) return;
+        if (Buffer.byteLength(line) > MAX_FRAME_BYTES) return invalid('codex_frame_too_large');
+        let ev; try { ev = JSON.parse(line); } catch { return invalid('codex_protocol_invalid'); }
+        if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return invalid('codex_protocol_invalid');
+        if (this.onRaw) { try { this.onRaw(line, ev, session); } catch {} }
+        try { for (const e of translate(ev, state)) session.emit(e.method, e); }
+        catch { invalid('codex_protocol_invalid'); }
+      };
       child.stdout.on('data', (d) => {
-        buf += d.toString();
+        if (ended) return;
+        buf += decoder.write(d);
         const lines = buf.split('\n'); buf = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          let ev; try { ev = JSON.parse(line); } catch { continue; }
-          if (this.onRaw) { try { this.onRaw(line, ev, session); } catch {} }
-          for (const e of translate(ev, state)) session.emit(e.method, e);
-        }
+        for (const line of lines) consume(line);
+        if (Buffer.byteLength(buf) > MAX_FRAME_BYTES) invalid('codex_frame_too_large');
       });
       // stderr carries the failures that never reach the JSONL stream (bad flag, missing
       // auth, killed sandbox). Swallowing it turned every one of those into a silent pass.
-      child.stderr.on('data', (d) => { state.stderr = (state.stderr + d.toString()).slice(-STDERR_KEEP); });
-      child.on('close', (code) => { state.exitCode = code; resolve(); });
-      child.on('error', (err) => { state.error = String(err); state.exitCode = -1; resolve(); });
+      child.stderr.on('data', (d) => {
+        const code = diagnosticCode(d.toString());
+        if (code !== 'codex_request_failed') state.diagnostic = code;
+      });
+      child.on('close', (code) => { buf += decoder.end(); finish(code); });
+      child.on('error', () => invalid('codex_unavailable'));
+      child.stdout.on('error', () => invalid('codex_disconnected'));
+      child.stderr.on('error', () => invalid('codex_disconnected'));
     });
   }
 
   async run(session) {
+    if (session.cancelled) return { proposals: [] };
+    if (!this.resolved.ok) throw failure('codex_unavailable');
     const prompt = session.input.filter((i) => i.type === 'text').map((i) => i.text).join('\n');
     const state = {
       cwd: session.cwd, started: new Set(), outputSeen: new Map(), usage: null, error: null,
-      stderr: '', exitCode: null, spawned: [], sessionId: session.thread.codexSessionId || null
+      diagnostic: null, exitCode: null, spawned: [], proposals: [], sessionId: session.thread.codexSessionId || null
     };
     session.providerSpawns = state.spawned;   // live, so an interrupt can be checked mid-turn
     await this.runOnce(session, state, prompt);
+    const verifyCompletion = () => {
+      if (session.cancelled) return;
+      if (state.error) throw failure(state.error);
+      if (state.exitCode !== 0) throw failure(state.diagnostic || 'codex_request_failed');
+      if (!state.completed || !state.threadAcknowledged) throw failure('codex_completion_missing');
+    };
+    verifyCompletion();
 
     // Steers that arrived while Codex was working: deliver them for real, on the same
     // Codex session, rather than reporting a delivery the provider never saw.
     for (let i = 0; i < MAX_STEER_FOLLOWUPS && session.steerQueue.length && !session.cancelled && !state.error; i++) {
-      const text = session.steerQueue.splice(0)
+      if (!state.sessionId) break;
+      const steers = session.steerQueue.splice(0);
+      const text = steers
         .map((s) => s.input.filter((x) => x.type === 'text').map((x) => x.text).join('\n'))
         .filter(Boolean).join('\n');
       if (!text) break;
-      if (!state.sessionId) break;  // nothing to resume onto; the steer stays in the log
       state.started = new Set(); state.outputSeen = new Map();
+      state.onProviderStarted = () => {
+        for (const steer of steers) session.emit(Events.TURN_STEER_DELIVERED, {
+          steerSeq: steer.seq, by: steer.by, delivery: 'nextProviderTurn'
+        });
+      };
       await this.runOnce(session, state, text);
+      verifyCompletion();
     }
 
     session.child = null;
@@ -161,11 +232,7 @@ class CodexExecBackend {
     if (state.usage) { session.usage.input += state.usage.input; session.usage.output += state.usage.output; }
     session.providerSessionId = state.sessionId;
     session.providerSpawns = state.spawned;
-    if (state.error) throw new Error(state.error);
-    // A non-zero exit with no error event means Codex rejected the invocation itself.
-    if (!session.cancelled && state.exitCode) {
-      throw new Error('codex exec exited ' + state.exitCode + (state.stderr ? ': ' + state.stderr.trim().split('\n').slice(-3).join(' ') : ''));
-    }
+    return state;
   }
 }
 
@@ -236,7 +303,6 @@ class ConfinedCodexExecBackend extends CodexExecBackend {
     this.id = 'codex-cli';
     this.label = 'Codex CLI (read-only, host-applied edits)';
     this.confinedTo = 'read-only';
-    this.said = [];
   }
   capabilities() {
     return {
@@ -259,7 +325,7 @@ class ConfinedCodexExecBackend extends CodexExecBackend {
     confined.emit = (method, payload) => {
       if (method === Events.ITEM_COMPLETED && payload && payload.item &&
           payload.item.type === ItemTypes.AGENT_MESSAGE) {
-        this.said.push(payload.item.text || '');
+        state.proposals.push(payload.item.text || '');
       }
       return session.emit(method, payload);
     };
@@ -288,17 +354,17 @@ class ConfinedCodexExecBackend extends CodexExecBackend {
     // The protocol is appended rather than replacing the objective: the agent is being asked
     // to do its own work and then say what it changed, not to do something different.
     const original = session.input;
-    this.said = [];
+    let state;
     session.input = [...original, { type: 'text', text: EDIT_PROTOCOL }];
     try {
-      await super.run(session);
+      state = await super.run(session);
     } finally {
       session.input = original;
     }
     // Applied after the provider has finished, and never for a turn somebody interrupted:
     // an interrupt that still wrote the files would make cancelling meaningless.
     if (session.cancelled) return { applied: [], rejected: [] };
-    const outcome = await this.applyProposedEdits(session, this.said.join('\n'));
+    const outcome = await this.applyProposedEdits(session, state.proposals.join('\n'));
     session.appliedEdits = outcome;
     return outcome;
   }

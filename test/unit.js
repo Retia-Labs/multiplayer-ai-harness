@@ -63,7 +63,7 @@ t('codex exec: JSONL events translate to protocol events', () => {
   translate({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 5 } }, state);
   assert.deepEqual(state.usage, { input: 10, output: 5 });
   translate({ type: 'turn.failed', error: { message: 'boom' } }, state);
-  assert.equal(state.error, 'boom');
+  assert.equal(state.error, 'codex_request_failed');
 });
 t('codex exec: sandbox policy maps to CLI flags', () => {
   assert.deepEqual(sandboxFlags('read-only'), ['--sandbox', 'read-only']);

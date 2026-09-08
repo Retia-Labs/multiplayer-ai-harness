@@ -71,11 +71,6 @@ let hub, runtime, encrypted, browser, socket, running;
   const account = hub.store.userById(welcome.user.id);
 
   const projectId = 'ep_' + '9'.repeat(32);
-  encrypted = new EncryptedHost({
-    runtime, url, statePath: path.join(tmp, 'outbox.sqlite'),
-    projects: new Map([[projectId, project]]), log: () => {}
-  });
-  const hostIdentity = await encrypted.start();
 
   // ---- the browser, holding its own endpoint ----
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || undefined, headless: true, args: ['--no-sandbox'] });
@@ -97,6 +92,15 @@ let hub, runtime, encrypted, browser, socket, running;
   pass('the app opens a persistent encrypted endpoint in the browser and enrols it', enrolment.device + ' · verified');
 
   const identity = await page.evaluate(() => window.__plexus.state.encryptedIdentity);
+  encrypted = new EncryptedHost({
+    runtime, url, statePath: path.join(tmp, 'outbox.sqlite'),
+    projects: new Map([[projectId, project]]), authority: identity,
+    endpointFactory: options => Endpoint.create(options), log: () => {}
+  });
+  const hostIdentity = await encrypted.start();
+  await encrypted.beginReconcile();
+  await page.evaluate(() => window.__plexus.state.encrypted.answerChallenges());
+  await encrypted.reconcileMembership();
   const listed = hub.store.db.prepare('SELECT user_id, device_id FROM e2ee_devices').all();
   assert.ok(listed.some((row) => row.device_id === identity.device), 'the browser published its keys through the hub');
   pass('its public keys reach the hub, and only the public ones', listed.length + ' devices in the directory');
@@ -197,7 +201,7 @@ let hub, runtime, encrypted, browser, socket, running;
   pass('the relay holds none of what the screen just showed', 'ciphertext only');
 
   // ---- the ceremony is not skippable: forget the host and the screen stops reading ----
-  await page.evaluate((runtimeId) => localStorage.removeItem('plexus.host.' + runtimeId), runtime.id);
+  await page.evaluate((runtimeId) => localStorage.removeItem(window.__plexus.state.encrypted.storageKey('plexus.host.', runtimeId)), runtime.id);
   await page.evaluate(() => window.__plexus.openCatchup());
   await page.waitForSelector('#catchup-view aside[aria-label="Confirm the execution host"]', { timeout: 30000 });
   const prompt = await page.evaluate(() => ({
@@ -227,7 +231,7 @@ let hub, runtime, encrypted, browser, socket, running;
     by: Array.from(document.querySelectorAll('#catchup-view .cu-card-by')).map((n) => n.textContent.trim())
   }));
   assert.ok(answered.decisions.some((d) => /Approval accept/.test(d)), 'the decision is on screen: ' + JSON.stringify(answered));
-  assert.ok(answered.by.some((b) => /alex/.test(b)), 'attributed to whoever made it');
+  assert.ok(answered.by.some((b) => b.includes(account.id)), 'attributed to the authenticated account that made it');
   pass('once answered, the screen shows the recorded decision instead of the request', answered.decisions.join(' / '));
   await page.screenshot({ path: path.join(out, 'approval-answered-1487.png') });
 
@@ -307,7 +311,8 @@ let hub, runtime, encrypted, browser, socket, running;
   // same client that has been reading tasks all along.
   await page.evaluate(async (target) => window.__plexus.state.encrypted.confirmTeammate(target),
     { userId: danaAccount.id, ...announcement(danaEndpoint) });
-  await new EnrollmentTransport({ url, token: account.token }).grant(team.id, projectId, danaAccount.id, 'participant');
+  await page.evaluate(({ projectId, userId }) => window.__plexus.state.encrypted.grantProject(projectId, { userId }),
+    { projectId, userId: danaAccount.id });
   await encrypted.admitParticipants(writing);
   await danaEndpoint.confirmEndpoint(hostIdentity, { confirmed: true });
   await danaEndpoint.open(await danaEndpoint.transport.drain());

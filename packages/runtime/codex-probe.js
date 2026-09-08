@@ -10,7 +10,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 // The CLI builds this adapter has actually been proved against, oldest first. `probe()`
 // reports drift rather than failing: a newer CLI usually works, but the event vocabulary is
@@ -91,8 +91,16 @@ function shadowedInstalls(resolved) {
   return { installs: seen, conflicting: versions.length > 1, versions };
 }
 
+// Runtime-owned reasoning settings must not inherit an incompatible value saved by
+// another CLI/app version. This command-local override never edits provider config.
+function codexConfigArgs(settings = {}) {
+  const effort = settings.effort || 'medium';
+  if (!['low', 'medium', 'high', 'xhigh'].includes(effort)) throw new Error('codex_effort_unsupported');
+  return ['-c', 'model_reasoning_effort=' + JSON.stringify(effort)];
+}
+
 function runCodex(resolved, args, { timeout = 20000 } = {}) {
-  return execFileSync(resolved.bin, [...resolved.prefix, ...args], {
+  return execFileSync(resolved.bin, [...resolved.prefix, ...codexConfigArgs(), ...args], {
     encoding: 'utf8', timeout, stdio: ['ignore', 'pipe', 'pipe']
   });
 }
@@ -111,22 +119,25 @@ function version(resolved) {
   return m ? m[1] : null;
 }
 
-// Who the provider bills. `codex login status` is the supported question; auth.json is an
-// implementation detail we read only to name the mode when the CLI answers ambiguously.
-function authStatus(resolved) {
-  const r = tryRunCodex(resolved, ['login', 'status']);
-  const text = (r.out || '').trim();
+// Who the provider bills. Ask the supported CLI status command and never inspect credentials.
+function authStatus(resolved, { invoke = spawnSync } = {}) {
+  const result = invoke(resolved.bin, [...resolved.prefix, ...codexConfigArgs(), 'login', 'status'], {
+    encoding: 'utf8', timeout: 20000, stdio: ['ignore', 'pipe', 'pipe']
+  });
+  // Successful login status is written to stderr by some supported CLI builds.
+  const r = { ok: result.status === 0 };
+  const text = ((result.stdout || '') + (result.stderr || '')).trim();
   let mode = 'unknown';
   if (/not logged in/i.test(text)) mode = 'none';
   else if (/chatgpt/i.test(text)) mode = 'chatgpt';
   else if (/api key/i.test(text)) mode = 'apikey';
-  else if (!r.ok) mode = 'none';
-  if (mode === 'unknown') {
-    try { mode = JSON.parse(fs.readFileSync(path.join(codexHome(), 'auth.json'), 'utf8')).auth_mode || 'unknown'; } catch {}
-  }
+  else if (/loading configuration|unknown variant|invalid.*config|failed to parse/i.test(text)) mode = 'config_error';
+  else if (!r.ok) mode = 'unavailable';
   return {
     mode,
-    statusLine: text.split(/\r?\n/)[0] || null,
+    statusLine: { none: 'Codex is not logged in.', chatgpt: 'Logged in with ChatGPT.',
+      apikey: 'Logged in with an API key.', config_error: 'Codex could not load its local configuration.',
+      unavailable: 'Codex account status is unavailable.', unknown: 'Codex did not identify the account mode.' }[mode],
     codexHome: codexHome(),
     // The env var is a separate authority from the stored login: record both, claim neither.
     openaiApiKeyInEnv: !!process.env.OPENAI_API_KEY
@@ -216,6 +227,11 @@ function probe({ bin } = {}) {
       alternative: 'Run `codex login` for subscription auth, or `printenv OPENAI_API_KEY | codex login --with-api-key` for API auth.'
     });
   }
+  if (['config_error', 'unavailable', 'unknown'].includes(auth.mode)) blockers.push({
+    id: 'account-status-' + auth.mode,
+    detail: auth.statusLine,
+    alternative: 'Check `codex login status` on the execution host and use a compatible CLI/configuration. This is not proof that the account is signed out.'
+  });
   if (models.cachedForClient && found && models.cachedForClient !== found) {
     blockers.push({
       id: 'model-cache-drift',
@@ -226,7 +242,7 @@ function probe({ bin } = {}) {
   blockers.push({
     id: 'exec-approvals-not-routable',
     detail: '`codex exec` enforces its own sandbox and never emits an approval request, so a teammate cannot approve a command Codex itself runs.',
-    alternative: 'Drive Codex through `codex app-server`, whose protocol carries CommandExecutionRequestApproval / FileChangeRequestApproval / ApplyPatchApproval with accept | acceptForSession | decline | cancel decisions (still experimental as of 0.153.4). Until then run --sandbox read-only so nothing escapes without the harness.'
+    alternative: 'Use a separately proven app-server configuration with host-mediated tools. Read-only prevents provider writes but does not confine provider reads to the project.'
   });
 
   return {
@@ -241,5 +257,5 @@ function probe({ bin } = {}) {
 
 module.exports = {
   resolveCodex, probe, shadowedInstalls, authStatus, entitledModels, execCapabilities, version,
-  runCodex, tryRunCodex, codexHome, TESTED, REQUIRED_FLAGS
+  runCodex, tryRunCodex, codexHome, codexConfigArgs, TESTED, REQUIRED_FLAGS
 };

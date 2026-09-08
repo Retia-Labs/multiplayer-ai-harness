@@ -636,6 +636,7 @@ class Hub {
 
   // The only modules a browser may load from this process, named one by one.
   static SHARED_MODULES = new Set([
+    'e2ee/membership.mjs',
     'e2ee/endpoint-core.mjs',
     'e2ee/task-log.mjs',
     'e2ee/enrollment.mjs',
@@ -726,7 +727,7 @@ class Hub {
       throw fail(Errors.FOREIGN_THREAD, 'not the owner of this thread');
     }
     const { seq, ts } = this.store.append(thread.id, msg.event);
-    const out = { type: 'event', threadId: thread.id, seq, ts, ...msg.event };
+    const out = { ...msg.event, type: 'event', threadId: thread.id, seq, ts };
     for (const [cws, c] of this.clients) {
       if (!c.subs.has(thread.id)) continue;
       if (c.role !== 'client' || !c.user || !this.store.membership(thread.orgId, c.user.id)) {

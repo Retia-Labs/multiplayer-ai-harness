@@ -1,190 +1,208 @@
 'use strict';
-// A real Codex task, executed by the host, written to the encrypted log.
-//
-// encrypted-real-task.js proves the path with the deterministic provider so it runs the same
-// way everywhere. This one runs the actual CLI, because #7's first criterion says "a real
-// provider task" and a deterministic stand-in does not answer that.
-//
-// It runs Codex confined to read-only, which is the only mode with measured project
-// confinement (see codex-confinement.js and docs/proofs/codex-confinement.md). File changes
-// still happen, and that is the point: Codex proposes the contents each file should have and
-// the host applies them through its own project-confined writer, so criterion 1's "produces
-// file changes" is satisfied without handing the provider a shell that criterion 3 forbids.
-//
-// Skips loudly when no authenticated Codex is present.
+// Real supported provider through the runtime's encrypted collector and public controls.
+// Input is exclusively fresh synthetic fixtures. Requires explicit real-provider opt-in;
+// ordinary npm/CI runs never spend provider quota or reuse account credentials.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { randomBytes } = require('node:crypto');
 const { Hub } = require('../packages/hub/server');
 const { Runtime } = require('../packages/runtime');
-const { TurnSession } = require('../packages/runtime/session');
 const { Endpoint } = require('../packages/e2ee/endpoint');
 const { HubKeyTransport } = require('../packages/e2ee/hub-key-transport.mjs');
-const { EncryptedHost } = require('../packages/runtime/encrypted-host');
-const { EncryptedTaskReader, EncryptedTaskTransport, createEncryptedTask, newId } = require('../packages/e2ee/task-log.mjs');
+const { EnrollmentTransport, announcement, confirmTeammateEndpoint, grantProjectAccess, acceptProjectAccess } = require('../packages/e2ee/enrollment.mjs');
+const { EncryptedTaskTransport, EncryptedTaskReader, createEncryptedTask, newId } = require('../packages/e2ee/task-log.mjs');
+const { sendTaskControl, readTaskReceipt, readTaskHistory } = require('../packages/e2ee/task-control.mjs');
 const { matrixUser } = require('../packages/protocol/encrypted-task.mjs');
-const { EnrollmentTransport, announcement } = require('../packages/e2ee/enrollment.mjs');
-const { catchUp } = require('../packages/e2ee/catchup.mjs');
-const { TeamOps } = require('../packages/protocol');
-const { probe } = require('../packages/runtime/codex-probe');
+const { TeamOps, Errors } = require('../packages/protocol');
+const { codexHome } = require('../packages/runtime/codex-probe');
 
-const results = [];
-const pass = (name, detail) => { results.push({ name, status: 'pass' }); console.log('  PASS ' + name + (detail ? ' - ' + detail : '')); };
-const note = (name, detail) => { results.push({ name, status: 'recorded', detail }); console.log('  NOTE ' + name + ' - ' + detail); };
-const waitFor = async (fn, label = '') => {
-  for (let n = 0; n < 400; n++) { const v = fn(); if (v) return v; await new Promise((r) => setTimeout(r, 25)); }
-  throw new Error('timeout: ' + label);
+if (process.env.PLEXUS_RUN_REAL_CODEX !== '1') {
+  console.log('SKIPPED: real provider proof requires explicit PLEXUS_RUN_REAL_CODEX=1 authorization.');
+  process.exit(0);
+}
+const bin = process.env.PLEXUS_TEST_CODEX_BIN;
+assert.ok(bin && path.isAbsolute(bin), 'PLEXUS_TEST_CODEX_BIN must name the supported isolated CLI');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-supported-real-'));
+const workspace = path.join(dir, 'workspace'); fs.mkdirSync(workspace);
+const marker = 'SYNTHETIC_FIXTURE_' + Date.now();
+const initial = 'The maintenance window is Monday. ' + marker + '\n';
+const corrected = 'The maintenance window is Tuesday. ' + marker + '\n';
+const outsideMarker = 'SYNTHETIC_OUTSIDE_' + Date.now();
+fs.writeFileSync(path.join(workspace, 'ANSWER.txt'), initial);
+fs.writeFileSync(path.join(dir, 'OUTSIDE_READ.txt'), outsideMarker);
+fs.symlinkSync(path.join(dir, 'OUTSIDE_READ.txt'), path.join(workspace, 'outside-link.txt'));
+for (const name of ['build', 'pause']) {
+  fs.mkdirSync(path.join(workspace, name));
+  fs.writeFileSync(path.join(workspace, name, 'keep.txt'), 'Synthetic approval fixture only.\n');
+}
+const report = { ranAt: new Date().toISOString(), version: '0.153.4', model: 'gpt-5.4-mini', effort: 'medium',
+  platform: { os: process.platform, arch: process.arch },
+  inputSource: 'Fresh temporary generated ANSWER/build/pause fixtures and generated sibling read marker only; no repository/user documents',
+  checks: [], turns: [] };
+const pass = name => { report.checks.push({ name, status: 'pass' }); console.log('PASS ' + name); };
+const until = async (read, label, timeout = 120000) => {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) { const value = await read(); if (value) return value; await new Promise(resolve => setTimeout(resolve, 60)); }
+  throw new Error('Timed out: ' + label);
 };
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-codex-task-'));
-const canary = 'PRIVATE_' + randomBytes(16).toString('hex');
-let hub, runtime, encrypted, socket;
-
+let hub, runtime, socket, ownerEndpoint, teammateEndpoint, hostKeys, challenges;
 (async () => {
-  const p = probe();
-  if (!p.resolved?.bin || !p.version || !(p.auth?.mode || p.auth?.openaiApiKeyInEnv)) {
-    console.log('SKIPPED: no authenticated Codex CLI - a real provider task was not exercised');
-    process.exit(0);
-  }
-  console.log('  using Codex ' + p.version);
-
-  hub = new Hub({ dbFile: path.join(tmp, 'hub.sqlite'), log: () => {} });
-  const addr = await hub.listen();
-  const url = 'http://127.0.0.1:' + addr.port;
-  const project = path.join(tmp, 'workspace');
-  fs.mkdirSync(project);
-  // Something for the agent to actually read, so the answer proves it saw the workspace.
-  fs.writeFileSync(path.join(project, 'ANSWER.txt'), 'The maintenance window is ' + canary + '\n');
-
-  runtime = new Runtime({
-    hubUrl: url.replace('http', 'ws'), userName: 'host', dataDir: path.join(tmp, 'runtime'),
-    projects: [project], encryptedTasksOnly: true, codexReadOnly: true
-  });
-  await runtime.start();
-
-  let welcome; const messages = [];
-  socket = new WebSocket(url.replace('http', 'ws'));
-  socket.onopen = () => socket.send(JSON.stringify({ type: 'hello', role: 'client', name: 'alice' }));
-  socket.onmessage = ({ data }) => { const m = JSON.parse(data); messages.push(m); if (m.type === 'welcome') welcome = m; };
-  await waitFor(() => welcome && hub.pendingPairings.size, 'welcome');
-  socket.send(JSON.stringify({ type: TeamOps.TEAM_CREATE, name: 'Codex team', id: 'op1' }));
-  await waitFor(() => messages.some((m) => m.type === 'team'), 'team');
-  const team = messages.find((m) => m.type === 'team').team;
-  socket.send(JSON.stringify({ type: TeamOps.RUNTIME_PAIR, teamId: team.id, code: runtime.pairingCode, id: 'op2' }));
-  await waitFor(() => runtime.teamId === team.id, 'paired');
-  const account = hub.store.userById(welcome.user.id);
-
+  hub = new Hub({ dbFile: path.join(dir, 'hub.sqlite') });
+  const address = await hub.listen(), url = 'http://127.0.0.1:' + address.port;
+  const owner = hub.store.createAccount('Alice'), teammate = hub.store.createAccount('Bob');
+  const team = hub.store.createTeam('Synthetic native proof', owner.id);
+  hub.store._stmts.upsertMember.run(team.id, teammate.id, 'member', 'pending', Date.now());
+  ownerEndpoint = await Endpoint.create({ user: matrixUser(owner.id), device: 'ALICE',
+    transport: new HubKeyTransport({ url, token: owner.token, device: 'ALICE' }) });
+  const enrollment = new EnrollmentTransport({ url, token: owner.token, endpoint: ownerEndpoint });
+  await enrollment.bootstrap(team.id, announcement(ownerEndpoint));
+  teammateEndpoint = await Endpoint.create({ user: matrixUser(teammate.id), device: 'BOB',
+    transport: new HubKeyTransport({ url, token: teammate.token, device: 'BOB' }) });
+  const teammateEnrollment = new EnrollmentTransport({ url, token: teammate.token, endpoint: teammateEndpoint });
+  await teammateEnrollment.announce(team.id, announcement(teammateEndpoint));
+  await confirmTeammateEndpoint(ownerEndpoint, enrollment, team.id,
+    { userId: teammate.id, ...teammateEndpoint.identity() }, { confirmed: true });
+  runtime = new Runtime({ hubUrl: url.replace('http', 'ws'), dataDir: path.join(dir, 'host'), projects: [workspace],
+    encryptedTasksOnly: true, codexHostTools: { bin, authFile: path.join(codexHome(), 'auth.json') },
+    encryptionAuthority: { ...ownerEndpoint.identity(), teamId: team.id },
+    approvalAuthority: { ...ownerEndpoint.identity(), teamId: team.id },
+    // Only the OS key-store boundary is substituted; runtime discovery, SDK, signed
+    // membership, control receipts, native provider and real workspace remain production.
+    encryptedEndpointFactory: async options => {
+      hostKeys ||= await Endpoint.create(options); hostKeys.transport = options.transport;
+      return Object.assign(Object.create(hostKeys), { close: async () => {} });
+    } });
   const provider = runtime.provider('codex-cli');
-  assert.equal(provider.confinedTo, 'read-only');
-  // The provider cannot write; the task can, through this host. Both are reported, because
-  // collapsing them into one boolean would make one of two true statements into a lie.
-  assert.equal(provider.capabilities().providerWrites, false);
-  assert.equal(provider.capabilities().writes, true);
-  assert.equal(provider.capabilities().writesVia, 'host-applied-edits');
-  pass('the host offers Codex read-only and applies the edits itself', 'providerWrites: false, writes: true');
-
-  const projectId = newId('ep');
-  encrypted = new EncryptedHost({ runtime, url, statePath: path.join(tmp, 'outbox.sqlite'), projects: new Map([[projectId, project]]), log: () => {} });
-  const hostIdentity = await encrypted.start();
-
-  const client = await Endpoint.create({
-    user: matrixUser(account.id), device: 'ALICEDEV',
-    transport: new HubKeyTransport({ url, token: account.token, device: 'ALICEDEV' })
-  });
-  await new EnrollmentTransport({ url, token: account.token }).bootstrap(team.id, announcement(client));
-  for (const [a, b] of [[client, encrypted.endpoint], [encrypted.endpoint, client]]) await a.confirmEndpoint(b.identity(), { confirmed: true });
-
-  const tasks = new EncryptedTaskTransport({ url, token: account.token });
-  const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId, creatorUserId: account.id };
-  const objective = {
-    title: 'Record the maintenance window',
-    objective: 'Read ANSWER.txt in this project. Then record the maintenance window it names in a new file called WINDOW.md.'
-  };
-  await createEncryptedTask(client, tasks, { task, writer: hostIdentity, payload: objective });
-
-  const runTurn = async (emit, decrypted) => {
-    const session = new TurnSession({
-      thread: { id: task.id, cwd: project, settings: {} },
-      by: { userId: account.id, name: 'alice' },
-      input: [{ type: 'text', text: decrypted.objective }],
-      provider, settings: { sandboxPolicy: 'read-only' }, executor: runtime.executor,
-      history: [], emit, log: () => {}
-    });
-    await session.run();
-    return session;
-  };
-  const started = Date.now();
-  const outcome = await encrypted.run(task, { runTurn, provider: 'codex-cli' });
-  assert.ok(outcome.events >= 2, 'the real provider produced a history');
-  pass('a real Codex turn runs on the host and reaches the encrypted log',
-    outcome.events + ' events in ' + Math.round((Date.now() - started) / 1000) + 's');
-
-  await client.open(await client.transport.drain());
-  const reader = new EncryptedTaskReader({ endpoint: client, task, writer: hostIdentity });
-  await reader.reconnect(tasks);
-  const text = JSON.stringify(reader.state.events);
-  assert.ok(reader.state.events.some((e) => e.type === 'turn.completed'), 'the log says how the turn ended');
-  pass('the creator replays what the real provider did', reader.seq + ' events, turn ' + reader.state.turn);
-
-  // The agent read a file only the workspace contains, so the answer proves it saw it.
-  if (text.includes(canary)) {
-    pass('the provider read the authorized workspace and reported what it found', 'the answer names the canary');
-  } else {
-    note('the provider did not quote the workspace file in its answer',
-      'the run completed but the reply did not include the canary; the encrypted path is unaffected');
-  }
-
-  const view = catchUp(reader.snapshot(), { responsible: 'alice', host: runtime.id, hostConnected: true, taskId: task.id, projectId });
-  assert.ok(view.objective.value.includes('maintenance window'));
-  assert.equal(view.provider.provenance, 'recorded');
-  assert.equal(view.provider.value, 'codex-cli');
-  pass('the catch-up projection reads a real provider task', 'objective and provider both recorded');
-
-  // Criterion 2: nothing about the account reaches the relay.
-  const relay = JSON.stringify({
-    events: await tasks.page(task.id), tasks: await tasks.list(team.id),
-    runtimes: hub.store.listRuntimes ? hub.store.listRuntimes(team.id) : hub.store.getRuntime(runtime.id)
-  });
-  assert.equal(relay.includes(canary), false, 'workspace content stayed out of the relay');
-  assert.equal(/sk-[A-Za-z0-9_-]{12,}|ChatGPT auth|access_token|refresh_token/i.test(relay), false, 'no credential material reached the relay');
-  pass('a real provider run leaks neither content nor credentials to the relay', 'canary and token scans clean');
-
-  // ---- criterion 1: the task produced a file change, and it reached the log ----
-  const diffs = reader.state.diffs || [];
-  if (diffs.length) {
-    assert.ok(fs.existsSync(path.join(project, diffs[0].path)) || diffs[0].path,
-      'the log names a file the task changed');
-    assert.ok(reader.state.events.some((e) => e.type === 'diff.updated'), 'and it reached the encrypted log');
-    pass('a real Codex task produced a file change through the encrypted path',
-      diffs.map((f) => f.path).join(', '));
-    // Whatever it wrote, it went through the host's writer - so it is inside the project.
-    for (const file of diffs) {
-      const resolved = path.resolve(project, file.path);
-      assert.ok(resolved.startsWith(path.resolve(project)), 'the change stayed inside the project: ' + file.path);
+  assert.equal(provider.capabilities().nativeTools, false);
+  assert.equal(provider.capabilities().readsVia, 'host-workspace-tools');
+  await provider.checkHost({ workspace, settings: { effort: 'medium' } });
+  pass('actual runtime alias verifies supported version, private profile, no ambient tools or instructions before model work');
+  await runtime.start();
+  socket = new WebSocket(url.replace('http', 'ws')); let welcome;
+  socket.onopen = () => socket.send(JSON.stringify({ type: 'hello', role: 'client', token: owner.token }));
+  socket.onmessage = ({ data }) => { const value = JSON.parse(data); if (value.type === 'welcome') welcome = value; };
+  await until(() => welcome && hub.pendingPairings.size, 'pairing');
+  socket.send(JSON.stringify({ type: TeamOps.RUNTIME_PAIR, id: 'pair', teamId: team.id, code: runtime.pairingCode }));
+  await until(() => runtime.encryptedHost?.endpoint, 'encrypted host');
+  challenges = setInterval(() => enrollment.answerChallenges(team.id).catch(() => {}), 100);
+  const projectId = runtime.descriptor().encryptedProjects[0].id;
+  await enrollment.ownProject(team.id, projectId);
+  const writer = runtime.descriptor().encryptedEndpoint;
+  await ownerEndpoint.confirmEndpoint(writer, { confirmed: true });
+  await teammateEndpoint.confirmEndpoint(writer, { confirmed: true });
+  const tasks = new EncryptedTaskTransport({ url, token: owner.token });
+  const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId, creatorUserId: owner.id };
+  await createEncryptedTask(ownerEndpoint, tasks, { task, writer, payload: {
+    title: 'Correct the synthetic maintenance window', provider: 'codex-cli',
+    settings: { model: 'gpt-5.4-mini', effort: 'medium', approvalPolicy: 'on-request', sandboxPolicy: 'workspace-write' },
+    objective: 'This temporary project contains synthetic test data only. List the project and read ANSWER.txt with the host tools. As boundary probes, call plexus_read_file for ../OUTSIDE_READ.txt and outside-link.txt; both must be refused, do not retry or guess their contents. The read tool returns JSON containing the exact file content with escaped whitespace. Use plexus_write_file to create WINDOW.md with exactly that content, preserving its final newline. Then call plexus_remove_path for build and wait for the host decision. If a teammate supplies a correction during that wait, after the host decision succeeds use plexus_write_file to replace WINDOW.md with the exact corrected contents. Then stop. Do not modify any other files.'
+  } });
+  const reader = new EncryptedTaskReader({ endpoint: ownerEndpoint, task, writer });
+  const receipts = new Map();
+  const refresh = async () => {
+    for (const event of await ownerEndpoint.open(await ownerEndpoint.transport.drain())) {
+      const receipt = readTaskReceipt(event, task, writer); if (receipt) receipts.set(receipt.commandId, receipt);
     }
-    pass('every file the task changed is inside the authorized project', diffs.length + ' file(s), all within the workspace');
-  } else {
-    note('the provider proposed no edits on this run',
-      'the model answered without emitting an edit block; the apply path is asserted deterministically in test/confined-writes.js');
-  }
+    await reader.reconnect(tasks);
+    if (reader.state.turn === 'failed') throw new Error('Native turn failed: ' + reader.state.events.findLast(event => event.type === 'turn.completed')?.payload.error);
+    return reader.snapshot();
+  };
+  const firstSession = await until(() => runtime.sessions.get(task.id), 'runtime native session');
+  const approval = await until(async () => { await refresh(); return reader.state.approvals.find(value => value.turnId === firstSession.turnId); }, 'first encrypted host approval');
+  assert.equal(fs.readFileSync(path.join(workspace, 'WINDOW.md'), 'utf8'), initial);
+  assert.ok(reader.state.tools.some(tool => tool.arguments.command === 'read_file ../OUTSIDE_READ.txt' && tool.result.status === 'declined'));
+  assert.ok(reader.state.tools.some(tool => tool.arguments.command === 'read_file outside-link.txt' && tool.result.status === 'declined'));
+  assert.equal(JSON.stringify(reader.state).includes(outsideMarker), false);
+  assert.equal(fs.readFileSync(path.join(dir, 'OUTSIDE_READ.txt'), 'utf8'), outsideMarker);
+  pass('real native task uses host reads; sibling and symlink reads are refused without disclosing the outside marker');
+  pass('ordinary real file creation reaches encrypted diff history before intervention');
 
-  // The provider never got a writable sandbox, whatever it produced.
-  assert.ok(p.version, 'codex present');
-  note('the provider itself never had write access',
-    'every codex exec invocation in this run was pinned to --sandbox read-only');
+  await grantProjectAccess(ownerEndpoint, enrollment, { teamId: team.id, projectId,
+    member: { userId: teammate.id, device: teammateEndpoint.device }, taskIds: [task.id] });
+  const teammateTasks = new EncryptedTaskTransport({ url, token: teammate.token });
+  let teammateReader; const admittedSessions = new Set(), teammateReceipts = new Map();
+  const refreshTeammate = async () => {
+    for (const event of await teammateEndpoint.open(await teammateEndpoint.transport.drain())) {
+      const transfer = readTaskHistory(event, task);
+      if (transfer) {
+        const admitted = await acceptProjectAccess(teammateEndpoint, { history: transfer.history }, { writer });
+        for (const value of admitted.sessions) admittedSessions.add(value);
+        teammateReader = new EncryptedTaskReader({ endpoint: teammateEndpoint, task, writer, admittedSessions });
+      }
+      const receipt = readTaskReceipt(event, task, writer); if (receipt) teammateReceipts.set(receipt.commandId, receipt);
+    }
+    if (teammateReader) await teammateReader.reconnect(teammateTasks);
+    return teammateReader?.snapshot();
+  };
+  await until(async () => (await refreshTeammate())?.approvals.some(value => value.id === approval.id), 'late teammate authenticated history');
+  const control = async (actorEndpoint, actorReceipts, update, action, payload, commandId = newId('cmd')) => {
+    await sendTaskControl(actorEndpoint, writer, { task, action, payload, commandId });
+    const receipt = await until(async () => { await update(); return actorReceipts.get(commandId); }, action);
+    return { ...receipt, commandId };
+  };
+  const ownerControl = (action, payload) => control(ownerEndpoint, receipts, refresh, action, payload);
+  const teammateControl = (action, payload) => control(teammateEndpoint, teammateReceipts, refreshTeammate, action, payload);
+  const correction = 'Correction from Bob: the maintenance window is Tuesday, not Monday. After the pending host removal succeeds, replace WINDOW.md with exactly this text including the final newline: ' + corrected;
+  const queued = await teammateControl('turn.steer', { expectedTurnId: firstSession.turnId, input: [{ type: 'text', text: correction }] });
+  assert.equal(queued.state, 'queued');
+  const delivered = await until(async () => { await refresh(); return reader.state.receipts.find(value => value.commandId === queued.commandId && value.state === 'delivered'); }, 'provider acknowledged correction');
+  assert.equal(delivered.actor, teammate.id);
+  assert.ok(reader.state.messages.some(message => message.actor === teammate.id && message.text === correction));
+  const answer = { requestId: approval.id, turnId: approval.turnId, fingerprint: approval.fingerprint, decision: 'accept' };
+  const wrong = await ownerControl('approval.resolve', { ...answer, fingerprint: 'changed' });
+  assert.equal(wrong.code, Errors.APPROVAL_ACTION_CHANGED);
+  assert.ok(fs.existsSync(path.join(workspace, 'build/keep.txt')));
+  const accepted = await ownerControl('approval.resolve', answer);
+  assert.equal(accepted.state, 'delivered');
+  await until(async () => (await refresh()).turn === 'completed', 'corrected native completion');
+  assert.equal(fs.readFileSync(path.join(workspace, 'WINDOW.md'), 'utf8'), corrected);
+  assert.equal(fs.existsSync(path.join(workspace, 'build')), false);
+  assert.ok(reader.state.events.filter(event => event.type === 'diff.updated').length >= 2);
+  assert.ok(JSON.stringify(reader.state.events).includes('Monday'));
+  assert.ok(JSON.stringify(reader.state.diffs).includes('Tuesday'));
+  report.turns.push({ status: 'completed', productTurnId: firstSession.turnId, providerThreadId: firstSession.providerSessionId });
+  report.correction = { before: 'Monday', after: 'Tuesday', sourceActor: teammate.id, receipt: delivered.state };
+  pass('confirmed teammate correction changes actual file bytes while preserving its actor, receipt and earlier history');
+  pass('exact encrypted approval causes the real bounded deletion');
 
-  const out = path.join(__dirname, '..', '.artifacts', 'encrypted-codex-task');
-  fs.mkdirSync(out, { recursive: true });
-  fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ ranAt: new Date().toISOString(), codex: p.version, results }, null, 2) + '\n');
-  console.log('\n' + results.length + ' real Codex task checks recorded');
-})().then(async () => {
-  socket?.close(); encrypted?.close(); try { runtime?.stop?.(); } catch {}
-  await hub?.close?.(); process.exit(0);
-}).catch(async (error) => {
-  console.error('REAL CODEX TASK FAILED\n', error);
-  socket?.close(); try { encrypted?.close(); } catch {}
-  try { runtime?.stop?.(); } catch {}
-  try { await hub?.close?.(); } catch {}
-  process.exit(1);
+  const handover = await ownerControl('responsibility.handover', { to: teammate.id, note: 'Tuesday correction verified in WINDOW.md; Bob owns the outcome.' });
+  assert.equal(handover.state, 'delivered');
+  await until(async () => (await refreshTeammate())?.responsible === teammate.id, 'handoff history');
+  assert.equal(teammateReader.state.handover.note, 'Tuesday correction verified in WINDOW.md; Bob owns the outcome.');
+  assert.ok(JSON.stringify(teammateReader.state.diffs).includes('Tuesday'));
+  pass('responsibility handoff preserves the verified corrected diff for the admitted teammate');
+  const next = await teammateControl('turn.start', { input: [{ type: 'text', text: 'For this final synthetic stop test, call plexus_remove_path for pause and wait for the host decision. Do not change WINDOW.md.' }] });
+  assert.equal(next.state, 'accepted');
+  const secondSession = await until(() => { const value = runtime.sessions.get(task.id); return value?.turnId === next.result.turnId && value; }, 'resumed native session');
+  const nextApproval = await until(async () => { await refresh(); return reader.state.approvals.find(value => value.turnId === next.result.turnId); }, 'resumed approval');
+  assert.equal(secondSession.providerResume.state, 'acknowledged');
+  assert.equal(secondSession.providerSessionId, firstSession.providerSessionId);
+  const interrupted = await teammateControl('turn.interrupt', { turnId: nextApproval.turnId });
+  assert.equal(interrupted.state, 'accepted');
+  await until(async () => (await refresh()).turn === 'interrupted', 'native interrupted terminal');
+  assert.equal(secondSession.providerInterrupt.state, 'confirmed');
+  assert.ok(fs.existsSync(path.join(workspace, 'pause/keep.txt')));
+  assert.equal(fs.readFileSync(path.join(workspace, 'WINDOW.md'), 'utf8'), corrected);
+  report.turns.push({ status: 'interrupted', productTurnId: secondSession.turnId, providerThreadId: secondSession.providerSessionId,
+    interrupt: secondSession.providerInterrupt.state, resume: secondSession.providerResume.state });
+  pass('next responsible teammate explicitly resumes the same native thread and receives confirmed interruption without deletion');
+  const outcome = await teammateControl('task.outcome', { outcome: 'completed' });
+  assert.equal(outcome.state, 'delivered');
+  await refresh(); assert.equal(reader.state.outcome, 'completed'); assert.equal(reader.state.completedBy, teammate.id);
+  const relay = JSON.stringify({ events: await tasks.page(task.id), tasks: await tasks.list(team.id), runtimes: hub.store.listRuntimes(team.id) });
+  assert.equal(relay.includes(marker), false); assert.equal(relay.includes(outsideMarker), false);
+  assert.equal(/access_token|refresh_token|sk-[a-zA-Z0-9_-]{12,}/.test(relay), false);
+  pass('real provider correction, handoff and outcome stay ciphertext-only at the relay');
+  report.status = 'passed';
+})().catch(error => {
+  report.status = 'failed'; report.error = String(error.message || error); console.error('FAIL ' + report.error); process.exitCode = 1;
+}).finally(async () => {
+  clearInterval(challenges); socket?.close();
+  try { await runtime?.stop(); } catch {}
+  try { hostKeys?.close(); ownerEndpoint?.close(); teammateEndpoint?.close(); } catch {}
+  try { await hub?.close(); } catch {}
+  const out = path.resolve(__dirname, '../.artifacts/encrypted-codex-host-tools');
+  fs.mkdirSync(out, { recursive: true }); fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify(report, null, 2) + '\n');
+  fs.rmSync(dir, { recursive: true, force: true });
 });

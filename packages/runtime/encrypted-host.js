@@ -16,19 +16,33 @@
 //   * **What the agent did.** Turn events are translated, never summarised, and anything
 //     without a counterpart in the log is dropped rather than approximated.
 const crypto = require('node:crypto');
-const { Endpoint } = require('../e2ee/endpoint');
+const { createDurableEndpoint } = require('./durable-endpoint');
+const { replayMembership, verifySignature, currentMembershipBody, accountId } = require('../e2ee/membership.mjs');
+const { canonical } = require('../protocol/encrypted-task.mjs');
 const { HubKeyTransport } = require('../e2ee/hub-key-transport.mjs');
 const { EncryptedTaskTransport } = require('../e2ee/task-log.mjs');
 const { matrixUser } = require('../protocol/encrypted-task.mjs');
-const { readTaskControl, ENVELOPE_TYPE, HISTORY_TYPE } = require('../e2ee/task-control.mjs');
+const { readTaskControl, sendTaskReceipt, ENVELOPE_TYPE, HISTORY_TYPE } = require('../e2ee/task-control.mjs');
 const { normalizeLink, normalizeLinkTitle } = require('../protocol/related-work.mjs');
 const { routing } = require('../e2ee/task-log.mjs');
 const { EncryptedTaskState, EncryptedFixtureHost } = require('./encrypted-task');
 const { EncryptedTaskRun } = require('./encrypted-run');
+// Match the relay's answer window. Start locally before POST so a delayed request
+// never makes this endpoint retain a nonce longer than the relay accepts it.
+const MEMBERSHIP_CHALLENGE_TTL_MS = 60000;
 
 class EncryptedHost {
-  constructor({ runtime, url, statePath, projects = new Map(), device = 'HOST', log = () => {} }) {
+  constructor({ runtime, url, statePath, projects = new Map(), device = 'HOST', authority = null, endpointFactory = createDurableEndpoint, onControl = null, log = () => {} }) {
     this.runtime = runtime;
+    this.authority = authority;
+    this.endpointFactory = endpointFactory;
+    this.onControl = onControl;
+    this.reconciled = false;
+    this.challenge = null;
+    this.challengeExpiresAt = 0;
+    this.reconcileGeneration = 0;
+    this.openedTasks = new Map();
+    this.controlQueues = new Map();
     this.url = url;                 // http origin of the hub
     this.statePath = statePath;     // durable outbox + checkpoints
     this.projects = projects;       // opaque projectId -> authorized local directory
@@ -42,18 +56,12 @@ class EncryptedHost {
     this.running = new Map();
   }
 
-  // The host's identity lives only as long as this process. That is recorded rather than
-  // worked around: the SDK's persistent store is IndexedDB-backed, so a Node runtime cannot
-  // hold one, and a durable identity means running the endpoint where a browser store
-  // exists. Until then a restart means this host can no longer read what it wrote.
-  static identityDurability() {
-    return { persistent: false, reason: 'the crypto store is IndexedDB-backed and Node has no IndexedDB' };
-  }
+  static identityDurability() { return { persistent: true, backend: 'desktop-os-sealed-indexeddb' }; }
 
   async start() {
     if (!this.runtime.teamId) throw new Error('runtime_unpaired');
     this.state = new EncryptedTaskState(this.statePath);
-    this.endpoint = await Endpoint.create({
+    this.endpoint = await this.endpointFactory({
       user: matrixUser(this.runtime.id),
       device: this.device,
       transport: new HubKeyTransport({ url: this.url, token: this.runtime.runtimeToken, device: this.device, runtimeId: this.runtime.id })
@@ -63,55 +71,130 @@ class EncryptedHost {
     return this.endpoint.identity();
   }
 
-  // Verified endpoints in this team, as the hub records them. A creator whose endpoint is
-  // only announced - not confirmed by anybody - is not somebody this host will act for.
-  async verifiedEndpoints() {
-    const response = await fetch(this.url + '/api/enrollment?team=' + encodeURIComponent(this.runtime.teamId), {
-      headers: { Authorization: 'Bearer ' + this.runtime.runtimeToken, 'X-Plexus-Runtime': this.runtime.id },
-      signal: AbortSignal.timeout(10000)
+  disconnect() {
+    this.reconciled = false; this.challenge = null; this.challengeExpiresAt = 0;
+    this.reconcileGeneration++;
+  }
+
+  async enrollmentRequest(path = '', body) {
+    const response = await fetch(this.url + '/api/enrollment' + path, {
+      method: body === undefined ? 'GET' : 'POST',
+      headers: { Authorization: 'Bearer ' + this.runtime.runtimeToken, 'X-Plexus-Runtime': this.runtime.id,
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10000)
     });
-    if (!response.ok) throw new Error('enrollment_unavailable');
-    const state = await response.json();
-    const out = new Map();
-    for (const row of state.endpoints || []) {
-      if (row.state !== 'verified') continue;
-      const identity = { user: matrixUser(row.userId), device: row.device, curve25519: row.curve25519, ed25519: row.ed25519 };
-      // The team's verdict is the trust decision; this records it in the host's own crypto
-      // store so the SDK will treat that device's envelopes as authenticated. The host is
-      // honouring a confirmation somebody else made, which is why it never sets one of its
-      // own - and why a key that does not match the one the team confirmed is dropped rather
-      // than trusted: the enrolment and the key directory disagreeing is a finding, not a
-      // detail to smooth over.
-      try {
-        await this.endpoint.confirmEndpoint(identity, { confirmed: true });
-      } catch (error) {
-        this.log('endpoint ' + row.userId + '/' + row.device + ' is enrolled as verified but its keys do not match the directory: '
-          + (error.message || error));
-        continue;
+    if (!response.ok) throw Object.assign(new Error('enrollment_unavailable'), { code: 'enrollment_unavailable' });
+    return response.json();
+  }
+
+  async beginReconcile() {
+    this.reconciled = false;
+    const generation = ++this.reconcileGeneration;
+    const challenge = this.challenge = crypto.randomBytes(24).toString('hex');
+    this.challengeExpiresAt = Date.now() + MEMBERSHIP_CHALLENGE_TTL_MS;
+    try {
+      await this.enrollmentRequest('/challenge', { teamId: this.runtime.teamId, challenge });
+    } catch (error) {
+      if (generation === this.reconcileGeneration) { this.challenge = null; this.challengeExpiresAt = 0; }
+      throw error;
+    }
+    if (generation !== this.reconcileGeneration) throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+    return challenge;
+  }
+
+  async reconcileMembership() {
+    if (!this.authority) throw Object.assign(new Error('membership_authority_required'), { code: 'membership_authority_required' });
+    if (!this.reconciled && (!this.challenge || Date.now() >= this.challengeExpiresAt)) await this.beginReconcile();
+    const generation = this.reconcileGeneration;
+    const challenge = this.challenge;
+    const needsProof = !this.reconciled;
+    const received = await this.enrollmentRequest('?team=' + encodeURIComponent(this.runtime.teamId));
+    const key = 'authorization:' + this.runtime.teamId;
+    const prior = this.state.load(key);
+    let current;
+    try {
+      current = await replayMembership(received.authorityLog, {
+        teamId: this.runtime.teamId, authority: this.authority, checkpoint: prior
+      });
+      if (needsProof) {
+        const proof = received.currentProof;
+        const body = currentMembershipBody(this.runtime.teamId, challenge, current);
+        // An owner may answer just before a project/grant advances the signed log.
+        // The relay hides answered challenges, so renew an authenticated ancestor
+        // proof now; accepting it or waiting for nonce expiry would be incorrect.
+        if (proof?.challenge === challenge && proof.teamId === this.runtime.teamId && proof.type === body.type &&
+            Number.isSafeInteger(proof.seq) && proof.seq > 0 && proof.seq < current.seq &&
+            received.authorityLog[proof.seq]?.previous === proof.hash &&
+            await verifySignature(this.authority, currentMembershipBody(this.runtime.teamId, challenge, proof), proof.signature)) {
+          if (generation === this.reconcileGeneration && this.challenge === challenge &&
+              !this.reconciled && Date.now() < this.challengeExpiresAt) await this.beginReconcile();
+          throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+        }
+        if (!proof || proof.seq !== current.seq || proof.hash !== current.hash || proof.challenge !== challenge ||
+            proof.teamId !== this.runtime.teamId || proof.type !== body.type ||
+            !await verifySignature(this.authority, body, proof.signature)) throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
       }
-      out.set(row.userId, identity);
+      // Disconnect or nonce renewal invalidates every earlier in-flight response.
+      // A signed answer received after its window ends must use the next challenge.
+      if (generation !== this.reconcileGeneration || (needsProof && Date.now() >= this.challengeExpiresAt)) {
+        throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+      }
+    } catch (error) { if (generation === this.reconcileGeneration) this.reconciled = false; throw error; }
+    this.state.save(key, { seq: current.seq, hash: current.hash });
+    this.membership = current;
+    this.reconciled = true;
+    return current;
+  }
+
+  async verifiedEndpointList() {
+    const current = await this.reconcileMembership();
+    const out = [];
+    for (const row of current.endpoints) {
+      if (row.state !== 'verified') continue;
+      const identity = Object.fromEntries(['user', 'device', 'curve25519', 'ed25519'].map((key) => [key, row[key]]));
+      await this.endpoint.confirmEndpoint(identity, { confirmed: true });
+      out.push({ userId: row.userId, identity });
     }
     return out;
   }
 
-  // Tasks the relay has addressed to this host and this team.
-  async pending() {
-    const listed = await this.tasks.list(this.runtime.teamId);
-    return (listed.tasks || []).filter((task) => task.runtimeId === this.runtime.id && !this.handled.has(task.id));
+  async verifiedEndpoints() {
+    return new Map((await this.verifiedEndpointList()).map(({ userId, identity }) => [userId, identity]));
   }
 
-  // Who holds a live grant on a project, as the relay records it. This is the relay's own
-  // gate - membership of a project, not decryption authority - and it is the right one to
-  // ask here: "may this person be sent a question about this work" is exactly a grant.
+  async pending() {
+    const listed = await this.tasks.list(this.runtime.teamId);
+    return (listed.tasks || []).filter((task) => task.runtimeId === this.runtime.id && !this.handled.has(task.id) && !this.state.load('execution:' + task.id));
+  }
+
   async participants(projectId) {
-    const response = await fetch(this.url + '/api/enrollment?team=' + encodeURIComponent(this.runtime.teamId) +
-      '&project=' + encodeURIComponent(projectId), {
-      headers: { Authorization: 'Bearer ' + this.runtime.runtimeToken, 'X-Plexus-Runtime': this.runtime.id },
-      signal: AbortSignal.timeout(10000)
-    });
-    if (!response.ok) throw new Error('enrollment_unavailable');
-    const state = await response.json();
-    return new Map((state.participants || []).map((p) => [p.userId, p]));
+    const current = await this.reconcileMembership();
+    return new Map(current.grants.filter((g) => g.projectId === projectId && !g.revoked).map((g) => [g.userId, g]));
+  }
+
+  async openTask(task) {
+    if (!this.openedTasks.has(task.id)) {
+      const opening = (async () => {
+        const project = this.projects.get(task.projectId);
+        if (!project) throw new Error('project_not_mapped');
+        const current = await this.reconcileMembership();
+        const creator = current.endpoints.find((e) => e.userId === task.creatorUserId && e.curve25519 === task.request?.content?.sender_key);
+        if (!creator) throw new Error('task_creator_unverified');
+        const previouslyStarted = this.state.load(task.id)?.checkpoint?.seq > 0;
+        if (!previouslyStarted && (creator.state !== 'verified' || !current.grants.some((g) => g.projectId === task.projectId && g.userId === task.creatorUserId && !g.revoked))) {
+          throw new Error('task_creator_unverified');
+        }
+        await this.endpoint.confirmEndpoint(creator, { confirmed: true });
+        const adapter = new EncryptedFixtureHost({ runtime: this.runtime, endpoint: this.endpoint,
+          transport: this.tasks, state: this.state, projects: this.projects,
+          creators: new Map([[task.creatorUserId, creator]]) });
+        const opened = await adapter.open(task);
+        return { ...opened, adapter };
+      })();
+      this.openedTasks.set(task.id, opening);
+      opening.catch(() => { if (this.openedTasks.get(task.id) === opening) this.openedTasks.delete(task.id); });
+    }
+    return this.openedTasks.get(task.id);
   }
 
   // Everyone a live project grant covers, handed the key to a task they may now read.
@@ -125,23 +208,9 @@ class EncryptedHost {
     const project = this.projects.get(task.projectId);
     if (!project) return { admitted: [], skipped: 'project_not_mapped' };
     const holders = await this.participants(task.projectId);
-    const verified = await this.verifiedEndpoints();
-    const members = [];
-    for (const userId of holders.keys()) {
-      const identity = verified.get(userId);
-      // A grant without a verified endpoint is a person who may join and has not yet proved
-      // which device they are. Nothing is shared with a device nobody has confirmed.
-      if (identity) members.push({ userId, identity });
-    }
+    const members = (await this.verifiedEndpointList()).filter((member) => holders.has(member.userId));
     if (!members.length) return { admitted: [] };
-
-    const creators = await this.verifiedEndpoints();
-    const adapter = new EncryptedFixtureHost({
-      runtime: this.runtime, endpoint: this.endpoint, transport: this.tasks, state: this.state,
-      projects: new Map([[task.projectId, project]]),
-      creators: new Map([...creators].map(([userId, identity]) => [userId, identity]))
-    });
-    await adapter.open(task);
+    const { adapter } = await this.openTask(task);
 
     // History first. A teammate admitted to the session but not handed what came before
     // would replay from event one and fail on the first event they cannot decrypt.
@@ -172,50 +241,36 @@ class EncryptedHost {
   // What this cannot do is unsay what was already said. Events the removed endpoint had
   // already decrypted stay decrypted, on their machine, forever. See REVOCATION_LIMITS.
   async applyRevocations(tasks) {
-    const response = await fetch(this.url + '/api/enrollment?team=' + encodeURIComponent(this.runtime.teamId), {
-      headers: { Authorization: 'Bearer ' + this.runtime.runtimeToken, 'X-Plexus-Runtime': this.runtime.id },
-      signal: AbortSignal.timeout(10000)
-    });
-    if (!response.ok) throw new Error('enrollment_unavailable');
-    const state = await response.json();
-    const mine = (state.revocations || []).filter((r) => !r.appliedBy.includes(this.runtime.id));
-    if (!mine.length) return { applied: [], rotated: [] };
-
-    // Rotate every task this host owns. A revoked endpoint may have held the key to any of
-    // them, and working out which is a guess this host has no reason to make.
+    const current = await this.reconcileMembership();
+    const marker = 'revocations:' + this.runtime.teamId;
+    const saved = this.state.load(marker) || { seq: 0, pendingAcks: [] };
+    const through = saved.seq;
+    const pending = current.revocations.filter((r) => r.seq > through);
+    if (!pending.length && !saved.pendingAcks?.length) return { applied: [], rotated: [] };
     const listed = tasks || (await this.tasks.list(this.runtime.teamId)).tasks || [];
-    const owned = listed.filter((task) => task.runtimeId === this.runtime.id && this.projects.get(task.projectId));
+    const owned = listed.filter((task) => task.runtimeId === this.runtime.id && this.projects.has(task.projectId));
     const rotated = [];
-    for (const task of owned) {
+    for (const task of pending.length ? owned : []) {
       const holders = await this.participants(task.projectId);
-      const verified = await this.verifiedEndpoints();
-      const members = [...holders.keys()].map((userId) => verified.get(userId)).filter(Boolean);
-      const adapter = new EncryptedFixtureHost({
-        runtime: this.runtime, endpoint: this.endpoint, transport: this.tasks, state: this.state,
-        projects: new Map([[task.projectId, this.projects.get(task.projectId)]]),
-        creators: new Map([...verified].map(([userId, identity]) => [userId, identity]))
-      });
-      await adapter.open(task);
-      // rotate: the difference between adding somebody and removing somebody.
-      await adapter.admit(task, members, { rotate: true });
+      const members = (await this.verifiedEndpointList()).filter((m) => holders.has(m.userId)).map((m) => m.identity);
+      const { adapter } = await this.openTask(task);
+      // The host remains a recipient even when all participant grants were removed.
+      await adapter.admit(task, [this.endpoint.identity(), ...members], { rotate: true });
       rotated.push(task.id);
     }
-
+    // Commit locally before acknowledging. The relay cannot manufacture this application state.
+    const pendingAcks = [...(saved.pendingAcks || []), ...pending];
+    this.state.save(marker, { seq: current.seq, pendingAcks });
     const applied = [];
-    for (const revocation of mine) {
-      const ack = await fetch(this.url + '/api/enrollment/ack-revocation', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer ' + this.runtime.runtimeToken,
-          'X-Plexus-Runtime': this.runtime.id
-        },
-        body: JSON.stringify({ teamId: this.runtime.teamId, target: { userId: revocation.userId, device: revocation.device } }),
-        signal: AbortSignal.timeout(10000)
-      });
-      if (ack.ok) applied.push({ userId: revocation.userId, device: revocation.device });
+    for (const revocation of pendingAcks) {
+      if (revocation.device) {
+        const ack = { type: 'plexus.membership.applied.v1', teamId: this.runtime.teamId, runtimeId: this.runtime.id, seq: current.seq, hash: current.hash,
+          target: { userId: revocation.userId, device: revocation.device }, signer: this.endpoint.identity() };
+        await this.enrollmentRequest('/ack-revocation', { ...ack, signature: await this.endpoint.sign(canonical(ack)) });
+      }
+      applied.push(revocation);
+      this.state.save(marker, { seq: current.seq, pendingAcks: pendingAcks.filter((entry) => !applied.includes(entry)) });
     }
-    this.log('applied ' + applied.length + ' revocation(s), rotated ' + rotated.length + ' task key(s)');
     return { applied, rotated };
   }
 
@@ -225,6 +280,8 @@ class EncryptedHost {
   // "for one task" would throw away every message addressed to the others. Poll-based like
   // pending() - a request is picked up when the host next looks, and there is no push.
   async collect() {
+    await this.reconcileMembership();
+    await this.verifiedEndpointList();
     const envelopes = await this.endpoint.transport.drain();
     if (!envelopes.length) return { applied: [], refused: [] };
     // The same call takes delivery of room keys, which share this mailbox.
@@ -248,10 +305,19 @@ class EncryptedHost {
       // A message naming a task this host does not hold is dropped rather than guessed at.
       if (!match) { refused.push({ code: 'unknown_task_control_target' }); continue; }
       try {
-        applied.push(await this.apply(match.task, match.read));
+        const result = await this.apply(match.task, match.read);
+        applied.push(result);
+        await sendTaskReceipt(this.endpoint, { user: matrixUser(match.read.sender), device: match.read.senderDevice }, {
+          task: match.task, commandId: match.read.commandId, state: result?.state || 'delivered', result
+        });
       } catch (error) {
         this.log('task control refused: ' + (error.code || error.message));
-        refused.push({ taskId: match.task.id, code: error.code || 'task_control_refused' });
+        const code = error.code || error.message || 'task_control_refused';
+        refused.push({ taskId: match.task.id, commandId: match.read.commandId, code });
+        try { await sendTaskReceipt(this.endpoint, { user: matrixUser(match.read.sender), device: match.read.senderDevice }, {
+          task: match.task, commandId: match.read.commandId, state: code === 'command_outcome_unknown' ? 'unknown' : 'rejected', code,
+          ...(error.settled ? { result: { settled: error.settled } } : {})
+        }); } catch {}
       }
     }
     return { applied, refused };
@@ -264,18 +330,28 @@ class EncryptedHost {
   // Whether it may still *act* is a live question, and the only honest answer comes from
   // asking now.
   async endpointStanding(userId, device) {
-    const response = await fetch(this.url + '/api/enrollment?team=' + encodeURIComponent(this.runtime.teamId), {
-      headers: { Authorization: 'Bearer ' + this.runtime.runtimeToken, 'X-Plexus-Runtime': this.runtime.id },
-      signal: AbortSignal.timeout(10000)
+    const current = await this.reconcileMembership();
+    return current.endpoints.find((e) => e.userId === userId && e.device === device)?.state || 'unknown';
+  }
+
+  apply(task, read) {
+    const work = (this.controlQueues.get(task.id) || Promise.resolve()).then(() => this.applyOrdered(task, read)).catch((error) => {
+      const key = 'control:' + task.id + ':' + read.commandId;
+      const held = this.state.load(key);
+      // Typed policy/validation refusals are final. Unknown dispatch failures retain the
+      // accepted claim so retry can never silently execute the action a second time.
+      if (held?.state === 'accepted' && error.code && !['command_outcome_unknown', 'crypto_broker_unavailable'].includes(error.code)) {
+        this.state.save(key, { ...held, state: 'rejected', refusal: { code: error.code, ...(error.settled ? { settled: error.settled } : {}) } });
+      }
+      throw error;
     });
-    if (!response.ok) throw new Error('enrollment_unavailable');
-    const state = await response.json();
-    const row = (state.endpoints || []).find((e) => e.userId === userId && e.device === device);
-    return row ? row.state : 'unknown';
+    this.controlQueues.set(task.id, work.catch(() => {}));
+    return work;
   }
 
   // One authorized control message, turned into one log event.
-  async apply(task, { sender, senderDevice, action, payload }) {
+  async applyOrdered(task, read) {
+    const { sender, senderDevice, action, payload, commandId } = read;
     const project = this.projects.get(task.projectId);
     if (!project) throw Object.assign(new Error('project_not_mapped'), { code: 'project_not_mapped' });
     const holders = await this.participants(task.projectId);
@@ -292,19 +368,30 @@ class EncryptedHost {
       throw Object.assign(new Error('endpoint_' + standing), { code: standing === 'revoked' ? 'endpoint_revoked' : 'endpoint_not_verified' });
     }
 
-    const creators = await this.verifiedEndpoints();
-    const adapter = new EncryptedFixtureHost({
-      runtime: this.runtime, endpoint: this.endpoint, transport: this.tasks, state: this.state,
-      projects: new Map([[task.projectId, project]]),
-      creators: new Map([...creators].map(([userId, identity]) => [userId, identity]))
-    });
-    const opened = await adapter.open(task);
+    const opened = await this.openTask(task);
+    const commandKey = 'control:' + task.id + ':' + commandId;
+    const fingerprint = canonical(read);
+    const previous = this.state.load(commandKey);
+    if (previous) {
+      if (previous.fingerprint !== fingerprint) throw Object.assign(new Error('command_id_conflict'), { code: 'command_id_conflict' });
+      if (previous.refusal) throw Object.assign(new Error(previous.refusal.code), previous.refusal);
+      if (previous.result) return { ...previous.result, duplicate: true };
+      throw Object.assign(new Error('command_outcome_unknown'), { code: 'command_outcome_unknown' });
+    }
+    if (!commandId) throw Object.assign(new Error('invalid_command_id'), { code: 'invalid_command_id' });
+    this.state.save(commandKey, { fingerprint, state: 'accepted' });
+    if (action.startsWith('turn.') || action.startsWith('approval.') || action === 'task.diff') {
+      if (!this.onControl) throw Object.assign(new Error('unsupported_task_control'), { code: 'unsupported_task_control' });
+      const result = await this.onControl(task, read, opened);
+      this.state.save(commandKey, { fingerprint, state: 'completed', result });
+      return result;
+    }
     // Help requests carry their own id; an outcome or a handover is identified by what it
     // is and who sent it, which is enough to make a redelivered envelope idempotent without
     // letting a caller choose the identity of an event it does not own.
     const id = ['help.request', 'help.settle', 'link.add', 'link.remove'].includes(action)
       ? String(payload.id || '')
-      : action + ':' + sender;
+      : commandId;
     if (!/^[A-Za-z0-9_:.-]{1,96}$/.test(id)) throw Object.assign(new Error('invalid_task_control'), { code: 'invalid_task_control' });
 
     let event;
@@ -371,7 +458,9 @@ class EncryptedHost {
     // appended twice - #6's writer refuses a reused id whose content differs.
     const eventId = 'ev_' + crypto.createHash('sha256').update(task.id + ':' + event.type + ':' + id).digest('hex').slice(0, 32);
     await opened.writer.append(event, eventId);
-    return { taskId: task.id, type: event.type, id };
+    const result = { taskId: task.id, type: event.type, id, state: 'delivered' };
+    this.state.save(commandKey, { fingerprint, state: 'completed', result });
+    return result;
   }
 
   // One task, from opaque record to finished encrypted history.
@@ -393,16 +482,10 @@ class EncryptedHost {
         this.log('encrypted task ' + task.id + ' has no local project mapping; leaving it alone');
         return { skipped: 'project_not_mapped' };
       }
-      const creators = await this.verifiedEndpoints();
-      const adapter = new EncryptedFixtureHost({
-        runtime: this.runtime, endpoint: this.endpoint, transport: this.tasks, state: this.state,
-        projects: new Map([[task.projectId, project]]),
-        creators: new Map([...creators].map(([userId, identity]) => [userId, identity]))
-      });
-      const opened = await adapter.open(task);
+      const opened = await this.openTask(task);
+      const adapter = opened.adapter;
       // Drain anything the hub is holding for this endpoint before writing: the creator's
       // session keys arrive the same way as everything else.
-      await this.endpoint.open(await this.endpoint.transport.drain());
       const run = new EncryptedTaskRun({ opened, task, runTurn, provider, log: this.log });
       const result = await run.start();
       this.handled.add(id);
@@ -413,9 +496,14 @@ class EncryptedHost {
   }
 
   close() {
-    try { this.endpoint?.close(); } catch {}
-    try { this.state?.close(); } catch {}
+    if (!this.closing) this.closing = (async () => {
+      this.disconnect();
+      await Promise.allSettled([...this.controlQueues.values()]);
+      try { await this.endpoint?.close(); } finally { this.state?.close(); }
+    })();
+    return this.closing;
   }
+
 }
 
 module.exports = { EncryptedHost };
