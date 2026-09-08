@@ -1,5 +1,10 @@
 # Issues 2–17: integration repairs and remaining acceptance work
 
+The user subsequently excluded testing that requires GitHub Actions from this pass.
+Local macOS, browser and provider verification continues; current Windows execution
+is recorded as not run and does not hold up this local pass. An earlier Windows result
+does not qualify the current implementation.
+
 This records the implementation following the 8 September 2026 audit of
 `1be13d40c60ad50d7b79eadd31360a86be2ba428`. It supplements the earlier issue proofs;
 it does not turn their closed GitHub states or checked boxes into evidence that the
@@ -67,9 +72,13 @@ A separate explicit host-tools opt-in uses Codex 0.153.4, macOS arm64 and
 reads, listing, writes and removal go through the host's existing workspace boundary.
 A private provider profile disables ambient instructions, MCP, apps and plugins.
 Unexpected configuration, managed requirements, instruction sources or MCP inventory
-stop execution before model work. Native consent names use of the existing local
-file-backed ChatGPT login, including shared refresh; other authentication paths are
-not implied. The actual CLI's synthetic tool inventory passes. The separate
+stop execution before model work. Native consent names the selected file-backed
+ChatGPT or API-key login, its usage owner and separate API billing. Mode and account
+have separate private provider profiles; local consent pins an opaque account binding.
+Account checks precede model requests, and a native thread cannot resume under a
+different account. ChatGPT token refresh preserves the binding. API preflight and
+tool inventory pass using synthetic credentials and a local model-service fixture;
+this does not establish real API-account execution or entitlement. The separate
 real-provider scenario also passed: eight checks covering actual read refusals,
 file writes, acknowledged correction, exact approval, handoff, explicit thread
 resume and confirmed interruption on this supported configuration.
@@ -82,12 +91,12 @@ proofs remain applicable to their original revisions and scopes.
 
 | Issue | Current implementation assessment | Remaining acceptance work or limit |
 | --- | --- | --- |
-| [#2](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/2) | One real ChatGPT-backed encrypted scenario exercises actual writes, native shared steering/interrupt, approval, handoff and resume; command deduplication and competing approvals have deterministic coverage. | Separate authorized API-account test, supported multi-human entitlement arrangement, and full advertised-platform/provider isolation evidence. |
+| [#2](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/2) | One real ChatGPT-backed encrypted scenario exercises actual writes, native shared steering/interrupt, approval, handoff and resume; command deduplication and competing approvals have deterministic coverage. API mode selection, account continuity and private resume binding are implemented and locally tested with synthetic credentials. | Separate authorized real API-account test and supported multi-human entitlement arrangement. GitHub Actions testing is excluded from this pass; current Windows execution remains unverified. |
 | [#3](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/3) | Established SDK storage/recovery foundation retained; signed membership, provenance, replay and revocation tests strengthened. | Qualified review of the new integrated privacy/control protocol; retained platform proofs do not review this new protocol. |
 | [#4](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/4) | Rebuilt macOS installer passes installation, bundled startup, pairing, project selection, a real Codex encrypted task, failure/retry and uninstall. | Current Windows changes require a Windows run. Public signing remains the later distribution slice. |
 | [#5](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/5) | Team, invitations, host consent, project/policy limits and direct-request boundaries exercised. Device state reflects actual verification. | New cryptographic integration retains the independent-review gate. |
 | [#6](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/6) | Opaque task persistence, ordered replay, integrity failure, browser restart and production host execution are connected and tested. | Full external-release platform and adversarial review gates remain. |
-| [#7](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/7) | Production encrypted execution, actual Codex host-tool edits, durable identity, explicit local provider consent and actionable errors implemented. The supported native scenario passes actual project-read refusals. | Restricted to Codex 0.153.4, macOS arm64, gpt-5.4-mini and the tested file-backed ChatGPT login. Installed real-provider evidence is recorded separately below. Older read-only opt-ins remain disabled. |
+| [#7](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/7) | Production encrypted execution, actual Codex host-tool edits, durable identity, explicit local provider consent and actionable errors implemented. The supported native scenario passes actual project-read refusals. | Restricted to Codex 0.153.4, macOS arm64 and gpt-5.4-mini. Real execution is verified with the file-backed ChatGPT login; API login has synthetic/preflight coverage only. Installed real-provider evidence is recorded separately below. Older read-only opt-ins remain disabled. |
 | [#8](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/8) | Signed enrollment, explicit project grants, late teammate history, delayed host confirmation and reload exercised through the renderer. | Lost sole authority is the recovery limit described below. |
 | [#9](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/9) | Sourced catch-up, actual patches, current provider, decisions, approvals and freshness connected to authenticated events. | No generated summary or server plaintext projection is introduced. |
 | [#10](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/10) | Actor/turn binding, deduplication, queued/delivered receipts and interruption exercised through real native acknowledgments and encrypted production controls. | Native production use retains #7's supported-configuration limits. |
@@ -180,6 +189,83 @@ supported local binary. `PLEXUS_RUN_REAL_CODEX=1` plus `PLEXUS_TEST_CODEX_BIN` e
 the encrypted collaboration proof. `PLEXUS_DESKTOP_CODEX_PROOF=1` plus `CODEX_BIN`
 enables one real task in `npm run test:desktop:install`. Ordinary deterministic
 testing does not set either real-provider opt-in.
+
+## Follow-up account, SDK and installed collaboration checks
+
+The next local pass is based on `2bc1d74`. It adds explicit ChatGPT/API account modes,
+private mode/account profiles, account-bound native resume and renewed local consent
+when the account changes. Older saved configurations without an account binding now
+show setup required and refuse execution before any provider process starts. A
+readiness check alone does not grant consent. Two public runtime regressions verify
+refusal with zero spawns and successful execution after explicit account pinning.
+
+The focused provider set passed **62 checks**. The actual Codex 0.153.4 API preflight
+and local model-service/tool inventory passed **three checks** with synthetic API
+credentials. They verify account mode, the four host tools, configuration and ambient
+tool refusal; they do not establish real API quota, entitlement or model execution.
+The SDK bootstrap regression passed **two checks**, and the retained encryption
+acceptance suite passed 22 checks with six separately recorded limits. See
+[the SDK investigation](encrypted-host-integration.md#sdk-recovery-investigation-and-bootstrap-repair).
+
+One continuous installed Electron + separate Chrome + real Codex scenario passed
+**15 checks across two provider turns**. The installed app's actual durable broker
+and runtime remained in use. A late browser teammate received encrypted history,
+submitted an acknowledged correction, received one exact action grant, approved
+removal, inspected the changed-file source and accepted responsibility. Codex changed
+`NOTES.md` to exactly match separately generated `correction.txt` bytes. Both turns
+completed; the teammate subsequently recorded the task outcome as a separate action.
+There were zero uncaught errors in either window.
+
+That real run also passed all five installer checks, including deliberate
+failure/retry and uninstall. Its installer SHA-256 was
+`39ec424c1a93a09399a54f879b84c2c505fe52c4e20a29499501df80fa174a78`.
+The result explicitly records an uncommitted tree based on `2bc1d74`; it preceded the
+last legacy-configuration consent guard. Its source already used a newly consented,
+bound account. The guard's rejection path was verified separately, without repeating
+the paid provider scenario. The corresponding installer, bootstrap and collaboration
+records and execution log are preserved under `.artifacts/issues-02-17-followup/` as
+`installed-real-codex.json`, `installed-codex-bootstrap.json`,
+`installed-codex-collaboration.json` and `installed-real-codex.log`.
+
+After the final consent guard, a fresh installer passed **5/5** checks and its
+installed desktop/browser demo scenario passed **15/15**, again with no uncaught
+errors. This rebuilt installer has SHA-256
+`eea64a3d72de8e89e9ded95c171f28b633d04c7f4f3780a73149b1991c5bbf5e`.
+That final run used no provider quota; its records are
+`final-installed-demo.json`, `final-installed-demo-collaboration.json` and
+`final-installed-demo.log` in the same evidence directory.
+The full `npm test` chain was rerun after the consent guard and exited zero,
+including all fifteen production-browser workflows. Its terminal log is
+`final-npm-test.log` in that directory.
+
+Reproduce the continuous real proof by adding `PLEXUS_DESKTOP_COLLABORATION_PROOF=1`
+to the real installed command above and supplying `CHROMIUM_PATH`. The distinct
+`PLEXUS_DESKTOP_COLLABORATION_PROOF=demo` option refuses real Codex opt-in and
+rehearses the same visible controls with a deterministic provider. Its extra follow-up
+tests browser-originated writing; demo steering only acknowledges directions and is
+never credited as an interpreted model correction.
+
+All seven real captures in `.artifacts/desktop-collaboration/codex-*.png` were inspected:
+five at 1487×1058 and two at 390×844, covering catch-up, exact approval, actual source,
+review and the mobile discussion drawer. The existing shared `shell`, `review`,
+`evidence`, `decision` and `setup` anatomy is retained; no renderer or reference layout
+was changed in this follow-up. Controls and host/actor/scope context were readable,
+with no pane overlap or document overflow. Existing departures from the reference
+remain: plain diffs, inline JSON sources, technical IDs and a large mobile title.
+The new native API consent wording has not received a rendered screenshot check.
+The render review is saved as `.artifacts/issues-02-17-followup/render-review.md`.
+
+This follow-up's Standards review found no actionable violations or baseline smells.
+Its Spec review found the legacy account-consent bypass described above; the fix was
+independently rechecked with both public regressions passing. No actionable finding
+remains from those two reviews. Neither review supplies the separate specialist
+privacy/control sign-off. Sole-authority recovery also remains an implementation gap;
+the SDK bootstrap repair does not silently recover authority.
+
+Deliberately induced Electron failures now print `RECOVERY TEST` before showing the
+expected error screen, distinguishing those scenarios from unexpected test failures.
+GitHub Actions testing is excluded at the user's direction. Current Windows
+execution and real API-account usage are not inferred from these local results.
 
 ## Standards review
 

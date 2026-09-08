@@ -378,6 +378,7 @@ test('paired runtime discovers encrypted tasks and applies scoped controls witho
       // A deterministic provider adapter plans a later real workspace write. Failure
       // must abort it while running, rather than waiting for this turn to complete.
       session.thread.codexAppServerThreadId = 'private-native-provider-thread';
+      session.thread.codexAccountBinding = 'a'.repeat(64);
       await session.onProviderStateChanged();
       session.updatePlan([{ step: 'Record progress before the next file write', status: 'inProgress' }]);
       await new Promise(resolve => {
@@ -405,6 +406,7 @@ test('paired runtime discovers encrypted tasks and applies scoped controls witho
   const failedState = runtime.encryptedExecution.state(activeFailureTask);
   assert.equal(failedState.state, 'recovery-required', 'provider completion cannot overwrite recording uncertainty');
   assert.equal(failedState.providerState.codexAppServerThreadId, 'private-native-provider-thread');
+  assert.equal(failedState.providerState.codexAccountBinding, 'a'.repeat(64));
   await runtime.stop(); blockActiveAppend = false;
   await restartRuntime();
   const failedReader = new EncryptedTaskReader({ endpoint, task: activeFailureTask, writer });

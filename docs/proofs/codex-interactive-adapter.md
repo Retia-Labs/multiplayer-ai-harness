@@ -9,7 +9,8 @@ routes every project read and write through the execution host.
 ## Supported host-tools mode
 
 The bounded configuration is **Codex 0.153.4, macOS arm64, gpt-5.4-mini**, using
-an existing host-local ChatGPT file login. Other versions, platforms, models,
+an existing host-local ChatGPT or API-key file login. ChatGPT has the real task
+proof below; API mode has synthetic local contract evidence only. Other versions, platforms, models,
 keyring-only accounts and managed configurations remain unproven and are
 refused by this mode. It requires explicit local `codexHostTools` configuration;
 the old `codexReadOnly` flag cannot enable the unsafe adapter. Runtime paths and
@@ -34,6 +35,42 @@ fixed profile disables plugins, apps, MCP orchestration, skills discovery,
 memories, hooks, web search, multi-agent delegation, goals and other tools.
 Arbitrary inherited provider environment overrides are excluded.
 
+Local `codexHostTools.authMode` is `chatgpt` (the default for existing settings)
+or `apikey`; the latter maps to the CLI's `forced_login_method = "api"`.
+`--codex-host-tools` detects the current supported local login; optional
+`--codex-auth-mode chatgpt|apikey` must match it. This flag authorizes the same
+local account for shared tasks; it does not harvest API keys from the environment.
+Desktop setup names the selected account mode and its billing owner before
+consent. ChatGPT consent explicitly covers normal refresh of the shared local
+login. API consent explains that usage belongs to the key's API account.
+Legacy saved configurations without an account binding now advertise local
+setup required and cannot run a model. `checkHost` remains available for setup,
+but passing it alone does not authorize execution: explicit local consent must
+pin the returned binding. No first-use migration silently selects an account.
+
+Profiles are separated by mode and a private, domain-separated HMAC identity
+binding. The key stays in a private local file; task events never contain the
+binding, provider email, account ID or credential. ChatGPT account/user claims
+bind continuity across token refresh. API-key rotation conservatively creates
+a new identity because `account/read` supplies no API account identifier.
+Native setup pins the consented binding in local configuration. CLI opt-in
+pins it in memory after its readiness check. Changed accounts require local
+reauthorization; old provider history cannot silently resume under that account.
+Earlier unbound native thread handles are refused with
+`codex_host_tools_account_resume_mismatch`: start a fresh task, or explicitly
+choose a fresh provider session through the existing recovery flow. No old
+provider history is moved or deleted.
+
+Before thread creation and immediately before model start or steering, the
+adapter checks `account/read` with `refreshToken: false` and rechecks the private
+file binding around the response. Missing or mismatched modes fail before model
+work. Normal provider-managed refresh is still permitted. This is not an
+entitlement check or an atomic lock on an operator changing the external login
+file during a running request; native authorization and provider billing remain
+host-local responsibilities. Account/file-format claims follow the pinned
+[Codex token storage contract](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/login/src/token_data.rs)
+and [authentication modes](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/protocol/src/auth.rs).
+
 Before a thread is allowed to start a model turn, the adapter checks the exact
 owned config layer and effort override, rejects unexpected nonempty layers,
 requires `configRequirements/read` to return no managed requirements, and
@@ -56,25 +93,32 @@ hashes and the exact environment fields.
 
 ## Current verification
 
-The adapter suite passes **41 tests**, including actual host file bytes,
+The adapter/account suite passes **54 tests**, including actual host file bytes,
 read/traversal/symlink refusal, explicit whitespace preservation, native controls,
 profile/model/version guards, ambient source rejection and model-free readiness.
-The four supported-platform fixture cases skip explicitly on other platforms;
+The supported-platform fixture cases skip explicitly on other platforms;
 the supported mode itself remains closed there.
 
 The actual 0.153.4 binary also passes three checks without real provider usage:
 
-1. Production adapter readiness with an empty synthetic auth fixture and no
-   `turn/start`.
+1. Production adapter readiness with a synthetic API file login, native
+   `account/read` confirmation, and no `turn/start` or login request.
 2. A loopback-only synthetic Responses request containing exactly the four host
-   tools for gpt-5.4-mini/medium, with no ambient instruction marker.
+   tools for gpt-5.4-mini/medium, using the synthetic API file key only in the
+   authorization header, with no ambient instruction marker.
 3. A configured synthetic MCP entry is visible to preflight before its command
    starts, allowing rejection before thread creation.
 
 The tests are `test/codex-host-tools-preflight.js` and
 `test/codex-no-environment-inventory.js`, enabled by a local
 `PLEXUS_CODEX_INVENTORY_BIN` path. Evidence is
-`.artifacts/codex-host-tools-real/inventory.json`.
+`.artifacts/codex-host-tools-api/inventory.json` for the current API loopback run;
+the earlier inventory remains in `.artifacts/codex-host-tools-real/inventory.json`.
+All **62** focused account/adapter/legacy-provider regression checks pass.
+No real API account, paid API request, global login change, or Windows runner
+was used for this account-mode change. The new native API consent text follows
+Setup / shell and the accepted `setup-desktop.png` flow, using the existing OS
+dialog; a rendered API-account dialog capture was not collected in this pass.
 
 `test/encrypted-codex-task.js` passed **all eight real-provider checks** on
 2026-09-08 using the actual runtime alias and collector, signed enrollment,

@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { CodexRpc, providerFailure } = require('../packages/runtime/codex-rpc');
 const { CodexAppServerBackend, ConfinedCodexAppServerBackend, HostToolsCodexAppServerBackend, mapItem } = require('../packages/runtime/codex-app-server');
-const { PROFILE_CONFIG, PROFILE_TOML, prepareHostProfile } = require('../packages/runtime/codex-host-profile');
+const { PROFILE_CONFIG, PROFILE_TOML, profileConfig, prepareHostProfile } = require('../packages/runtime/codex-host-profile');
 const { TurnSession } = require('../packages/runtime/session');
 const { Events } = require('../packages/protocol');
 
@@ -17,6 +17,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 class Provider extends EventEmitter {
   constructor(handle = () => {}) {
     super();
+    this.handle = handle;
     this.stdout = new PassThrough(); this.stderr = new PassThrough();
     this.sent = []; this.pid = 123;
     this.stdin = new Writable({ write: (frame, _, done) => {
@@ -483,30 +484,39 @@ test('acknowledged provider thread is persisted before the first model turn star
   await f.run(); assert.equal(persisted, true);
 });
 
-function supportedToolFixture(t, override) {
+function supportedToolFixture(t, override, authMode = 'chatgpt') {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-supported-contract-'));
   t.after(() => fs.rmSync(base, { recursive: true, force: true }));
   const profileDir = path.join(base, 'profile'), authFile = path.join(base, 'synthetic-auth.json');
-  fs.writeFileSync(authFile, '{}', { mode: 0o600 });
+  const claims = { 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture-account', chatgpt_user_id: 'fixture-user' } };
+  const auth = authMode === 'apikey' ? { auth_mode: 'apikey', OPENAI_API_KEY: 'synthetic-api-key-one' }
+    : { auth_mode: 'chatgpt', tokens: { account_id: 'fixture-account', access_token: 'fixture-access', refresh_token: 'fixture-refresh',
+      id_token: 'e30.' + Buffer.from(JSON.stringify(claims)).toString('base64url') + '.fixture' } };
+  fs.writeFileSync(authFile, JSON.stringify(auth), { mode: 0o600 });
   let f;
   f = hostToolFixture(t, () => {}, { onRpc(msg, child) {
     if (override?.(msg, child, f)) return true;
+    if (msg.method === 'account/read') {
+      child.answer(msg, { requiresOpenaiAuth: true, account: authMode === 'apikey' ? { type: 'apiKey' }
+        : { type: 'chatgpt', email: 'fixture@example.invalid', planType: 'plus' } }); return true;
+    }
     if (msg.method === 'configRequirements/read') { child.answer(msg, { requirements: null }); return true; }
     if (msg.method === 'config/read') {
       child.answer(msg, { config: { model_provider: 'openai', web_search: 'disabled' }, layers: [
-        { name: { type: 'user', file: path.join(fs.realpathSync(profileDir), 'config.toml'), profile: null }, config: PROFILE_CONFIG },
+        { name: { type: 'user', file: path.join(f.backend.profile.profileDir, 'config.toml'), profile: null }, config: profileConfig(authMode) },
         { name: { type: 'sessionFlags' }, config: { model_reasoning_effort: 'high' } },
         { name: { type: 'system' }, config: {} }
       ] }); return true;
     }
     if (msg.method === 'mcpServerStatus/list') { child.answer(msg, { data: [], nextCursor: null }); return true; }
     if (msg.method === 'thread/start' || msg.method === 'thread/resume') {
-      child.answer(msg, { thread: { id: msg.params.threadId || scope.threadId }, cwd: fs.realpathSync(profileDir),
+      child.answer(msg, { thread: { id: msg.params.threadId || scope.threadId }, cwd: f.backend.profile.profileDir,
         modelProvider: 'openai', model: 'gpt-5.4-mini', approvalPolicy: 'never', sandbox: { type: 'readOnly', networkAccess: false }, instructionSources: [] }); return true;
     }
     return false;
   } });
-  f.backend = new HostToolsCodexAppServerBackend({ bin: process.execPath, profileDir, authFile,
+  f.backend = new HostToolsCodexAppServerBackend({ bin: process.execPath, profileDir, authFile, authMode,
+    requireConsentBinding: false, // These protocol fixtures isolate account checks from local setup consent.
     versionProbe: () => 'codex-cli 0.153.4', spawnProcess: () => f.child, turnTimeoutMs: 1000, requestTimeoutMs: 200 });
   f.session.provider = f.backend;
   f.profileDir = profileDir; f.authFile = authFile;
@@ -540,20 +550,121 @@ test('supported mode clears every environment and reads only through real host c
   assert.notEqual(f.child.sent.find(m => m.method === 'thread/start').params.cwd, f.root);
   assert.deepEqual(f.child.sent.find(m => m.method === 'thread/start').params.dynamicTools.map(tool => tool.name),
     ['plexus_read_file', 'plexus_list_files', 'plexus_write_file', 'plexus_remove_path']);
-  assert.equal(fs.lstatSync(path.join(f.profileDir, 'auth.json')).isSymbolicLink(), true);
+  assert.equal(fs.lstatSync(path.join(f.backend.profile.profileDir, 'auth.json')).isSymbolicLink(), true);
   assert.equal(fs.statSync(f.profileDir).mode & 0o077, 0);
   terminal(f.child); assert.equal((await running).status, 'completed');
 });
 
 test('supported resume retains product identity and explicitly clears turn environments', { skip: !supportedHost }, async t => {
   const f = supportedToolFixture(t);
+  const profile = prepareHostProfile({ profileDir: f.profileDir, authFile: f.authFile, workspace: f.root,
+    resolved: { bin: process.execPath, prefix: [] }, versionProbe: () => 'codex-cli 0.153.4' });
   f.session.thread.codexAppServerThreadId = scope.threadId;
+  f.session.thread.codexAccountBinding = profile.accountBinding;
   const running = f.run(); await until(() => f.session.providerTurnId);
   assert.equal(f.child.sent.some(m => m.method === 'thread/start'), false);
   assert.equal(f.child.sent.find(m => m.method === 'thread/resume').params.threadId, scope.threadId);
   assert.deepEqual(f.child.sent.find(m => m.method === 'turn/start').params.environments, []);
   assert.equal(f.session.thread.id, 'product-task');
   terminal(f.child); assert.equal((await running).status, 'completed');
+});
+
+test('API readiness validates the selected account without refresh, login or model work', { skip: !supportedHost }, async t => {
+  const f = supportedToolFixture(t, null, 'apikey');
+  const ready = await f.backend.checkHost({ workspace: f.root, settings: { effort: 'high' } });
+  assert.equal(ready.authMode, 'apikey');
+  const account = f.child.sent.find(m => m.method === 'account/read');
+  assert.deepEqual(account.params, { refreshToken: false });
+  assert.equal(f.child.sent.some(m => m.method === 'turn/start' || m.method.startsWith('account/login')), false);
+  assert.equal(JSON.stringify(f.child.sent).includes('synthetic-api-key-one'), false);
+});
+test('explicit local Runtime preflight enables model work only after its account binding is pinned', { skip: !supportedHost }, async t => {
+  const { Runtime } = require('../packages/runtime');
+  const f = supportedToolFixture(t, null, 'apikey');
+  const runtime = new Runtime({ dataDir: path.join(path.dirname(f.authFile), 'runtime'), codexHostTools: {
+    bin: process.execPath, authFile: f.authFile, authMode: 'apikey' } });
+  t.after(() => runtime.stop());
+  const attachProtocol = () => {
+    f.backend = runtime.provider('codex-cli');
+    f.backend.versionProbe = () => 'codex-cli 0.153.4';
+    f.backend.spawnProcess = () => f.child;
+    f.session.provider = f.backend;
+  };
+  attachProtocol();
+  const ready = await f.backend.checkHost({ workspace: f.root, settings: { effort: 'high' } });
+  assert.equal(ready.ready, true);
+  assert.equal(runtime.providerList().find(p => p.id === 'codex-cli').configured, false,
+    'preflight alone cannot silently grant consent');
+  assert.equal(f.child.sent.some(m => m.method === 'turn/start'), false);
+  const refused = await f.run();
+  assert.equal(refused.error.message, 'codex_host_tools_account_reauthorization_required');
+  runtime.codexHostTools.accountBinding = ready.accountBinding; // Explicit local setup acceptance.
+  f.child = new Provider(f.child.handle); attachProtocol();
+  const next = new TurnSession({ thread: { id: 'fresh-product-task', cwd: f.root }, provider: f.backend,
+    input: [{ type: 'text', text: 'Synthetic task after local consent' }], settings: { effort: 'high' },
+    by: { userId: 'owner' }, emit() {} });
+  const running = next.run(); await until(() => next.providerTurnId);
+  assert.equal(runtime.providerList().find(p => p.id === 'codex-cli').configured, true);
+  assert.equal(f.child.sent.filter(m => m.method === 'turn/start').length, 1);
+  terminal(f.child); assert.equal((await running).status, 'completed');
+});
+test('missing or wrong provider account fails before a thread or model is started', { skip: !supportedHost }, async t => {
+  for (const response of [{ account: null, requiresOpenaiAuth: true },
+    { account: { type: 'chatgpt' }, requiresOpenaiAuth: true }, { account: { type: 'apiKey' }, requiresOpenaiAuth: false }]) {
+    const f = supportedToolFixture(t, (msg, child) => {
+      if (msg.method !== 'account/read') return false;
+      child.answer(msg, response); return true;
+    }, 'apikey');
+    const result = await f.run();
+    assert.equal(result.error.message, 'codex_host_tools_account_mode_mismatch');
+    assert.equal(f.child.sent.some(m => m.method === 'thread/start' || m.method === 'turn/start'), false);
+    assert.equal(f.child.killed, true);
+  }
+});
+test('unbound and changed-account native resumes are refused before spawning', { skip: !supportedHost }, async t => {
+  for (const binding of [undefined, 'a'.repeat(64)]) {
+    const f = supportedToolFixture(t, null, 'apikey'); let spawns = 0;
+    f.backend.spawnProcess = () => { spawns++; return f.child; };
+    f.session.thread.codexAppServerThreadId = scope.threadId;
+    f.session.thread.codexAccountBinding = binding;
+    const result = await f.run();
+    assert.equal(result.error.message, 'codex_host_tools_account_resume_mismatch');
+    assert.equal(spawns, 0);
+  }
+});
+test('a different account cannot start even a fresh task under the previous local consent', { skip: !supportedHost }, async t => {
+  const f = supportedToolFixture(t, null, 'apikey'); let spawns = 0;
+  f.backend.accountBinding = 'a'.repeat(64);
+  f.backend.spawnProcess = () => { spawns++; return f.child; };
+  const result = await f.run();
+  assert.equal(result.error.message, 'codex_host_tools_account_reauthorization_required');
+  assert.equal(spawns, 0);
+});
+test('account changes during startup cannot use the newly selected API key', { skip: !supportedHost }, async t => {
+  const f = supportedToolFixture(t, (msg, child, fixture) => {
+    if (msg.method !== 'account/read') return false;
+    fs.writeFileSync(fixture.authFile, JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'synthetic-api-key-two' }));
+    child.answer(msg, { account: { type: 'apiKey' }, requiresOpenaiAuth: true }); return true;
+  }, 'apikey');
+  const result = await f.run();
+  assert.equal(result.error.message, 'codex_host_tools_account_changed');
+  assert.equal(f.child.sent.some(m => m.method === 'thread/start' || m.method === 'turn/start'), false);
+});
+test('private account continuity is persisted before model work and never emitted as account details', { skip: !supportedHost }, async t => {
+  const f = supportedToolFixture(t, null, 'apikey'); let persisted;
+  f.session.onProviderStateChanged = () => {
+    persisted = structuredClone(f.session.thread);
+    assert.equal(f.child.sent.some(m => m.method === 'turn/start'), false);
+  };
+  const running = f.run(); await until(() => f.session.providerTurnId);
+  assert.match(persisted.codexAccountBinding, /^[a-f0-9]{64}$/);
+  fs.writeFileSync(f.authFile, JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'synthetic-api-key-two' }));
+  f.session.steer([{ type: 'text', text: 'correction' }], { userId: 'teammate' });
+  const result = await running;
+  assert.equal(result.error.message, 'codex_host_tools_account_changed');
+  assert.equal(f.child.sent.some(m => m.method === 'turn/steer'), false);
+  assert.equal(JSON.stringify(f.events).includes(persisted.codexAccountBinding), false);
+  assert.equal(JSON.stringify(f.events).includes('synthetic-api-key'), false);
 });
 
 test('managed requirements and ambient config, instructions or MCP fail before model dispatch', { skip: !supportedHost }, async t => {

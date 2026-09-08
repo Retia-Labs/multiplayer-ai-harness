@@ -312,6 +312,40 @@ backups remain history-only. When no preauthorized recovery credential and no ex
 authority signing endpoint survive, the supported result remains readable recovered history
 with unavailable authority, rather than a relay-assisted takeover.
 
+### SDK recovery investigation and bootstrap repair
+
+A synthetic experiment with the installed Matrix SDK 18.8.0 established that
+`exportSecretsBundle()` and `importSecretsBundle()` can restore the same master signing
+key on a clean device. `OlmMachine.sign()` can then sign a new application challenge with
+that master key. The original device key is not restored. The experiment used memory
+stores, synthetic identities and an in-process public-key directory; it made no network
+requests and used no customer secrets. This is evidence about an SDK primitive, not a
+completed product recovery path.
+
+Two trust transitions require application guards before this API could be used in recovery:
+the SDK accepts the same secret bundle under a different user, and import can replace an
+already verified different master identity. Recovery therefore needs an authenticated
+original account/team/root binding and an inactive staging store. SDK identity trust must
+not automatically confer Plexus membership, project grants or approval authority.
+
+The SDK wrapper also had two reproducible defects. It requested a reset on every bootstrap,
+changing the account root on repeated setup, and used the nonexistent singular
+`uploadSignatureRequest`, omitting publication of the device signature. It now reuses the
+existing root with `bootstrapCrossSigning(false)` and publishes the SDK's
+`uploadSignaturesRequest`. `test/endpoint-cross-signing.js` verifies both the public device
+signature and retention of the account root and a previously signed second device. Each
+regression failed before its repair and passes afterwards; the existing encryption
+acceptance suite also passed 22 checks with six separately recorded limitations.
+
+The recovery investigation does not resolve membership freshness. An old exported seed
+still signs new nonces under its old root after another device rotates the root; rewrapping
+the backup does not revoke captured seeds. Even without root rotation, a clean restore
+with an old membership checkpoint can be shown a valid older prefix by a withholding relay.
+Restoring key possession does not recover lost knowledge of later removals. The proposed
+authority ceremony must preserve every host's applied checkpoint and explicitly establish
+the replacement authority locally when current membership cannot be authenticated. No
+automatic authority recovery or weakened reconciliation check was added by this repair.
+
 ## Verification record
 
 Executed with bundled Node **v24.19.0**, against disposable local hubs, workspaces and state

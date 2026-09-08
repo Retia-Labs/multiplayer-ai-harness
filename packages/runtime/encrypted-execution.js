@@ -100,7 +100,8 @@ class EncryptedExecution {
       ...(old?.state === 'recovery-required' && !resumeProvider ? {} : (old?.providerState || {})) };
     const providerState = () => ({
       ...(thread.codexSessionId ? { codexSessionId: thread.codexSessionId } : {}),
-      ...(thread.codexAppServerThreadId ? { codexAppServerThreadId: thread.codexAppServerThreadId } : {})
+      ...(thread.codexAppServerThreadId ? { codexAppServerThreadId: thread.codexAppServerThreadId } : {}),
+      ...(thread.codexAccountBinding ? { codexAccountBinding: thread.codexAccountBinding } : {})
     });
     this.pending.add(task.id);
     try { await this.ensureTaskCreated(task, opened, provider.id); }

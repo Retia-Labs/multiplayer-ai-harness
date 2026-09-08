@@ -76,7 +76,10 @@ let hub, runtime, socket, ownerEndpoint, teammateEndpoint, hostKeys, challenges;
   const provider = runtime.provider('codex-cli');
   assert.equal(provider.capabilities().nativeTools, false);
   assert.equal(provider.capabilities().readsVia, 'host-workspace-tools');
-  await provider.checkHost({ workspace, settings: { effort: 'medium' } });
+  const ready = await provider.checkHost({ workspace, settings: { effort: 'medium' } });
+  // This explicitly opted-in host-local proof authorizes the inspected account;
+  // an old unbound saved configuration cannot grant the same consent implicitly.
+  runtime.codexHostTools.accountBinding = ready.accountBinding;
   pass('actual runtime alias verifies supported version, private profile, no ambient tools or instructions before model work');
   await runtime.start();
   socket = new WebSocket(url.replace('http', 'ws')); let welcome;

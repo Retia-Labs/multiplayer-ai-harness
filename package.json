@@ -23,7 +23,7 @@
     "dist:dir": "electron-builder --dir --publish never",
     "test:codex": "npm run test:codex:app-server && npm run test:codex:exec && node test/codex-acceptance.js --lane control --out .artifacts/codex-control",
     "test:codex:exec": "node --test test/codex-exec-contract.js",
-    "test:codex:app-server": "node --test test/codex-app-server.js",
+    "test:codex:app-server": "node --test test/codex-app-server.js test/codex-host-profile.js test/codex-account-configuration.js",
     "test:codex:inventory": "node --test test/codex-no-environment-inventory.js test/codex-host-tools-preflight.js",
     "proof:codex": "node test/codex-acceptance.js",
     "codex:probe": "node -e \"console.log(JSON.stringify(require('./packages/runtime/codex-probe').probe(), null, 2))\"",
@@ -33,6 +33,7 @@
     "test:desktop-bootstrap": "node test/desktop-bootstrap.js",
     "test:desktop:install": "node scripts/desktop-install-proof.js",
     "test:e2ee:acceptance": "node test/e2ee-acceptance.js",
+    "test:e2ee:identity": "node --test test/endpoint-cross-signing.js",
     "test:e2ee:platform": "node scripts/e2ee-platform-proof.js",
     "test:encrypted-task:node": "node test/encrypted-task.js",
     "test:encrypted-task:browser": "node test/encrypted-task-browser.js",
@@ -66,7 +67,7 @@
     "test:client-storage": "node test/encrypted-client-storage-browser.js",
     "proof:codex:interactive": "node test/codex-interactive-real.js",
     "test:encrypted-workspace": "node test/encrypted-workspace-browser.js",
-    "test:collaboration-integration": "npm run test:enrollment-authority && npm run test:encrypted-controls && npm run test:runtime-lifecycle && npm run test:recovery-trust && npm run test:help-inbox && npm run test:handover && npm run test:related-work && npm run test:recovery && npm run test:recover-after-loss && npm run test:revocation && npm run test:confined-writes && npm run test:client-storage && npm run test:encrypted-workspace"
+    "test:collaboration-integration": "npm run test:e2ee:identity && npm run test:enrollment-authority && npm run test:encrypted-controls && npm run test:runtime-lifecycle && npm run test:recovery-trust && npm run test:help-inbox && npm run test:handover && npm run test:related-work && npm run test:recovery && npm run test:recover-after-loss && npm run test:revocation && npm run test:confined-writes && npm run test:client-storage && npm run test:encrypted-workspace"
   },
   "license": "MIT",
   "devDependencies": {

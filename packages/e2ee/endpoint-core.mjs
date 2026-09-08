@@ -310,11 +310,12 @@ class Endpoint {
 
   // ---- endpoint identity and verification ----
 
-  // Establish this account's cross-signing identity. The keys it publishes are public;
-  // the private halves stay in this machine's store.
+  // Establish or republish this account's cross-signing identity. Repeating setup must
+  // retain the existing root and signatures; a reset needs a separate rotation ceremony.
+  // The keys it publishes are public; the private halves stay in this machine's store.
   async bootstrapCrossSigning() {
-    const reqs = await this.machine.bootstrapCrossSigning(true);
-    for (const req of [reqs.uploadKeysRequest, reqs.uploadSigningKeysRequest, reqs.uploadSignatureRequest]) {
+    const reqs = await this.machine.bootstrapCrossSigning(false);
+    for (const req of [reqs.uploadKeysRequest, reqs.uploadSigningKeysRequest, reqs.uploadSignaturesRequest]) {
       if (!req) continue;
       const kind = req.constructor.name;
       const type = REQUEST_TYPES[kind] || (kind.includes('SigningKeys') ? 'SigningKeysUpload' : null);

@@ -5,6 +5,14 @@ const { execSync } = require('child_process');
 const { localShell } = require('../packages/runtime/executors');
 const { desktopProfile } = require('../apps/desktop/profile');
 const realCodex = process.env.PLEXUS_DESKTOP_CODEX_PROOF === '1';
+// The real collaboration claim requires the same explicit provider opt-in as the
+// solo proof. `demo` is a development run of the UI flow, never a real-provider claim.
+const collaborationMode = process.env.PLEXUS_DESKTOP_COLLABORATION_PROOF;
+const collaboration = collaborationMode === '1' || collaborationMode === 'demo';
+if (collaborationMode === '1' && (!realCodex || !process.env.DESKTOP_EXECUTABLE)) {
+  throw new Error('The collaboration proof requires PLEXUS_DESKTOP_CODEX_PROOF=1 and DESKTOP_EXECUTABLE for the installed app.');
+}
+if (collaborationMode === 'demo' && realCodex) throw new Error('The demo collaboration check must not enable real Codex calls.');
 function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.log('  ✓ ' + m); }
 let desktopApp;
 let testWindow;
@@ -16,9 +24,16 @@ const pageErrors = [];
   const project = path.join(tmp, 'proj'); fs.mkdirSync(project);
   const sourceText = realCodex ? 'Synthetic desktop check ' + require('node:crypto').randomBytes(12).toString('hex') + '\n' : 'a\n';
   fs.writeFileSync(path.join(project, 'a.txt'), sourceText);
+  if (collaboration) {
+    fs.mkdirSync(path.join(project, 'cleanup'));
+    fs.writeFileSync(path.join(project, 'cleanup/obsolete.txt'), 'Synthetic obsolete fixture\n');
+    fs.writeFileSync(path.join(project, 'correction.txt'), 'Bob reviewed this correction ' + require('node:crypto').randomBytes(12).toString('hex') + '\n');
+  }
   execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: localShell().bin });
   const port = 7800 + Math.floor(Math.random() * 100);
   const launchEnv = { ...process.env, ELECTRON_DISABLE_SANDBOX: '1', HUB_PORT: String(port), HARNESS_USER: 'dana' };
+  const dataRoot = collaboration ? path.join(tmp, 'data') : process.env.HARNESS_DATA;
+  if (collaboration) launchEnv.HARNESS_DATA = dataRoot;
   delete launchEnv.ELECTRON_RUN_AS_NODE;
   if (process.env.DESKTOP_EXECUTABLE) launchEnv.PATH = process.platform === 'win32'
     ? process.env.SystemRoot + '/system32;' + process.env.SystemRoot
@@ -32,6 +47,7 @@ const pageErrors = [];
   desktopApp = app;
   const win = await app.firstWindow();
   testWindow = win;
+  if (collaboration) { await win.setViewportSize({ width: 1487, height: 1058 }); await win.emulateMedia({ reducedMotion: 'reduce' }); }
   win.on('pageerror', (error) => pageErrors.push(error.message));
   win.on('console', (message) => { if (message.type() === 'error') pageErrors.push(message.text()); });
   await win.waitForSelector('#team-gate:not(.hidden)', { timeout: 30000 });
@@ -65,7 +81,7 @@ const pageErrors = [];
   const documentProjectId = await win.inputValue('#fleet-project');
   const setup = await win.evaluate(() => window.harnessDesktop.encryptedSetup());
   assert(setup.projects.some((entry) => entry.id === documentProjectId), 'a native folder selection authorized an opaque project on the local runtime');
-  const profile = desktopProfile({ userData: path.join(tmp, 'ud'), hubUrl: `http://127.0.0.1:${port}`, dataRoot: process.env.HARNESS_DATA });
+  const profile = desktopProfile({ userData: path.join(tmp, 'ud'), hubUrl: `http://127.0.0.1:${port}`, dataRoot });
   const runtimeConfig = JSON.parse(fs.readFileSync(path.join(profile.dataDir, 'runtime.json'), 'utf8'));
   assert(runtimeConfig.projects.includes(project), 'native project authorization persists across runtime restarts');
   const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
@@ -113,6 +129,9 @@ const pageErrors = [];
     return state.encryptedSnapshots.get(state.activeThreadId)?.turn === 'completed';
   }), 'the encrypted provider turn completed before the desktop test closes the app');
   assert(!(await win.textContent('body')).includes('project_not_authorized'), 'created file verification uses a supported workspace operation');
+  const collaborationResult = collaboration ? await require('./desktop-collaboration')({
+    app, win, project, realCodex, url: `http://127.0.0.1:${port}`, assert, desktopErrors: pageErrors
+  }) : null;
   assert(pageErrors.length === 0, 'desktop renderer reported no uncaught errors: ' + pageErrors.join(', '));
   const evidenceDir = path.join(__dirname, '..', '.artifacts', 'desktop-bootstrap');
   fs.mkdirSync(evidenceDir, { recursive: true });
@@ -126,7 +145,8 @@ const pageErrors = [];
   fs.writeFileSync(path.join(evidenceDir, realCodex ? 'codex-results.json' : 'latest-results.json'), JSON.stringify({
     status: 'pass', ranAt: new Date().toISOString(), packaged: !!process.env.DESKTOP_EXECUTABLE,
     provider: realCodex ? 'codex-cli' : 'demo', providerStatus, rendererErrors: pageErrors,
-    separateApprovalConsent: true, actualFileVerified: true, providerTurn: 'completed', exitedWithHiddenBroker: true
+    separateApprovalConsent: true, actualFileVerified: true, providerTurn: 'completed', exitedWithHiddenBroker: true,
+    ...(collaborationResult ? { collaboration: collaborationResult } : {})
   }, null, 2) + '\n');
   console.log('\ndesktop smoke passed');
 })().catch(async (e) => {

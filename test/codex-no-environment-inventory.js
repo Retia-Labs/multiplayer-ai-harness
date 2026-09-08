@@ -1,6 +1,6 @@
 'use strict';
 // Exercise the official binary against a loopback-only synthetic Responses server.
-// No real credentials, model requests, global config writes, or model sampling.
+// No real credentials, external provider requests, global config writes, or model sampling.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const fs = require('node:fs/promises');
@@ -23,11 +23,12 @@ model_provider = "fixture"
 web_search = "disabled"
 project_doc_max_bytes = 0
 cli_auth_credentials_store = "file"
+forced_login_method = "api"
 [model_providers.fixture]
 name = "Local synthetic inventory fixture"
 base_url = "http://127.0.0.1:${port}/v1"
 wire_api = "responses"
-requires_openai_auth = false
+requires_openai_auth = true
 supports_websockets = false
 request_max_retries = 0
 stream_max_retries = 0
@@ -51,13 +52,15 @@ enabled = false
 `;
 }
 
-test('Codex 0.153.4 no-environment exposes only host tools with isolated sources',
+test('Codex 0.153.4 API file auth reaches only the loopback fixture with exactly the host tools',
   { skip: !binary, timeout: 45000 }, async (t) => {
   const version = execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim();
   assert.equal(version, 'codex-cli 0.153.4');
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'plexus-codex-inventory-'));
   const profile = path.join(base, 'profile');
   await fs.mkdir(profile, { mode: 0o700 });
+  const syntheticKey = 'synthetic-loopback-api-key-not-a-real-credential';
+  await fs.writeFile(path.join(profile, 'auth.json'), JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: syntheticKey }), { mode: 0o600 });
   const canary = 'PLEXUS_AMBIENT_INSTRUCTION_MUST_NOT_LOAD_84741';
   await fs.writeFile(path.join(base, 'AGENTS.md'), canary);
   await fs.mkdir(path.join(profile, 'skills', 'canary'), { recursive: true });
@@ -75,7 +78,7 @@ test('Codex 0.153.4 no-environment exposes only host tools with isolated sources
     if (req.headers['content-encoding'] === 'zstd') body = zlib.zstdDecompressSync(body);
     let parsed;
     try { parsed = JSON.parse(body.toString()); } catch { parsed = { raw: body.toString() }; }
-    captured.push({ url: req.url, body: parsed });
+    captured.push({ url: req.url, body: parsed, usedSyntheticApiKey: req.headers.authorization === 'Bearer ' + syntheticKey });
     received();
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { message: 'Synthetic fixture stops after inventory capture' } }));
@@ -109,6 +112,8 @@ test('Codex 0.153.4 no-environment exposes only host tools with isolated sources
   await rpc.call('initialize', { clientInfo: { name: 'plexus_inventory_fixture', version: '0.1.0' },
     capabilities: { experimentalApi: true } });
   rpc.notify('initialized');
+  const account = await rpc.call('account/read', { refreshToken: false });
+  assert.deepEqual(account, { account: { type: 'apiKey' }, requiresOpenaiAuth: true });
   const read = await rpc.call('config/read', { includeLayers: true, cwd: profile });
   const requirements = await rpc.call('configRequirements/read', {});
   assert.deepEqual(requirements, { requirements: null }, 'managed requirements need a separate compatibility proof');
@@ -144,9 +149,11 @@ test('Codex 0.153.4 no-environment exposes only host tools with isolated sources
   })]);
   const request = captured.find(entry => entry.url.endsWith('/responses'));
   assert.ok(request, 'a synthetic Responses request must be captured');
+  assert.equal(request.usedSyntheticApiKey, true);
+  assert.equal(JSON.stringify(request.body).includes(syntheticKey), false);
   const tools = request.body.tools.map(tool => tool.name || tool.type).sort();
   const evidence = { version, toolNames: tools, instructionSources: started.instructionSources,
-    ambientCanaryPresent: JSON.stringify(request.body).includes(canary),
+    ambientCanaryPresent: JSON.stringify(request.body).includes(canary), apiFileAuthVerified: request.usedSyntheticApiKey,
     configLayers: read.layers, config: read.config, requirements, mcp, threadStart: started,
     notifications: notifications.map(message => message.method), stderrPresent: !!stderr };
   if (process.env.PLEXUS_CODEX_INVENTORY_REPORT) {

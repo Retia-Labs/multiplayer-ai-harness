@@ -17,7 +17,7 @@ const { Events, ItemTypes, ItemStatus, ApprovalDecision } = require('../protocol
 const { resolveCodex, codexConfigArgs } = require('./codex-probe');
 
 const { CodexRpc, CodexProviderError, failure, providerFailure } = require('./codex-rpc');
-const { prepareHostProfile, verifyProfileConfiguration, SUPPORTED_CODEX_VERSION } = require('./codex-host-profile');
+const { prepareHostProfile, verifyProfileConfiguration, verifyHostAccount, validateAuthMode, SUPPORTED_CODEX_VERSION } = require('./codex-host-profile');
 
 // thread/start uses the kebab-case sandbox enum, not turn/start's policy object.
 function sandboxMode(policy = 'read-only') {
@@ -74,6 +74,7 @@ class CodexAppServerBackend {
   turnOptions() { return {}; }
   async verifyConfiguration() {}
   async verifyThread() {}
+  async beforeModelRequest() {}
 
   async run(session) {
     if (!this.resolved.ok) throw failure('codex_unavailable');
@@ -192,6 +193,7 @@ class CodexAppServerBackend {
       if (prior) { if (prior !== binding) throw failure('codex_steer_changed'); return; }
       if (state.completed || state.interruptRequested || !state.turnId) throw failure('codex_stale_turn');
       state.steers.set(entry.seq, binding);
+      await this.beforeModelRequest(rpc, session);
       const result = await rpc.call('turn/steer', { threadId: state.threadId, expectedTurnId: state.turnId,
         input: value, clientUserMessageId: 'plexus:' + session.turnId + ':' + entry.seq });
       if (result?.turnId !== state.turnId) throw failure('codex_stale_turn');
@@ -241,6 +243,7 @@ class CodexAppServerBackend {
       session.thread.codexAppServerThreadId = state.threadId;
       await session.onProviderStateChanged?.();
       session.providerResume = { state: resumeId ? 'acknowledged' : 'new-thread', providerThreadId: state.threadId };
+      await this.beforeModelRequest(rpc, session);
       const turn = await rpc.call('turn/start', { threadId: state.threadId, input,
         clientUserMessageId: 'plexus:' + session.turnId + ':start', ...this.turnOptions(session) });
       if (typeof turn?.turn?.id !== 'string' || !turn.turn.id) throw failure('codex_protocol_invalid');
@@ -340,20 +343,32 @@ const HOST_ONLY_INSTRUCTIONS = 'The execution host is the sole workspace authori
 // Version-pinned environment-free provider. Native process tools are neither exposed nor
 // registered; every project read/write runs through host-owned workspace capabilities.
 class HostToolsCodexAppServerBackend extends ConfinedCodexAppServerBackend {
-  constructor({ profileDir, authFile, versionProbe, ...options } = {}) {
+  constructor({ profileDir, authFile, authMode, accountBinding, requireConsentBinding = true, versionProbe, ...options } = {}) {
     super(options);
     this.profileDir = profileDir; this.authFile = authFile; this.versionProbe = versionProbe;
+    this.authMode = validateAuthMode(authMode);
+    if (accountBinding !== undefined && (typeof accountBinding !== 'string' || !/^[a-f0-9]{64}$/.test(accountBinding))) throw failure('codex_host_tools_account_binding_invalid');
+    this.accountBinding = accountBinding;
+    this.requireConsentBinding = requireConsentBinding;
     this.label = 'Codex interactive (host workspace tools)';
   }
   capabilities() { return { ...super.capabilities(), nativeTools: false, providerReads: false,
     reads: true, readsVia: 'host-workspace-tools', writesVia: 'host-workspace-tools',
     supportedVersion: SUPPORTED_CODEX_VERSION, supportedPlatform: 'darwin-arm64' }; }
   dynamicTools() { return structuredClone([...READ_TOOLS, ...HOST_TOOLS]); }
+  async run(session) {
+    if (this.requireConsentBinding && this.accountBinding === undefined) throw failure('codex_host_tools_account_reauthorization_required');
+    return super.run(session);
+  }
   async prepare(session) {
     if (session.model && session.model !== 'gpt-5.4-mini') throw failure('codex_host_tools_model_unsupported');
     session.model = 'gpt-5.4-mini';
-    this.profile = prepareHostProfile({ profileDir: this.profileDir, authFile: this.authFile,
+    this.profile = prepareHostProfile({ profileDir: this.profileDir, authFile: this.authFile, authMode: this.authMode,
       workspace: session.cwd, resolved: this.resolved, versionProbe: this.versionProbe });
+    if (this.accountBinding !== undefined && this.accountBinding !== this.profile.accountBinding) throw failure('codex_host_tools_account_reauthorization_required');
+    if (session.thread?.codexAppServerThreadId && session.thread.codexAccountBinding !== this.profile.accountBinding) {
+      throw failure('codex_host_tools_account_resume_mismatch');
+    }
   }
   // Host-local readiness check: validates the same configuration and empty instruction
   // sources as a task, but starts no model turn and retains no provider thread history.
@@ -370,7 +385,8 @@ class HostToolsCodexAppServerBackend extends ConfinedCodexAppServerBackend {
       const result = await rpc.call('thread/start', { ...this.threadOptions(session), dynamicTools: this.dynamicTools(),
         model: 'gpt-5.4-mini', approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true });
       await this.verifyThread(rpc, session, result);
-      return { ready: true, version: this.profile.version, capabilities: this.capabilities() };
+      return { ready: true, version: this.profile.version, authMode: this.authMode,
+        accountBinding: this.profile.accountBinding, capabilities: this.capabilities() };
     } finally { rpc.close(); }
   }
   processOptions() { return { cwd: this.profile.profileDir, env: this.profile.environment }; }
@@ -383,9 +399,19 @@ class HostToolsCodexAppServerBackend extends ConfinedCodexAppServerBackend {
     const managed = await rpc.call('configRequirements/read', {});
     if (!managed || managed.requirements !== null) throw failure('codex_host_tools_managed_requirements_unproven');
     const read = await rpc.call('config/read', { includeLayers: true, cwd: this.profile.profileDir });
-    verifyProfileConfiguration(read, { profileDir: this.profile.profileDir, effort: session.settings.effort || 'medium' });
+    verifyProfileConfiguration(read, { profileDir: this.profile.profileDir, authMode: this.authMode, effort: session.settings.effort || 'medium' });
     const inventory = await rpc.call('mcpServerStatus/list', {});
     if (!Array.isArray(inventory?.data) || inventory.data.length || inventory.nextCursor) throw failure('codex_host_tools_ambient_tools');
+    await this.beforeModelRequest(rpc, session);
+  }
+  async beforeModelRequest(rpc) {
+    verifyHostAccount(this.profile);
+    const account = await rpc.call('account/read', { refreshToken: false });
+    const expected = this.authMode === 'apikey' ? 'apiKey' : 'chatgpt';
+    if (account?.requiresOpenaiAuth !== true || account?.account?.type !== expected) throw failure('codex_host_tools_account_mode_mismatch');
+    // Account/read has no stable API identity. Recheck the private file binding after
+    // the response as well; ordinary ChatGPT token refresh leaves it unchanged.
+    verifyHostAccount(this.profile);
   }
   async verifyThread(rpc, session, result) {
     if (result.cwd !== this.profile.profileDir || result.modelProvider !== 'openai' || result.model !== 'gpt-5.4-mini' || result.approvalPolicy !== 'never' ||
@@ -393,6 +419,7 @@ class HostToolsCodexAppServerBackend extends ConfinedCodexAppServerBackend {
         !Array.isArray(result.instructionSources) || result.instructionSources.length) throw failure('codex_host_tools_policy_unverified');
     const inventory = await rpc.call('mcpServerStatus/list', { threadId: result.thread.id });
     if (!Array.isArray(inventory?.data) || inventory.data.length || inventory.nextCursor) throw failure('codex_host_tools_ambient_tools');
+    if (session.thread) session.thread.codexAccountBinding = this.profile.accountBinding;
   }
   async callHostTool(session, request) {
     if (!['plexus_read_file', 'plexus_list_files'].includes(request.tool)) return super.callHostTool(session, request);

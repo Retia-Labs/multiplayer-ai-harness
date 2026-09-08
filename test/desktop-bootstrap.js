@@ -39,6 +39,7 @@ const launch = (dataDir, env) => electron.launch({
   if (process.platform === 'win32') env.PATH = `${process.env.SystemRoot}\\system32;${process.env.SystemRoot}`;
   else if (packaged) env.PATH = '/usr/bin:/bin';
   try {
+    console.log('RECOVERY TEST: deliberately unavailable hub; an error screen is expected until retry.');
     app = await launch(temp, env);
     const page = await app.firstWindow();
     await page.waitForSelector('#step-hub.working');
@@ -71,6 +72,7 @@ const launch = (dataDir, env) => electron.launch({
       dataRoot: env.HARNESS_DATA }).dataDir, 'runtime.json');
     fs.mkdirSync(path.dirname(runtimeConfig), { recursive: true });
     fs.writeFileSync(runtimeConfig, JSON.stringify({ maxPreset: 'invalid-preset' }));
+    console.log('RECOVERY TEST: deliberately invalid runtime configuration; an error screen is expected until repair.');
     app = await launch(failureData, env);
     const failedPage = await app.firstWindow();
     await failedPage.waitForSelector('#step-ui.failed', { timeout: 20000 });

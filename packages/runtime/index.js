@@ -13,6 +13,7 @@ const { createProvider, DEFAULT_MODELS } = require('./providers');
 const { createExecutor, CrabboxExecutor } = require('./executors');
 const { PRESETS } = require('./policy');
 const { Commands, Events, ItemTypes, Errors, createPairingCode } = require('../protocol');
+const { validateAuthMode } = require('./codex-host-profile');
 
 const uid = (p) => p + '_' + crypto.randomBytes(8).toString('hex');
 
@@ -58,7 +59,8 @@ class Runtime {
     this.codexHostTools = codexHostTools &&
       typeof codexHostTools.bin === 'string' && path.isAbsolute(codexHostTools.bin) &&
       typeof codexHostTools.authFile === 'string' && path.isAbsolute(codexHostTools.authFile)
-      ? { bin: codexHostTools.bin, authFile: codexHostTools.authFile } : null;
+      ? { bin: codexHostTools.bin, authFile: codexHostTools.authFile, authMode: validateAuthMode(codexHostTools.authMode),
+          ...(codexHostTools.accountBinding !== undefined ? { accountBinding: codexHostTools.accountBinding } : {}) } : null;
     this.userName = userName || os.userInfo().username;
     this.dataDir = dataDir || path.join(os.homedir(), '.harness');
     fs.mkdirSync(this.dataDir, { recursive: true });
@@ -119,10 +121,12 @@ class Runtime {
       list.push({ id, label: { openai: 'OpenAI', anthropic: 'Anthropic', openrouter: 'OpenRouter' }[id], configured: !!(cfg && cfg.apiKey), models: DEFAULT_MODELS[id] || [] });
     }
     list.push({ id: 'ollama', label: 'Ollama / local', configured: true, models: DEFAULT_MODELS.ollama });
-    list.push(this.codexHostTools
+    list.push(this.codexHostTools && /^[a-f0-9]{64}$/.test(this.codexHostTools.accountBinding || '')
       ? { id: 'codex-cli', label: 'Codex', configured: true, writes: true, providerWrites: false,
           reason: 'reads and changes use this host’s authorized workspace tools; the supported provider version and isolated configuration are checked before each turn',
           models: ['gpt-5.4-mini'] }
+      : this.codexHostTools ? { id: 'codex-cli', label: 'Codex (local setup required)', configured: false,
+          reason: 'Repeat local Codex setup to authorize the current provider account before shared tasks can run.', models: [] }
       : { id: 'codex-cli', label: 'Codex CLI (isolation pending)', configured: false,
           reason: 'the read-only CLI can read outside the authorized workspace; enable the supported host-tool configuration locally', models: [] });
     list.push({ id: 'claude-code', label: 'Claude Code CLI (isolation pending)', configured: false, reason: 'project-confined provider sandbox not validated', models: [] });
@@ -134,7 +138,7 @@ class Runtime {
     if (id === 'codex-cli' && this.codexHostTools) {
       const { HostToolsCodexAppServerBackend } = require('./codex-app-server');
       const provider = new HostToolsCodexAppServerBackend({ ...this.codexHostTools,
-        profileDir: path.join(this.dataDir, 'codex-host-profile') });
+        profileDir: path.join(this.dataDir, 'codex-host-profile'), requireConsentBinding: true });
       provider.id = 'codex-cli';
       return provider;
     }
@@ -733,8 +737,18 @@ function parseArgs(argv) {
     else if (a === '--encrypted-tasks-only') out.encryptedTasksOnly = true;
     else if (a === '--codex-read-only') out.codexReadOnly = true;
     else if (a === '--codex-host-tools') out.codexHostTools = true;
+    else if (a === '--codex-auth-mode') out.codexAuthMode = validateAuthMode(next() ?? null);
   }
+  if (out.codexAuthMode && !out.codexHostTools) throw new Error('codex_host_tools_opt_in_required');
   return out;
+}
+
+function localCodexOptIn({ resolved, authFile, detectedMode, authMode }) {
+  if (!resolved?.ok) throw new Error('codex_unavailable');
+  const detected = validateAuthMode(detectedMode);
+  const selected = authMode === undefined ? detected : validateAuthMode(authMode);
+  if (selected !== detected) throw new Error('codex_host_tools_account_mode_mismatch');
+  return { bin: path.resolve(resolved.path), authFile, authMode: selected };
 }
 
 function loadConfig(dataDir) {
@@ -757,10 +771,11 @@ if (require.main === module) {
   const cfg = loadConfig(dataDir);
   let codexHostTools = cfg.codexHostTools || null;
   if (args.codexHostTools) {
-    const { resolveCodex, codexHome } = require('./codex-probe');
+    const { resolveCodex, codexHome, authStatus } = require('./codex-probe');
     const resolved = resolveCodex();
     if (!resolved.ok) throw new Error('codex_unavailable');
-    codexHostTools = { bin: path.resolve(resolved.path), authFile: path.join(codexHome(), 'auth.json') };
+    codexHostTools = localCodexOptIn({ resolved, authFile: path.join(codexHome(), 'auth.json'),
+      detectedMode: authStatus(resolved).mode, authMode: args.codexAuthMode });
   }
   const rt = new Runtime({
     hubUrl: args.hub || cfg.hub || process.env.HUB_URL || 'ws://127.0.0.1:7777',
@@ -779,7 +794,16 @@ if (require.main === module) {
     approvalAuthority: cfg.approvalAuthority || null,
     log: (m) => console.log('[runtime]', m)
   });
-  rt.start().then(() => console.log(`[runtime] ${rt.name} → ${rt.hubUrl}`));
+  (async () => {
+    if (args.codexHostTools) {
+      const workspace = [...(cfg.projects || []), ...args.projects][0];
+      if (!workspace) throw new Error('codex_host_tools_workspace_required');
+      const ready = await rt.provider('codex-cli').checkHost({ workspace });
+      rt.codexHostTools.accountBinding = ready.accountBinding;
+    }
+    await rt.start();
+    console.log(`[runtime] ${rt.name} → ${rt.hubUrl}`);
+  })().catch(error => { console.error('[runtime]', /^codex_[a-z_]+$/.test(error.message) ? error.message : 'runtime_start_failed'); process.exitCode = 1; rt.stop(); });
   let shutdown;
   const stop = () => {
     if (shutdown) { process.exit(1); return; }
@@ -792,4 +816,4 @@ if (require.main === module) {
   process.on('SIGTERM', stop);
 }
 
-module.exports = { Runtime, parseArgs, providersFromEnv, commandFingerprint };
+module.exports = { Runtime, parseArgs, localCodexOptIn, providersFromEnv, commandFingerprint };

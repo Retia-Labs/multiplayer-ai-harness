@@ -311,16 +311,20 @@ ipcMain.handle('desktop:configureCodex', async (event) => {
   const supported = resolved.ok && process.platform === 'darwin' && process.arch === 'arm64' &&
     version(resolved) === SUPPORTED_CODEX_VERSION;
   const authFile = path.join(codexHome(), 'auth.json');
-  if (!supported || authStatus(resolved).mode !== 'chatgpt' || !fs.existsSync(authFile)) {
+  const authMode = supported ? authStatus(resolved).mode : null;
+  if (!supported || !['chatgpt', 'apikey'].includes(authMode) || !fs.existsSync(authFile)) {
     await dialog.showMessageBox(win, { type: 'info', title: 'Codex setup unavailable',
       message: 'This Codex configuration cannot yet be enabled for shared tasks.',
-      detail: 'Use Codex ' + SUPPORTED_CODEX_VERSION + ' on an Apple silicon Mac, signed in with a local ChatGPT login. Other versions, platforms, API logins and keyring-only logins still require verification. The older read-only CLI can read outside the selected workspace and remains disabled.',
+      detail: 'Use Codex ' + SUPPORTED_CODEX_VERSION + ' on an Apple silicon Mac, with a ChatGPT or API-key login saved locally by Codex. Other versions, platforms and keyring-only logins still require verification. The older read-only CLI can read outside the selected workspace and remains disabled.',
       buttons: ['OK'], defaultId: 0 });
     return { enabled: false, code: 'provider_not_isolated' };
   }
   const choice = await dialog.showMessageBox(win, { type: 'question', title: 'Use Codex on this host',
-    message: 'Allow shared tasks to use this machine’s Codex ChatGPT account?',
-    detail: 'Project files are supplied through this host’s authorized read and change tools. Changes follow the host’s approval policy. This uses your existing local login and refreshes that same login when needed. Usage belongs to this provider account.',
+    message: authMode === 'apikey' ? 'Allow shared tasks to use this machine’s Codex API account?' : 'Allow shared tasks to use this machine’s Codex ChatGPT account?',
+    detail: 'Project files are supplied through this host’s authorized read and change tools. Changes follow the host’s approval policy. ' +
+      (authMode === 'apikey' ? 'This uses the API key already saved locally by Codex. API usage is billed to that key’s provider account; ChatGPT subscription usage does not cover it. ' :
+        'This uses your existing local login and refreshes that same login when needed. Usage belongs to this provider account. ') +
+      'Teammates can direct authorized tasks; this does not transfer your provider entitlement. Changing accounts requires local authorization and a fresh provider session.',
     buttons: ['Cancel', 'Enable Codex'], defaultId: 0, cancelId: 0 });
   if (choice.response !== 1) return { enabled: false };
   const file = path.join(runtimeLaunch.dataDir, 'runtime.json');
@@ -328,11 +332,12 @@ ipcMain.handle('desktop:configureCodex', async (event) => {
   const workspace = config.projects?.[0];
   if (!workspace) throw new Error('codex_host_tools_workspace_required');
   const { HostToolsCodexAppServerBackend } = require('../../packages/runtime/codex-app-server');
-  const provider = new HostToolsCodexAppServerBackend({ bin: resolved.path, authFile,
+  const provider = new HostToolsCodexAppServerBackend({ bin: resolved.path, authFile, authMode,
     profileDir: path.join(runtimeLaunch.dataDir, 'codex-host-profile') });
-  await provider.checkHost({ workspace, settings: { effort: 'medium' } });
+  const ready = await provider.checkHost({ workspace, settings: { effort: 'medium' } });
   const temp = file + '.provider-' + process.pid;
-  fs.writeFileSync(temp, JSON.stringify({ ...config, codexHostTools: { bin: path.resolve(resolved.path), authFile } }, null, 2) + '\n', { mode: 0o600 });
+  fs.writeFileSync(temp, JSON.stringify({ ...config, codexHostTools: { bin: path.resolve(resolved.path), authFile, authMode,
+    accountBinding: ready.accountBinding } }, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(temp, file);
   await stopService(runtimeChild); launchRuntime();
   return { enabled: true };
