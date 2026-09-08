@@ -61,6 +61,7 @@ jobs:
       # Skips loudly without an authenticated CLI, which CI does not have.
       - run: npm run test:encrypted-codex-task
       - run: npm run test:codex-confinement
+      - run: npm run test:codex-switch
       - run: npm run test:codex
       - uses: actions/upload-artifact@v4
         if: always()

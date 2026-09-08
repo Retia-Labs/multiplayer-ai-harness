@@ -115,6 +115,12 @@ class Runtime {
       // Opened for the one configuration measured to hold. The provider still cannot write -
       // it never gets a writable shell - and the file changes it proposes are applied by this
       // host, through the same workspace writer every other tool goes through.
+      //
+      // Turned on with --codex-read-only, or "codexReadOnly": true in this host's
+      // runtime.json. Deliberately not a default and deliberately not something a remote
+      // teammate can set: the confinement was measured on one platform with one Codex build,
+      // so on any other machine nothing has been measured, and the operator standing in front
+      // of it is the only party who can decide that is acceptable.
       const { ConfinedCodexExecBackend } = require('./codex-exec');
       return new ConfinedCodexExecBackend({ bin: process.env.CODEX_BIN || 'codex' });
     }
@@ -509,7 +515,14 @@ class Runtime {
         throw new Error(Errors.POLICY_ESCALATION + ': choose a named preset instead of overriding ' + field);
       }
     }
-    return { ...current, ...requested, preset, ...policy };
+    // A model belongs to a provider. Switching the provider without naming a model used to
+    // carry the old one across, so a thread that had been using the demo agent asked Codex to
+    // run "demo-agent" and got a 400 straight back from the API. Clearing it lets the new
+    // provider pick its own default, which is the only sensible thing an unnamed model means.
+    const merged = { ...current, ...requested, preset, ...policy };
+    const switched = requested.provider && current.provider && requested.provider !== current.provider;
+    if (switched && !requested.model) delete merged.model;
+    return merged;
   }
 
   async turnStart(thread, cmd, by) {
@@ -571,6 +584,7 @@ function parseArgs(argv) {
     else if (a === '--runtime-name') out.name = next();
     else if (a === '--max-preset') out.maxPreset = next();
     else if (a === '--encrypted-tasks-only') out.encryptedTasksOnly = true;
+    else if (a === '--codex-read-only') out.codexReadOnly = true;
   }
   return out;
 }
@@ -604,6 +618,10 @@ if (require.main === module) {
     name: args.name || cfg.runtimeName,
     maxPreset: args.maxPreset || cfg.maxPreset || 'agent',
     encryptedTasksOnly: args.encryptedTasksOnly || cfg.encryptedTasksOnly === true,
+    // Opening the Codex provider is a decision made at the machine, like authorizing a
+    // project. It is off unless this host's own operator turns it on - see the note in
+    // Runtime.provider() and docs/proofs/codex-confinement.md for why it is not a default.
+    codexReadOnly: args.codexReadOnly || cfg.codexReadOnly === true,
     log: (m) => console.log('[runtime]', m)
   });
   rt.start().then(() => console.log(`[runtime] ${rt.name} → ${rt.hubUrl}`));
