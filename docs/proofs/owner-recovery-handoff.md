@@ -7,6 +7,10 @@ the tested local source flows. It does not certify every acceptance criterion of
 issues #2–17. Work stops here at the user's request; no further implementation cycle
 or GitHub Actions run is authorized by this handoff.
 
+The subsequent authorized documentation and repository publication are recorded in
+[issues-02-17-sync.md](issues-02-17-sync.md), including verified issue/PR comment links.
+That sync did not resume implementation or tests.
+
 ## Implemented behavior
 
 The owner prepares an encrypted customer-held kit using the actual Matrix SDK

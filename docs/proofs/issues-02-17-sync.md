@@ -3,7 +3,7 @@
 Date: 8 September 2026. Implementation checkpoint:
 [`28f567e`](https://github.com/Retia-Labs/multiplayer-ai-harness/commit/28f567ee46fc4832e2717ffa15e002a1e1442b66).
 
-The five commits below are ready to publish as an engineering checkpoint. They
+The five commits below were published as an engineering checkpoint. They
 contain integrated product behavior and evidence-backed repairs, but the latest
 source has not completed release qualification. In particular, the last workspace
 test failed on an ambiguous fixture selector; its correction is committed but has
@@ -12,7 +12,7 @@ acceptance. This publication pass runs no tests, adds no features and runs no Gi
 Actions. It follows the user's instruction to document, notify the relevant owners
 and sync the repository.
 
-## Changes being published
+## Published changes
 
 The baseline is `1be13d40c60ad50d7b79eadd31360a86be2ba428`. The implementation
 checkpoint is five commits ahead of that baseline, without divergence at the sync
@@ -118,8 +118,40 @@ issues, waive technical release gates, or begin another implementation cycle.
 
 ## Repository publication receipt
 
-The intended sync is a normal fast-forward push of `main` to `origin/main`, with
-local `main` tracking `origin/main`, and a documentation commit carrying `[skip ci]`.
-No force push, release tag, installer upload or merge of PR #60/#61 is part of this
-pass. Actual pushed revision and issue-comment receipts are recorded after the
-external operations succeed; this prepared record alone is not proof of a push.
+The initial normal fast-forward push succeeded: remote `main` advanced from
+`1be13d4` to [`faa0333`](https://github.com/Retia-Labs/multiplayer-ai-harness/commit/faa03336f86b3a2c0389c0017c2f010df4b9ae1d),
+containing the five implementation commits and the documentation/verification
+ledger. Local `main` now tracks `origin/main`. Documentation commits carry
+`[skip ci]`; no workflow was dispatched or used for testing. No force push, release
+tag, installer upload or merge of PR #60/#61 was performed.
+
+The following 21 comments were posted and read back through GitHub. Every body and
+URL matched the prepared text. Existing issue states and assignments were retained.
+Mentions follow recorded issue ownership: @likalight for #2–5 and #8–17, @dylothx
+for #6–7; both receive the parent summary, and @Dharshan2004 receives the unassigned
+distribution/signing coordination note. The receipt commit records these links;
+the terminal sync check records its final local/remote revision.
+
+| Tracker item | Published update |
+| --- | --- |
+| Issue #1 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1#issuecomment-5582905338) |
+| Issue #2 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/2#issuecomment-5582905658) |
+| Issue #3 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/3#issuecomment-5582905938) |
+| Issue #4 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/4#issuecomment-5582906506) |
+| Issue #5 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/5#issuecomment-5582906973) |
+| Issue #6 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/6#issuecomment-5582907383) |
+| Issue #7 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/7#issuecomment-5582907919) |
+| Issue #8 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/8#issuecomment-5582908455) |
+| Issue #9 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/9#issuecomment-5582908861) |
+| Issue #10 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/10#issuecomment-5582909276) |
+| Issue #11 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/11#issuecomment-5582909651) |
+| Issue #12 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/12#issuecomment-5582910013) |
+| Issue #13 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/13#issuecomment-5582910548) |
+| Issue #14 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/14#issuecomment-5582910937) |
+| Issue #15 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/15#issuecomment-5582911315) |
+| Issue #16 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/16#issuecomment-5582911690) |
+| Issue #17 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/17#issuecomment-5582912041) |
+| Issue #19 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/19#issuecomment-5582912539) |
+| Issue #20 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/20#issuecomment-5582913099) |
+| PR #61 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/pull/61#issuecomment-5582913510) |
+| PR #60 | [Verified comment](https://github.com/Retia-Labs/multiplayer-ai-harness/pull/60#issuecomment-5582913913) |
