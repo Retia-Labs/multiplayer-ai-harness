@@ -7,6 +7,8 @@ Electron no-surviving-teammate flows both pass 6/6. This supersedes the unfinish
 customer-material-only implementation statements for #8, #15 and #17 below.
 The earlier aggregate-suite and installed-artifact results in this document do not
 qualify the later recovery changes; remaining release gates are retained.
+The [repository sync record](issues-02-17-sync.md) indexes the published commits,
+current issue ownership, verification limits and outstanding PR integration work.
 
 The user subsequently excluded testing that requires GitHub Actions from this pass.
 Local macOS, browser and provider verification continues; current Windows execution
@@ -105,16 +107,16 @@ proofs remain applicable to their original revisions and scopes.
 | [#5](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/5) | Team, invitations, host consent, project/policy limits and direct-request boundaries exercised. Device state reflects actual verification. | New cryptographic integration retains the independent-review gate. |
 | [#6](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/6) | Opaque task persistence, ordered replay, integrity failure, browser restart and production host execution are connected and tested. | Full external-release platform and adversarial review gates remain. |
 | [#7](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/7) | Production encrypted execution, actual Codex host-tool edits, durable identity, explicit local provider consent and actionable errors implemented. The supported native scenario passes actual project-read refusals. | Restricted to Codex 0.153.4, macOS arm64 and gpt-5.4-mini. Real execution is verified with the file-backed ChatGPT login; API login has synthetic/preflight coverage only. Installed real-provider evidence is recorded separately below. Older read-only opt-ins remain disabled. |
-| [#8](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/8) | Signed enrollment, explicit project grants, late teammate history, delayed host confirmation and reload exercised through the renderer. A teammate-verified replacement owner can be appointed locally as a host's freshness signer. | Recovery without any surviving verified teammate remains unfinished. |
+| [#8](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/8) | Signed enrollment, explicit project grants, late teammate history, delayed host confirmation and reload exercised through the renderer. Both teammate-verified replacement and customer-material-only owner recovery now require separate local host activation. | Dedicated no-survivor browser/Electron flows pass; the final existing-workspace run stopped at a history-key selector ambiguity after nine checkpoints. The exact-selector correction remains unrerun. |
 | [#9](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/9) | Sourced catch-up, actual patches, current provider, decisions, approvals and freshness connected to authenticated events. | No generated summary or server plaintext projection is introduced. |
 | [#10](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/10) | Actor/turn binding, deduplication, queued/delivered receipts and interruption exercised through real native acknowledgments and encrypted production controls. | Native production use retains #7's supported-configuration limits. |
 | [#11](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/11) | Exact action grants, competing responses, expiry, mutation refusal and stale-after-restart behavior exercised with real local filesystem effects. | No broad session approval or general exactly-once external-effect guarantee. |
 | [#12](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/12) | Named encrypted help, inbox resolution/cancellation and late context connected; help is separate from provider input. | External messaging and content-bearing OS notifications are outside this slice. |
 | [#13](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/13) | Diff/source review, handoff, authorized recipients and independent task outcomes exercised. The continuous real-provider scenario proves Bob's acknowledged correction changes actual Monday text to Tuesday, then handoff preserves that corrected diff. | Same supported provider/platform/authentication limits as #7. |
 | [#14](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/14) | Encrypted related links, safe rendering, private task navigation and association removal exercised. | Association does not publish anything to the external tracker. |
-| [#15](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/15) | Customer setup drill, wrong-key refusal, replacement, clean browser history restore and explicit re-enrollment exercised; desktop keys use OS storage. Local appointment supports a replacement owner verified by a surviving teammate, preserving the enrollment genesis and host checkpoint. Original-device removal now preserves that root and durably pauses hosts still using the removed device. | Customer-material-only authority recovery remains unfinished. Desktop site-data/locked-storage permutations and platform coverage retain their explicit limits. |
+| [#15](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/15) | Customer-held owner kit, clean SDK drill, wrong/retired-kit refusal, rotation, inactive history staging and explicit owner admission are implemented. No-surviving-teammate flows pass 6/6 in Chrome and 6/6 in source Electron with OS-protected storage. Genesis is preserved; hosts need local activation and project/approval rights need fresh authorization. | The latest recovery source has no rebuilt-installer or aggregate-suite pass. Windows, broader storage-failure permutations and independent privacy/control review retain their limits. |
 | [#16](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/16) | Signed state, rollback resistance, future session rotation and verified per-host acknowledgments exercised, including original-device removal and independent online/offline hosts. Removal cancels affected approval grants and work, including storage-failure cases. | Hosts remain pending until they apply removal; no erasure of old plaintext/history. |
-| [#17](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/17) | Restart/crash markers, stale approvals, interrupted writes, relay append failure, re-pair races and explicit recovery state exercised. Local appointment enables reconnect with a teammate-verified replacement owner. | Without a surviving verified teammate, history recovery alone cannot restore authority; automatic provider/action replay remains prohibited. |
+| [#17](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/17) | Restart/crash markers, stale approvals, interrupted writes, relay append failure, re-pair races and explicit recovery state exercised. Customer-held authority recovery now works without a surviving teammate and leaves every host pending until local activation. Old command epochs and approval grants remain invalid. | Final aggregate/installer qualification is outstanding. Recovery does not permit automatic provider/action replay; tray integration remains in open PR #60 and issue #18. |
 
 ## Evidence and reproducibility
 
@@ -150,8 +152,9 @@ regression are in [encrypted-host-integration.md](encrypted-host-integration.md)
 Fresh membership challenges depend on the host's locally selected owner signing
 endpoint. A surviving verified teammate can enroll a replacement owner device, after
 which the host operator may explicitly appoint it locally. Clean history recovery
-alone does not recover that authority. The customer-material-only path remains
-unfinished. Account/relay metadata cannot silently
+alone does not recover that authority. The separately configured customer-held
+owner kit now supports explicit authority recovery without a surviving teammate;
+each host still requires local consent and key rotation. Account/relay metadata cannot silently
 repin a host or lower its applied authorization checkpoint.
 
 The older native CLI can read a generated sibling file under its read-only sandbox.
