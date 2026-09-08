@@ -105,6 +105,20 @@ test('cancellation never commits, restarts or sends an authority configuration c
   assert.deepEqual(f.child.sent.map(message => message.method), ['freshness.prepare']);
   assert.equal(f.restarts.length, 0);
 });
+
+test('native recovery confirmation shows the reset and refuses a receipt for another recovery epoch', async () => {
+  const f = ceremony();
+  f.proposal.recoveryEpoch = 'a1'.repeat(16); f.proposal.recoveryActivation = true;
+  f.receipt.recoveryEpoch = f.proposal.recoveryEpoch;
+  assert.deepEqual(await f.run({ teamId: 'team-one', identity: candidate }), { confirmed: true, receipt: f.receipt });
+  for (const text of ['resets prior endpoint confirmations and project grants', 'rotate every known task session',
+    'other hosts', f.proposal.recoveryEpoch]) assert.ok(f.prompts[0].detail.includes(text), text);
+  const wrong = ceremony();
+  wrong.proposal.recoveryEpoch = 'b2'.repeat(16); wrong.proposal.recoveryActivation = true;
+  wrong.receipt.recoveryEpoch = 'c3'.repeat(16);
+  await assert.rejects(() => wrong.run({ teamId: 'team-one', identity: candidate }), { code: 'freshness_state_invalid' });
+  assert.equal(wrong.restarts.length, 0);
+});
 test('a runtime restart or identity change during native confirmation invalidates the proposal', async () => {
   for (const replacement of ['child', 'runtimeId']) {
     const f = ceremony({ confirm: () => {

@@ -24,9 +24,10 @@ class EncryptedTaskState {
   close(){this.db.close();}
 }
 class EncryptedFixtureHost {
-  constructor({runtime,endpoint,transport,state,projects,creators}) {
+  constructor({runtime,endpoint,transport,state,projects,creators,authorizeCreation,shareTaskKeys}) {
     if(!runtime.encryptedTasksOnly)throw new Error('encrypted_runtime_required');
-    Object.assign(this,{runtime,endpoint,transport,state,projects,creators});
+    Object.assign(this,{runtime,endpoint,transport,state,projects,creators,authorizeCreation});
+    this.shareTaskKeys=shareTaskKeys||((...args)=>endpoint.shareVerifiedTaskKey(...args));
   }
   async open(task) {
     if(this.runtime.teamId!==task.teamId||this.runtime.id!==task.runtimeId)throw new Error('foreign_runtime');
@@ -44,11 +45,13 @@ class EncryptedFixtureHost {
     if(reader.seq===0 && !writer.saved.pending) {
       let event;try{event=await this.endpoint.openControl([task.request]);}catch{throw new Error('task_request_integrity_failed');}
       if(event.sender!==expected.user||event.senderDevice!==expected.device||event.senderKey!==expected.curve25519||
-        event.content?.type!=='task.create.v1'||canonical(event.content.task)!==canonical(routing(task)))throw new Error('task_request_integrity_failed');
+        !['task.create.v1','task.create.v2'].includes(event.content?.type)||canonical(event.content.task)!==canonical(routing(task)))throw new Error('task_request_integrity_failed');
+      if(this.authorizeCreation)await this.authorizeCreation(event);
+      this.state.save('creation:'+task.id,{recoveryEpoch:event.content.recoveryEpoch||null});
       objective=event.content.payload;
-      await this.endpoint.shareVerifiedTaskKey(roomFor(task.id),[this.endpoint.identity(),expected]);
+      await this.shareTaskKeys(roomFor(task.id),[this.endpoint.identity(),expected]);
     } else objective=reader.state.details;
-    return {reader,writer,objective};
+    return {reader,writer,objective,creationEpoch:this.state.load('creation:'+task.id)?.recoveryEpoch||null};
   }
   // The host writes the log, so the host owns the group session. A project grant made
   // on a client is only half of joining: until the writing host re-shares to the new
@@ -64,7 +67,7 @@ class EncryptedFixtureHost {
   async admit(task,members,{rotate=false}={}) {
     if(!Array.isArray(members)||!members.length)throw new Error('task_members_required');
     if(this.runtime.teamId!==task.teamId||this.runtime.id!==task.runtimeId)throw new Error('foreign_runtime');
-    return this.endpoint.shareVerifiedTaskKey(roomFor(task.id),[this.endpoint.identity(),...members],{rotate});
+    return this.shareTaskKeys(roomFor(task.id),[this.endpoint.identity(),...members],{rotate});
   }
 }
 function fixtureEvents(payload) {

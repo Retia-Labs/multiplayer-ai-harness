@@ -383,23 +383,26 @@ ipcMain.handle('desktop:confirmEncryptionAuthority', async (event, { teamId, ide
   await stopService(runtimeChild); launchRuntime();
   return { confirmed: true };
 });
-ipcMain.handle('desktop:confirmApprovalAuthority', async (event, { teamId, identity } = {}) => {
+ipcMain.handle('desktop:confirmApprovalAuthority', async (event, { teamId, identity, recoveryEpoch } = {}) => {
   requireRenderer(event, win);
   if (!runtimeLaunch || typeof teamId !== 'string' || !identity ||
-      !['user', 'device', 'curve25519', 'ed25519'].every(key => typeof identity[key] === 'string' && identity[key].length < 200)) {
+      !['user', 'device', 'curve25519', 'ed25519'].every(key => typeof identity[key] === 'string' && identity[key].length < 200) ||
+      (recoveryEpoch != null && !/^[a-f0-9]{32}$/.test(recoveryEpoch))) {
     throw new Error('invalid_approval_authority');
   }
   const choice = await dialog.showMessageBox(win, { type: 'question',
     title: 'Choose this host’s approval authority',
     message: 'Allow this exact device to approve and delegate actions on this host?',
     detail: 'This is separate from team administration and encryption membership. Each task action still has an exact scope and deadline.\n\nUser: ' +
-      identity.user + '\nDevice: ' + identity.device + '\nFingerprint: ' + identity.ed25519,
+      identity.user + '\nDevice: ' + identity.device + '\nFingerprint: ' + identity.ed25519 +
+      (recoveryEpoch ? '\n\nThis is fresh approval consent after customer recovery: ' + recoveryEpoch : ''),
     buttons: ['Cancel', 'Authorize approver'], defaultId: 0, cancelId: 0 });
   if (choice.response !== 1) return { confirmed: false };
   const file = path.join(runtimeLaunch.dataDir, 'runtime.json');
   const config = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
   const temp = file + '.approver-' + process.pid;
-  fs.writeFileSync(temp, JSON.stringify({ ...config, approvalAuthority: { ...identity, teamId } }, null, 2) + '\n', { mode: 0o600 });
+  fs.writeFileSync(temp, JSON.stringify({ ...config, approvalAuthority: { ...identity, teamId,
+    ...(recoveryEpoch ? { recoveryEpoch } : {}) } }, null, 2) + '\n', { mode: 0o600 });
   fs.renameSync(temp, file);
   await stopService(runtimeChild); launchRuntime();
   return { confirmed: true };

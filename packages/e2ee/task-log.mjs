@@ -1,4 +1,5 @@
 import { VERSION, TASK_ID, PROJECT_ID, EVENT_ID, canonical, exact, integer, validRecord, roomFor, digest } from '../protocol/encrypted-task.mjs';
+import { recoveryEpoch as epochValue } from '../protocol/recovery-epoch.mjs';
 export const newId=(prefix)=>prefix+'_'+Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)),(v)=>v.toString(16).padStart(2,'0')).join('');
 const routeKeys=['version','id','teamId','runtimeId','projectId','creatorUserId'];
 export const routing=(task)=>Object.fromEntries(routeKeys.map((key)=>[key,task[key]]));
@@ -144,10 +145,12 @@ export class EncryptedTaskTransport {
     return this.request('/'+taskId+'/events?after='+after+'&limit='+limit+(through===undefined?'':'&through='+through));
   }
 }
-export async function createEncryptedTask(endpoint,transport,{task,writer,payload}) {
+export async function createEncryptedTask(endpoint,transport,{task,writer,payload,recoveryEpoch}) {
   if(!TASK_ID.test(task.id)||!PROJECT_ID.test(task.projectId)||task.version!==VERSION)fail('invalid_encrypted_task');
   if(!eventValid({type:'task.created',payload}))fail('invalid_task_objective');
-  const request=await endpoint.sealControl(writer.user,writer.device,{type:'task.create.v1',task:routing(task),payload});
+  const epoch=epochValue(recoveryEpoch);
+  const request=await endpoint.sealControl(writer.user,writer.device,{type:epoch?'task.create.v2':'task.create.v1',task:routing(task),payload,
+    ...(epoch?{recoveryEpoch:epoch}:{})});
   const {creatorUserId,...wire}=routing(task);
   return transport.create({...wire,request});
 }

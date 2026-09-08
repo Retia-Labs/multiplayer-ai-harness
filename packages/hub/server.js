@@ -27,9 +27,9 @@ const PAIRING_TTL_MS = 10 * 60 * 1000;   // a pairing code is short-lived on pur
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 
 class Hub {
-  constructor({ dbFile = ':memory:', staticDir = null, log = () => {} } = {}) {
+  constructor({ dbFile = ':memory:', staticDir = null, service, log = () => {} } = {}) {
     this.store = new HubStore(dbFile);
-    this.enrollment = new Enrollment(this.store);
+    this.enrollment = new Enrollment(this.store, { service });
     this.keyExchange = new KeyExchange(this.store);
     this.encryptedTasks = new EncryptedTasks(this.store, this.enrollment);
     this.staticDir = staticDir;
@@ -637,6 +637,9 @@ class Hub {
   // The only modules a browser may load from this process, named one by one.
   static SHARED_MODULES = new Set([
     'e2ee/membership.mjs',
+    'e2ee/owner-recovery.mjs',
+    'e2ee/owner-recovery-kit.mjs',
+    'protocol/recovery-epoch.mjs',
     'e2ee/endpoint-core.mjs',
     'e2ee/task-log.mjs',
     'e2ee/enrollment.mjs',
@@ -823,6 +826,7 @@ module.exports = { Hub };
 if (require.main === module) {
   const port = parseInt(process.env.HUB_PORT || process.argv[2] || '7777', 10);
   const hub = new Hub({
+    service: process.env.PLEXUS_PUBLIC_ORIGIN,
     dbFile: process.env.HUB_DB || path.join(process.cwd(), '.harness-hub.sqlite'),
     staticDir: path.join(__dirname, '..', '..', 'apps', 'web'),
     log: (m) => console.log('[hub]', m)

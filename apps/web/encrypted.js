@@ -24,6 +24,8 @@
   const MAILBOX_RETRY_ITEM = 'plexus.mailbox.retry.';
   const MAILBOX_REFUSED_ITEM = 'plexus.mailbox.refused.';
   const RECOVERY_TRUST_ITEM = 'plexus.recovered-history.';
+  const ACTIVE_ENDPOINT_ITEM = 'plexus.endpoint.active.';
+  const OWNER_STAGE_ITEM = 'plexus.owner-recovery.stage.';
 
   const held = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
   const hold = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
@@ -75,6 +77,12 @@
   }
 
   let loaded = null;
+  let ownerLoaded = null;
+  function ownerModules() {
+    if (!ownerLoaded) ownerLoaded = Promise.all([import('/shared/e2ee/owner-recovery-kit.mjs'), import('/shared/e2ee/owner-recovery.mjs')])
+      .then(([kit, authority]) => ({ ...kit, ...authority }));
+    return ownerLoaded;
+  }
   function modules() {
     if (!loaded) {
       loaded = Promise.all([
@@ -94,6 +102,7 @@
           Endpoint: api.Endpoint, HubKeyTransport: keys.HubKeyTransport,
           UNABLE_TO_DECRYPT: sdk.ProcessedToDeviceEventType.UnableToDecrypt,
           matrixUser: protocol.matrixUser, roomFor: protocol.roomFor,
+          canonical: protocol.canonical,
           ...log, ...enrol, ...view, ...control, ...links, ...recovery
         };
       });
@@ -131,7 +140,8 @@
       this.token = token;
       this.userId = userId;
       this.teamId = teamId;
-      this.device = deviceName(userId);
+      this.activeProfile = heldJSON(ACTIVE_ENDPOINT_ITEM + userId, null);
+      this.device = this.activeProfile?.device || deviceName(userId);
       this.endpoint = null;
       this.receipts = new Map();
       this.pendingCommands = new Map();
@@ -155,16 +165,18 @@
         user: m.matrixUser(this.userId),
         device: this.device,
         recoveredHistory: heldJSON(this.storageKey(RECOVERY_TRUST_ITEM), []),
-        storeName: STORE_NAME + '-' + this.userId,
+        storeName: this.activeProfile?.storeName || STORE_NAME + '-' + this.userId,
         storeKey: endpointStoreKey,
         transport: new m.HubKeyTransport({ url: this.url, token: this.token, device: this.device })
       });
       this.tasks = new m.EncryptedTaskTransport({ url: this.url, token: this.token });
       this.recovery = new m.RecoveryTransport({ url: this.url, token: this.token });
-      this.enrolment = new m.EnrollmentTransport({ url: this.url, token: this.token, endpoint: this.endpoint,
+      this.enrolment = new m.EnrollmentTransport({ url: this.url, service: new URL(global.harnessDesktop?.hubUrl || this.url).origin,
+        token: this.token, endpoint: this.endpoint,
         loadCheckpoint: team => heldJSON(this.storageKey('plexus.membership.', team), null),
         saveCheckpoint: (team, head) => hold(this.storageKey('plexus.membership.', team), JSON.stringify(head)) });
       const identity = this.endpoint.identity();
+      this.endpointStoreKey = endpointStoreKey;
       this.mailboxJournal = await MailboxJournal.create(this.storageKey(MAILBOX_RETRY_ITEM, this.device), endpointStoreKey,
         { origin: global.harnessDesktop?.hubUrl || this.url, userId: this.userId, teamId: this.teamId, identity });
       return { ...identity, fingerprint: fingerprint(identity), durable: this.support.persistent };
@@ -198,7 +210,9 @@
         const identity = this.endpoint.identity();
         const admitted = head.endpoints?.find(endpoint => ['user', 'device', 'curve25519', 'ed25519'].every(key => endpoint[key] === identity[key]));
         membershipIdentity = { owner: head.owner || null, state: admitted?.state || 'pending',
-          checkpoint: { seq: head.seq, hash: head.hash } };
+          checkpoint: { seq: head.seq, hash: head.hash }, recoveryEpoch: head.recoveryEpoch || null,
+          recoveryDescriptor: head.recoveryDescriptor || null, recoveryGeneration: head.recoveryGeneration || 0,
+          grants: head.grants || [] };
       } catch (error) {
         // A clean device still needs the original authority comparison. Relay endpoint
         // labels cannot make that device eligible for host-local authority recovery.
@@ -323,19 +337,26 @@
     // endpoint that would seal a task to whichever key a relay named would be handing its
     // objective to whoever answered.
     async createTask(runtimeId, projectId, payload) {
+      if (this.recoveryTransition) throw mailboxFailure('owner_recovery_in_progress');
       const writer = await this.controlHost(runtimeId);
+      let membership = (await this.enrolmentState()).membershipIdentity;
+      if (membership?.recoveryEpoch && !membership.grants.some(grant => grant.projectId === projectId && grant.userId === this.userId && !grant.revoked)) {
+        throw mailboxFailure('recovery_project_access_required');
+      }
       const task = {
         version: 1, id: this.m.newId('et'), teamId: this.teamId,
         runtimeId, projectId, creatorUserId: this.userId
       };
       if (this.enrolment.ownProject) await this.enrolment.ownProject(this.teamId, projectId);
-      await this.m.createEncryptedTask(this.endpoint, this.tasks, { task, writer, payload });
+      membership = (await this.enrolmentState()).membershipIdentity;
+      await this.m.createEncryptedTask(this.endpoint, this.tasks, { task, writer, payload, recoveryEpoch: membership?.recoveryEpoch || null });
       return task;
     }
 
     // Take delivery of whatever the hub is holding, so keys shared with this endpoint - a
     // task key, or a history handoff - take effect before a replay is attempted.
     receiveKeys() {
+      if (this.recoveryTransition) return Promise.reject(mailboxFailure('owner_recovery_in_progress'));
       const work = this.mailboxWork.then(() => this.dispatchMailbox());
       this.mailboxWork = work.catch(() => {});
       return work;
@@ -344,6 +365,11 @@
     async dispatchMailbox() {
       const mailboxKey = this.storageKey(MAILBOX_ITEM, this.device);
       const entries = await this.mailboxJournal.load();
+      const membership = (await this.enrolmentState()).membershipIdentity;
+      // Old task history can still replay from customer-restored keys. New mailbox
+      // admissions/receipts need an authenticated current authorization epoch first.
+      if (!membership) return { received: 0, pending: entries.length, waiting: 'membership_authority_required' };
+      const epoch = { recoveryEpoch: membership.recoveryEpoch || null };
       // Check journal/storage access before consuming another one-shot SDK message.
       await this.mailboxJournal.save(entries);
       const saved = heldJSON(mailboxKey, []);
@@ -390,16 +416,13 @@
           if (named?.teamId !== this.teamId || named.runtimeId !== pin.runtimeId) continue;
           try {
             let inner = null;
-            if (event.content.type === this.m.HISTORY_TYPE) {
-              const transfer = this.m.readTaskHistory(event, named);
-              if (!transfer) continue;
+            const transfer = this.m.readTaskHistory(event, named, epoch);
+            if (transfer) {
               inner = await this.endpoint.openControl([transfer.history.envelope]);
               const content = this.m.readProjectHistory(inner, pin.writer);
               if (content.teamId !== named.teamId || content.projectId !== named.projectId ||
                   !content.rooms.includes(this.m.roomFor(named.id))) throw mailboxFailure('project_history_scope_mismatch');
-            } else if (event.content.type === this.m.RECEIPT_TYPE) {
-              if (!this.m.readTaskReceipt(event, named, pin.writer)) continue;
-            } else continue;
+            } else if (!this.m.readTaskReceipt(event, named, pin.writer, epoch)) continue;
             // Both consumable layers have authenticated before their plaintext enters
             // the encrypted journal. Import/list outages no longer require Olm replay.
             entries.push({ id, runtimeId: pin.runtimeId, writer: pin.writer, event, inner });
@@ -419,14 +442,19 @@
         const writer = this.confirmedHost(entry.runtimeId);
         if (!task || !sameEndpoint(writer, entry.writer)) { pending.push(entry); continue; }
         try {
-          if (entry.event.content.type === this.m.HISTORY_TYPE) {
-            const transfer = this.m.readTaskHistory(entry.event, task);
+          if (entry.inner) {
+            const transfer = this.m.readTaskHistory(entry.event, task, epoch);
             if (transfer) await this.acceptHandoff(task.id, transfer.history, writer, entry.inner);
           } else {
-            const receipt = this.m.readTaskReceipt(entry.event, task, writer);
+            const receipt = this.m.readTaskReceipt(entry.event, task, writer, epoch);
             if (receipt) this.receipts.set(receipt.commandId, receipt);
           }
-        } catch (error) { pending.push(entry); this.mailboxError = error.code || error.message; }
+        } catch (error) {
+          this.mailboxError = error.code || error.message;
+          // A prior authorization epoch can never become current again. Refuse it
+          // without retaining a retry that could later admit obsolete controls.
+          if (this.mailboxError !== 'task_recovery_epoch_mismatch') pending.push(entry);
+        }
       }
       await this.mailboxJournal.save(pending);
       return { received: fresh.length, pending: remaining.length + pending.length };
@@ -511,10 +539,12 @@
     // ---- asking a named teammate ----
 
     async sendControl(task, action, payload, { commandId } = {}) {
+      if (this.recoveryTransition) throw mailboxFailure('owner_recovery_in_progress');
       const writer = await this.controlHost(task.runtimeId);
       const enrollment = await this.enrolmentState();
       if (enrollment.state !== 'verified') throw Object.assign(new Error('endpoint_' + enrollment.state), { code: 'endpoint_' + enrollment.state });
       const sent = await this.m.sendTaskControl(this.endpoint, writer, { task, action, payload,
+        recoveryEpoch: enrollment.membershipIdentity?.recoveryEpoch || null,
         ...(commandId ? { commandId } : {}) });
       this.pendingCommands.set(sent.commandId, { task, action, payload });
       if (!this.receipts.has(sent.commandId)) this.receipts.set(sent.commandId, sent);
@@ -588,7 +618,16 @@
     async recoveryState() {
       try {
         const listed = await this.recovery.list();
-        return { backups: listed.backups || [], limits: this.m.RECOVERY_LIMITS };
+        const all = listed.backups || [];
+        const prefix = 'owner-authority:' + this.teamId + ':';
+        const membership = (await this.enrolmentState()).membershipIdentity;
+        const pending = heldJSON(this.storageKey(OWNER_STAGE_ITEM), null);
+        return { backups: all.filter(backup => !backup.scope.startsWith('owner-authority:')),
+          ownerKits: all.filter(backup => backup.scope.startsWith(prefix)), limits: this.m.RECOVERY_LIMITS,
+          ownerRecovery: { eligible: membership?.state === 'verified' && membership.owner?.user === this.endpoint.user,
+            descriptor: membership?.recoveryDescriptor || null, generation: membership?.recoveryGeneration || 0, epoch: membership?.recoveryEpoch || null,
+            stage: this.ownerStage?.ownerRecoveryStatus() || pending?.status || null,
+            resumeRequired: !!pending && !this.ownerStage } };
       } catch (error) {
         return { backups: [], limits: this.m.RECOVERY_LIMITS, error: error.code || 'recovery_unavailable' };
       }
@@ -641,6 +680,164 @@
 
     canReadHistory(taskId) {
       return heldJSON(this.storageKey(RECOVERY_TRUST_ITEM), []).some(entry => entry.roomId === this.m.roomFor(taskId));
+    }
+
+    ownerRecoveryContext() {
+      const pin = heldJSON(this.storageKey('plexus.membership.', this.teamId), null);
+      return { service: new URL(global.harnessDesktop?.hubUrl || this.url).origin,
+        teamId: this.teamId, owner: this.m.matrixUser(this.userId),
+        ...(pin?.authority ? { genesis: pin.authority, checkpoint: { seq: pin.seq, hash: pin.hash } } : {}) };
+    }
+
+    async beginOwnerRecoverySetup({ taskIds = [], replaceAuthority = false } = {}) {
+      const api = await ownerModules();
+      const state = await this.enrolment.state(this.teamId), head = await this.enrolment.signedHead(this.teamId, state);
+      if (head.owner?.user !== this.endpoint.user || !head.endpoints.some(entry => entry.state === 'verified' && sameEndpoint(entry, this.endpoint.identity()))) {
+        throw mailboxFailure('owner_recovery_owner_required');
+      }
+      if (!!head.recoveryGeneration !== !!replaceAuthority) throw mailboxFailure('owner_recovery_replacement_confirmation_required');
+      const tasks = await this.list();
+      for (const id of taskIds) {
+        const task = tasks.find(value => value.id === id);
+        if (!task) throw mailboxFailure('recovery_scope_mismatch');
+        const read = await this.catchUp(task); if (read.error) throw mailboxFailure(read.error);
+      }
+      const master = await this.endpoint.ownerRecoveryIdentity({ replaceAuthority });
+      const descriptor = { version: 1, purpose: 'owner-endpoint-recovery-with-host-local-activation',
+        service: this.ownerRecoveryContext().service, teamId: this.teamId, owner: head.owner.user, genesis: head.owner,
+        generation: (head.recoveryGeneration || 0) + 1, masterKey: typeof master === 'string' ? master : master.masterKey };
+      const prepared = await this.enrolment.prepareRecovery(this.teamId, descriptor);
+      const recoveryKey = api.createOwnerRecoveryKey();
+      const kit = await this.endpoint.provisionOwnerRecoveryKit({ descriptor, log: prepared.log,
+        expected: this.ownerRecoveryContext(), historyRooms: taskIds.map(this.m.roomFor), recoveryKey });
+      this.ownerProvision = { prepared, kit, recoveryKey, descriptor, expected: this.ownerRecoveryContext(), scope: 'owner-authority:' + this.teamId + ':' + descriptor.generation };
+      return { recoveryKey, generation: descriptor.generation, tasks: taskIds.length, replaceAuthority };
+    }
+
+    async completeOwnerRecoverySetup(typedKey) {
+      const draft = this.ownerProvision;
+      if (!draft) throw mailboxFailure('owner_recovery_setup_required');
+      // Verify what the customer actually retained in a new inactive SDK store.
+      // This is a cryptographic restore drill, not a string comparison.
+      await this.m.Endpoint.drillOwnerRecoveryKit({ ciphertext: draft.kit.ciphertext, recoveryKey: typedKey,
+        expected: draft.expected });
+      await this.recovery.put(draft.scope, draft.kit.ciphertext, 'owner-authority-v1');
+      const alreadyCommitted = async () => {
+        const state = await this.enrolment.state(this.teamId);
+        await this.enrolment.signedHead(this.teamId, state);
+        return state.authorityLog.some(record => this.m.canonical(record) === this.m.canonical(draft.prepared.operation));
+      };
+      if (!await alreadyCommitted()) {
+        try { await this.enrolment.commitRecovery(this.teamId, draft.prepared); }
+        catch (error) { if (!await alreadyCommitted()) throw error; }
+      }
+      const latest = await this.enrolment.signedHead(this.teamId, await this.enrolment.state(this.teamId));
+      if (latest.recoveryDescriptor?.masterKey !== draft.descriptor.masterKey || latest.recoveryGeneration !== draft.descriptor.generation) {
+        throw mailboxFailure('owner_recovery_descriptor_changed');
+      }
+      this.ownerProvision = null;
+      return { state: 'saved', scope: draft.scope, generation: draft.descriptor.generation, ciphertext: draft.kit.ciphertext };
+    }
+    cancelOwnerRecoverySetup() { this.ownerProvision = null; }
+
+    async disableOwnerRecovery() {
+      const api = await ownerModules();
+      const head = await this.enrolment.signedHead(this.teamId, await this.enrolment.state(this.teamId));
+      if (!head.recoveryDescriptor) throw mailboxFailure('owner_recovery_not_configured');
+      return this.enrolment.revokeRecovery(this.teamId, { descriptorHash: await api.recoveryDescriptorHash(head.recoveryDescriptor),
+        generation: head.recoveryDescriptor.generation });
+    }
+
+    async stageOwnerRecovery({ scope, ciphertext, recoveryKey }) {
+      const pending = heldJSON(this.storageKey(OWNER_STAGE_ITEM), null);
+      const sealed = ciphertext || (!scope && pending?.ciphertext) || (await this.recovery.get(scope)).ciphertext;
+      const current = await this.enrolment.state(this.teamId);
+      const options = { ciphertext: sealed, recoveryKey, expected: this.ownerRecoveryContext(),
+        persistent: true, storeKey: this.endpointStoreKey, log: current.authorityLog };
+      const staged = pending?.status?.storeName
+        ? await this.m.Endpoint.resumeOwnerRecovery({ ...options, storeName: pending.status.storeName })
+        : await this.m.Endpoint.stageOwnerRecovery(options);
+      const status = staged.ownerRecoveryStatus();
+      for (const history of status.history || []) {
+        const runtimeId = this.m.accountOf(history.writer.user), prior = this.confirmedHost(runtimeId);
+        if (prior && !sameEndpoint(prior, history.writer)) { staged.close(); throw mailboxFailure('owner_recovery_host_pin_conflict'); }
+      }
+      try { localStorage.setItem(this.storageKey(OWNER_STAGE_ITEM), JSON.stringify({ ...pending, scope: scope || pending?.scope, ciphertext: sealed, status })); }
+      catch { staged.close(); throw mailboxFailure('owner_recovery_storage_unavailable'); }
+      this.ownerStage?.close(); this.ownerStage = staged;
+      return status;
+    }
+
+    async recoverOwnerMembership() {
+      if (this.recoveryTransition) throw mailboxFailure('owner_recovery_in_progress');
+      this.recoveryTransition = true;
+      try { await this.mailboxWork; return await this.publishOwnerRecoveryMembership(); }
+      finally { this.recoveryTransition = false; }
+    }
+
+    async publishOwnerRecoveryMembership() {
+      const stage = this.ownerStage;
+      if (!stage) throw mailboxFailure('owner_recovery_stage_required');
+      const status = stage.ownerRecoveryStatus(), api = await ownerModules();
+      const identity = stage.identity();
+      const transport = new this.m.HubKeyTransport({ url: this.url, token: this.token, device: identity.device });
+      const enrollment = new this.m.EnrollmentTransport({ url: this.url, service: new URL(global.harnessDesktop?.hubUrl || this.url).origin,
+        token: this.token, endpoint: stage,
+        loadCheckpoint: team => heldJSON(this.storageKey('plexus.membership.', team), null),
+        saveCheckpoint: (team, value) => localStorage.setItem(this.storageKey('plexus.membership.', team), JSON.stringify(value)) });
+      await enrollment.pinAuthority(this.teamId, status.descriptor.genesis);
+      const latest = await enrollment.state(this.teamId);
+      const head = await enrollment.signedHead(this.teamId, latest);
+      const descriptorHash = await api.recoveryDescriptorHash(status.descriptor);
+      if (!head.recoveryDescriptor || await api.recoveryDescriptorHash(head.recoveryDescriptor) !== descriptorHash) throw mailboxFailure('owner_recovery_descriptor_inactive');
+      await stage.publishOwnerRecovery({ transport, log: latest.authorityLog });
+      const pending = heldJSON(this.storageKey(OWNER_STAGE_ITEM), null);
+      const epoch = pending?.epoch || this.m.newId('epoch').slice(6);
+      localStorage.setItem(this.storageKey(OWNER_STAGE_ITEM), JSON.stringify({ ...pending, epoch, status: stage.ownerRecoveryStatus() }));
+      // Query an uncertain prior publication before submitting another recovery epoch.
+      if (head.recoveryEpoch !== epoch || !head.endpoints.some(entry => entry.state === 'verified' && sameEndpoint(entry, identity))) {
+        await enrollment.recoverOwner(this.teamId, { descriptorHash, generation: status.descriptor.generation, epoch, candidate: identity });
+      }
+      const recovered = await enrollment.signedHead(this.teamId, await enrollment.state(this.teamId));
+      if (recovered.recoveryEpoch !== epoch || !recovered.endpoints.some(entry => entry.state === 'verified' && sameEndpoint(entry, identity))) {
+        throw mailboxFailure('owner_recovery_publication_unconfirmed');
+      }
+      const history = status.history || [], pins = new Set(heldJSON(this.storageKey(HOST_ROSTER_ITEM), []));
+      // Recovery resets project grants, so relay task discovery may now be empty.
+      // Admit only the task/room and exact writer bindings authenticated by the kit.
+      for (const taskId of status.taskIds || []) {
+        const entries = history.filter(entry => entry.roomId === this.m.roomFor(taskId));
+        if (!entries.length) continue;
+        const writer = entries[0].writer, runtimeId = this.m.accountOf(writer.user), prior = this.confirmedHost(runtimeId);
+        if (entries.some(entry => !sameEndpoint(entry.writer, writer))) throw mailboxFailure('owner_recovery_host_pin_conflict');
+        if (prior && !sameEndpoint(prior, writer)) throw mailboxFailure('owner_recovery_host_pin_conflict');
+        localStorage.setItem(this.storageKey(HOST_ITEM, runtimeId), JSON.stringify(writer)); pins.add(runtimeId);
+        localStorage.setItem(this.storageKey(ADMITTED_ITEM, taskId), JSON.stringify(entries.map(entry => entry.sessionId)));
+      }
+      localStorage.setItem(this.storageKey(HOST_ROSTER_ITEM), JSON.stringify([...pins]));
+      localStorage.setItem(this.storageKey(RECOVERY_TRUST_ITEM), JSON.stringify(history));
+      const profile = { storeName: status.storeName, device: identity.device };
+      localStorage.setItem(ACTIVE_ENDPOINT_ITEM + this.userId, JSON.stringify(profile));
+      const old = this.endpoint; this.endpoint = stage; this.ownerStage = null; this.device = identity.device; this.activeProfile = profile;
+      this.enrolment = enrollment; this.pendingCommands.clear(); this.receipts.clear();
+      this.mailboxJournal = await MailboxJournal.create(this.storageKey(MAILBOX_RETRY_ITEM, this.device), this.endpointStoreKey,
+        { origin: global.harnessDesktop?.hubUrl || this.url, userId: this.userId, teamId: this.teamId, identity });
+      localStorage.removeItem(this.storageKey(OWNER_STAGE_ITEM)); old.close();
+      return { state: 'membership_recovered', identity: { ...identity, fingerprint: fingerprint(identity), durable: true },
+        epoch, taskIds: status.taskIds, hosts: 'local_confirmation_required', approvals: 'not_restored', projects: 'new_grants_required' };
+    }
+
+    async reclaimProjectAccess(projectId) { return this.enrolment.ownProject(this.teamId, projectId); }
+
+    async previewOwnerRecoveryHistory(taskId) {
+      const stage = this.ownerStage;
+      if (!stage) throw mailboxFailure('owner_recovery_stage_required');
+      const status = stage.ownerRecoveryStatus(), history = status.history.filter(entry => entry.roomId === this.m.roomFor(taskId));
+      const task = (await this.list()).find(value => value.id === taskId);
+      if (!task || !history.length) throw mailboxFailure('recovery_scope_mismatch');
+      const reader = new this.m.EncryptedTaskReader({ endpoint: stage, task, writer: history[0].writer,
+        admittedSessions: history.map(entry => entry.sessionId) });
+      return { taskId, snapshot: await reader.reconnect(this.tasks) };
     }
 
     // ---- related work ----
@@ -706,7 +903,7 @@
       }));
     }
 
-    close() { try { if (this.endpoint) this.endpoint.close(); } catch {} }
+    close() { try { this.ownerStage?.close(); if (this.endpoint) this.endpoint.close(); } catch {} }
   }
 
   global.PlexusEncrypted = { EncryptedClient, deviceName, fingerprint };

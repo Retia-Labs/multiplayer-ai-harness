@@ -65,6 +65,8 @@
     "test:desktop:genesis-revocation": "node test/desktop-genesis-revocation.js",
     "test:genesis-removal-ui": "node test/genesis-removal-ui-browser.js",
     "test:recovery-trust": "node --test test/recovery-trust.js",
+    "test:owner-recovery": "node --test test/owner-recovery-protocol.js test/owner-recovery-kit.js test/recovery-epoch.js test/owner-recovery-runtime.js && node test/owner-recovery-kit-browser.js && node test/owner-recovery-browser.js",
+    "test:desktop:owner-recovery": "node test/desktop-owner-recovery.js",
     "test:durable-host": "node --test test/durable-host.js",
     "test:runtime-lifecycle": "node --test test/encrypted-runtime-lifecycle.js",
     "test:desktop-isolation": "node --test test/desktop-profile-isolation.js",
@@ -72,7 +74,7 @@
     "test:mailbox": "node test/encrypted-mailbox-browser.js",
     "proof:codex:interactive": "node test/codex-interactive-real.js",
     "test:encrypted-workspace": "node test/encrypted-workspace-browser.js",
-    "test:collaboration-integration": "npm run test:e2ee:identity && npm run test:enrollment-authority && npm run test:local-authority && npm run test:encrypted-controls && npm run test:runtime-lifecycle && npm run test:recovery-trust && npm run test:help-inbox && npm run test:handover && npm run test:related-work && npm run test:recovery && npm run test:recover-after-loss && npm run test:revocation && npm run test:confined-writes && npm run test:client-storage && npm run test:mailbox && npm run test:encrypted-workspace && npm run test:genesis-removal-ui"
+    "test:collaboration-integration": "npm run test:e2ee:identity && npm run test:enrollment-authority && npm run test:local-authority && npm run test:encrypted-controls && npm run test:runtime-lifecycle && npm run test:recovery-trust && npm run test:owner-recovery && npm run test:help-inbox && npm run test:handover && npm run test:related-work && npm run test:recovery && npm run test:recover-after-loss && npm run test:revocation && npm run test:confined-writes && npm run test:client-storage && npm run test:mailbox && npm run test:encrypted-workspace && npm run test:genesis-removal-ui"
   },
   "license": "MIT",
   "devDependencies": {

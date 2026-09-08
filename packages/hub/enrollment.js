@@ -17,7 +17,8 @@
 // material carried out of band, and the relay cannot choose a host's freshness authority.
 const { PROJECT_ID, canonical, digest } = require('../protocol/encrypted-task.mjs');
 const { initialMembership, applyOperation, operationBody, replayMembership, verifySignature, accountId, sameIdentity,
-  currentMembershipBody, GENESIS } = require('../e2ee/membership.mjs');
+  currentMembershipBody, verifyRecoveryOperation, GENESIS } = require('../e2ee/membership.mjs');
+const { recoveryService, validateRecoveryDescriptor } = require('../e2ee/owner-recovery.mjs');
 
 const problem = (code, status = 400) => Object.assign(new Error(code), { code, status });
 const DEVICE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -33,7 +34,8 @@ const verifiedOwnerEndpoint = (head, signer) => head.owner?.user === signer?.use
   head.endpoints.some((entry) => entry.state === 'verified' && sameIdentity(entry, signer));
 
 class Enrollment {
-  constructor(store) {
+  constructor(store, { service } = {}) {
+    this.service = service === undefined ? null : recoveryService(service);
     this.store = store;
     this.db = store.db;
     this.challenges = new Map();
@@ -60,13 +62,18 @@ class Enrollment {
     if (!this.db.prepare('PRAGMA table_info(revocation_acks)').all().some((column) => column.name === 'proof')) {
       this.db.exec('ALTER TABLE revocation_acks ADD COLUMN proof TEXT');
     }
+    for (const table of ['endpoint_enrollments', 'project_grants']) {
+      if (!this.db.prepare('PRAGMA table_info(' + table + ')').all().some(column => column.name === 'reset_by_recovery')) {
+        this.db.exec('ALTER TABLE ' + table + ' ADD COLUMN reset_by_recovery TEXT');
+      }
+    }
   }
 
   authorityLog(teamId) {
     return this.db.prepare('SELECT record FROM membership_log WHERE team_id=? ORDER BY seq').all(teamId).map((r) => JSON.parse(r.record));
   }
 
-  async signedMutation(teamId, account, action, body) {
+  async signedMutation(teamId, account, action, body, service = this.service) {
     const record = body.operation;
     if (!record || typeof record.signature !== 'string') throw problem('enrollment_signature_required', 403);
     const signed = operationBody(record);
@@ -77,12 +84,14 @@ class Enrollment {
     if (action === 'confirm' && signed.payload.device !== signed.signer.device) throw problem('confirming_endpoint_unverified', 403);
     const records = this.authorityLog(teamId);
     const current = records.length
-      ? await replayMembership(records, { teamId, authority: records[0].signer })
+      ? await replayMembership(records, { teamId, authority: records[0].signer, service })
       : initialMembership(teamId);
     // The identical signed request may safely be retried after an uncertain HTTP reply.
     const known = records.find((entry) => entry.seq === record.seq);
     if (known && canonical(known) === canonical(record)) return { duplicate: true, seq: current.seq };
+    await verifyRecoveryOperation(current, record);
     const next = applyOperation(current, signed);
+    if (next.recoveryDescriptor) validateRecoveryDescriptor(next.recoveryDescriptor, { service });
     const hash = await digest(record);
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -102,6 +111,16 @@ class Enrollment {
       else if (action === 'own-project') result = { grant: this.ownProject(teamId, payload.projectId, account.id) };
       else if (action === 'grant') result = this.grant(teamId, payload.projectId, { userId: account.id }, payload.userId, payload.role);
       else if (action === 'revoke-grant') result = { grant: this.revokeGrant(teamId, payload.projectId, { userId: account.id }, payload.userId) };
+      else if (action === 'recovery.configure' || action === 'recovery.revoke') result = { recoveryDescriptor: next.recoveryDescriptor, recoveryGeneration: next.recoveryGeneration };
+      else if (action === 'owner.recover') {
+        this.announce(teamId, account.id, signed.signer);
+        if (this.row(teamId, account.id, signed.signer.device).state !== 'pending') throw problem('recovery_candidate_not_new', 403);
+        this.db.prepare("UPDATE endpoint_enrollments SET state='pending', confirmed_by=NULL, confirmed_at=NULL, reset_by_recovery=? WHERE team_id=? AND state='verified'").run(next.recoveryEpoch, teamId);
+        this.db.prepare('UPDATE project_grants SET revoked_at=?, reset_by_recovery=? WHERE team_id=? AND revoked_at IS NULL').run(Date.now(), next.recoveryEpoch, teamId);
+        this.db.prepare("UPDATE endpoint_enrollments SET state='verified', confirmed_by=?, confirmed_at=? WHERE team_id=? AND user_id=? AND device_id=?")
+          .run('owner-recovery:' + next.recoveryEpoch, Date.now(), teamId, account.id, signed.signer.device);
+        result = { endpoint: this.row(teamId, account.id, signed.signer.device), recoveryEpoch: next.recoveryEpoch };
+      }
       else throw problem('unsupported_membership_operation');
       this.db.prepare('INSERT INTO membership_log VALUES (?,?,?,?)').run(teamId, next.seq, hash, canonical(record));
       this.db.exec('COMMIT');
@@ -115,7 +134,8 @@ class Enrollment {
     const r = this.db.prepare('SELECT * FROM endpoint_enrollments WHERE team_id=? AND user_id=? AND device_id=?').get(teamId, userId, deviceId);
     return r ? {
       teamId: r.team_id, userId: r.user_id, device: r.device_id, curve25519: r.curve25519, ed25519: r.ed25519,
-      state: r.state, announcedAt: r.announced_at, confirmedBy: r.confirmed_by, confirmedAt: r.confirmed_at, revokedAt: r.revoked_at
+      state: r.state, announcedAt: r.announced_at, confirmedBy: r.confirmed_by, confirmedAt: r.confirmed_at, revokedAt: r.revoked_at,
+      ...(r.reset_by_recovery ? { resetByRecovery: r.reset_by_recovery } : {})
     } : null;
   }
 
@@ -152,7 +172,7 @@ class Enrollment {
       if (held.curve25519 !== endpoint.curve25519 || held.ed25519 !== endpoint.ed25519) throw problem('endpoint_device_id_reused', 409);
       return { endpoint: held, known: true };
     }
-    this.db.prepare("INSERT INTO endpoint_enrollments VALUES (?,?,?,?,?,'pending',?,NULL,NULL,NULL)")
+    this.db.prepare("INSERT INTO endpoint_enrollments(team_id,user_id,device_id,curve25519,ed25519,state,announced_at,confirmed_by,confirmed_at,revoked_at) VALUES (?,?,?,?,?,'pending',?,NULL,NULL,NULL)")
       .run(teamId, userId, endpoint.device, endpoint.curve25519, endpoint.ed25519, now);
     return { endpoint: this.row(teamId, userId, endpoint.device), known: false };
   }
@@ -191,7 +211,7 @@ class Enrollment {
     if (!held) throw problem('endpoint_not_announced', 404);
     if (held.state === 'revoked') throw problem('endpoint_revoked', 403);
     if (held.curve25519 !== target.curve25519 || held.ed25519 !== target.ed25519) throw problem('endpoint_key_mismatch', 409);
-    this.db.prepare('UPDATE endpoint_enrollments SET state=?, confirmed_by=?, confirmed_at=? WHERE team_id=? AND user_id=? AND device_id=?')
+    this.db.prepare('UPDATE endpoint_enrollments SET state=?, confirmed_by=?, confirmed_at=?, reset_by_recovery=NULL WHERE team_id=? AND user_id=? AND device_id=?')
       .run('verified', confirmer.userId + '/' + confirmer.device, now, teamId, target.userId, target.device);
     return { endpoint: this.row(teamId, target.userId, target.device), authority: recoveryAuthority ? 'recovery' : 'endpoint' };
   }
@@ -258,7 +278,8 @@ class Enrollment {
 
   grantRow(teamId, projectId, userId) {
     const r = this.db.prepare('SELECT * FROM project_grants WHERE team_id=? AND project_id=? AND user_id=?').get(teamId, projectId, userId);
-    return r ? { teamId: r.team_id, projectId: r.project_id, userId: r.user_id, role: r.role, grantedBy: r.granted_by, grantedAt: r.granted_at, revokedAt: r.revoked_at } : null;
+    return r ? { teamId: r.team_id, projectId: r.project_id, userId: r.user_id, role: r.role, grantedBy: r.granted_by, grantedAt: r.granted_at, revokedAt: r.revoked_at,
+      ...(r.reset_by_recovery ? { resetByRecovery: r.reset_by_recovery } : {}) } : null;
   }
 
   participant(teamId, projectId, userId) {
@@ -283,8 +304,8 @@ class Enrollment {
   // creator would immediately be unable to read what they just created.
   ownProject(teamId, projectId, userId, now = Date.now()) {
     if (this.participant(teamId, projectId, userId)) return this.participant(teamId, projectId, userId);
-    this.db.prepare(`INSERT INTO project_grants VALUES (?,?,?,'owner',?,?,NULL)
-      ON CONFLICT(team_id,project_id,user_id) DO UPDATE SET role='owner', revoked_at=NULL`).run(teamId, projectId, userId, userId, now);
+    this.db.prepare(`INSERT INTO project_grants(team_id,project_id,user_id,role,granted_by,granted_at,revoked_at) VALUES (?,?,?,'owner',?,?,NULL)
+      ON CONFLICT(team_id,project_id,user_id) DO UPDATE SET role='owner', revoked_at=NULL, reset_by_recovery=NULL`).run(teamId, projectId, userId, userId, now);
     return this.grantRow(teamId, projectId, userId);
   }
 
@@ -315,8 +336,8 @@ class Enrollment {
     // A grant is an authorization act, so it comes from a vouched-for endpoint rather than
     // from a session cookie that happens to belong to a participant.
     if (!this.hasVerifiedEndpoint(teamId, granter.userId)) throw problem('granting_endpoint_unverified', 403);
-    this.db.prepare(`INSERT INTO project_grants VALUES (?,?,?,?,?,?,NULL)
-      ON CONFLICT(team_id,project_id,user_id) DO UPDATE SET role=excluded.role, granted_by=excluded.granted_by, granted_at=excluded.granted_at, revoked_at=NULL`)
+    this.db.prepare(`INSERT INTO project_grants(team_id,project_id,user_id,role,granted_by,granted_at,revoked_at) VALUES (?,?,?,?,?,?,NULL)
+      ON CONFLICT(team_id,project_id,user_id) DO UPDATE SET role=excluded.role, granted_by=excluded.granted_by, granted_at=excluded.granted_at, revoked_at=NULL, reset_by_recovery=NULL`)
       .run(teamId, projectId, userId, role, granter.userId, now);
     return { grant: this.grantRow(teamId, projectId, userId), explanation: this.explain(teamId, projectId, userId, role) };
   }
@@ -364,6 +385,7 @@ class Enrollment {
       res.end(JSON.stringify(value));
     };
     try {
+      const service = this.service || recoveryService((req.socket.encrypted ? 'https://' : 'http://') + req.headers.host);
       const principal = this.principal(req);
       const parts = url.pathname.split('/').filter(Boolean).slice(2); // after /api/enrollment
       // A host reads; it does not decide. Every route below that changes a verdict needs an
@@ -411,7 +433,7 @@ class Enrollment {
               Object.keys(body).some((key) => !['teamId', 'challenge', 'signer', 'activationId'].includes(key))) throw problem('invalid_membership_challenge');
           const records = this.authorityLog(teamId);
           if (!records.length) throw problem('membership_proof_invalid', 403);
-          const head = await replayMembership(records, { teamId, authority: records[0].signer });
+          const head = await replayMembership(records, { teamId, authority: records[0].signer, service });
           if (!verifiedOwnerEndpoint(head, body.signer)) throw problem('membership_proof_invalid', 403);
         }
         this.challenges.set(teamId + '/' + principal.runtimeId, { teamId, runtimeId: principal.runtimeId,
@@ -434,7 +456,7 @@ class Enrollment {
             !await verifySignature(signer, expected, proof.signature)) throw problem('membership_proof_invalid', 403);
         // The original key still verifies genesis after device removal, but it can no
         // longer answer a live v1 challenge. Both proof versions need current standing.
-        const head = await replayMembership(records, { teamId, authority: owner });
+        const head = await replayMembership(records, { teamId, authority: owner, service });
         if (!verifiedOwnerEndpoint(head, signer)) throw problem('membership_proof_invalid', 403);
         if (this.challenges.get(teamId + '/' + body.runtimeId) !== request || request.expiresAt <= Date.now()) throw problem('membership_proof_invalid', 403);
         // Signature checks yield. A removal committed in that interval must win;
@@ -450,8 +472,8 @@ class Enrollment {
         return reply(200, await this.acknowledgeRevocation(teamId, principal.runtimeId, body));
       }
       if (parts[0] === 'announce') return reply(200, this.announce(teamId, account.id, body.endpoint));
-      if (['bootstrap', 'confirm', 'revoke-endpoint', 'own-project', 'grant', 'revoke-grant'].includes(parts[0])) {
-        return reply(200, await this.signedMutation(teamId, account, parts[0], body));
+      if (['bootstrap', 'confirm', 'revoke-endpoint', 'own-project', 'grant', 'revoke-grant', 'recovery.configure', 'recovery.revoke', 'owner.recover'].includes(parts[0])) {
+        return reply(200, await this.signedMutation(teamId, account, parts[0], body, service));
       }
       throw problem('enrollment_route_required', 404);
     } catch (error) {

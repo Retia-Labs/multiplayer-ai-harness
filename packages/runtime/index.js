@@ -214,6 +214,7 @@ class Runtime {
       runtimeId: this.id, teamId: this.teamId, state: this.encryptionState,
       authority: this.encryptionAuthority,
       freshnessAuthority: this.encryptedHost?.freshness?.record() || null,
+      ownerRecovery: this.encryptedHost?.state?.load('recovery:' + this.teamId) || null,
       approvalAuthority: this.approvalAuthority,
       projects: [...this.encryptedProjects].map(([id, dir]) => ({ id, name: path.basename(dir) })),
       endpoint: this.encryptedHost?.endpoint?.identity() || null

@@ -32,8 +32,9 @@ const fail = (code) => { throw new EnrollmentError(code); };
 
 // The hub's enrollment routes, in the shape the task transport already established.
 export class EnrollmentTransport {
-  constructor({ url, token, endpoint = null, loadCheckpoint, saveCheckpoint }) {
+  constructor({ url, token, service = new URL(url).origin, endpoint = null, loadCheckpoint, saveCheckpoint }) {
     this.url = url; this.token = token; this.endpoint = endpoint; this.checkpoints = new Map();
+    this.service = service;
     this.loadCheckpoint = loadCheckpoint || ((teamId) => this.checkpoints.get(teamId));
     this.saveCheckpoint = saveCheckpoint || ((teamId, value) => this.checkpoints.set(teamId, value));
   }
@@ -51,7 +52,7 @@ export class EnrollmentTransport {
     // An endpoint can establish its own bootstrap root. Other endpoints require an
     // explicitly pinned authority, supplied by the application when enrolling them.
     if (!authority) return { teamId, seq: 0, hash: GENESIS };
-    const head = await replayMembership(records, { teamId, authority, checkpoint: prior });
+    const head = await replayMembership(records, { teamId, authority, checkpoint: prior, service: this.service });
     await this.saveCheckpoint(teamId, { seq: head.seq, hash: head.hash, authority });
     return head;
   }
@@ -62,6 +63,35 @@ export class EnrollmentTransport {
     const operation = await signMembership(this.endpoint, head, action, payload);
     const response = await this.request('/' + action, { teamId, ...payload, operation });
     await this.saveCheckpoint(teamId, { seq: operation.seq, hash: await digest(operation), authority: head.owner || operation.signer });
+    return response;
+  }
+  async prepareRecovery(teamId, descriptor) {
+    if (!this.endpoint) fail('enrollment_signature_required');
+    const state = await this.state(teamId);
+    const head = await this.signedHead(teamId, state);
+    const operation = await signMembership(this.endpoint, head, 'recovery.configure', { descriptor });
+    const log = [...state.authorityLog, operation];
+    const next = await replayMembership(log, { teamId, authority: head.owner, checkpoint: head, service: this.service });
+    return { operation, log, head: next };
+  }
+  async commitRecovery(teamId, prepared) {
+    const operation = prepared?.operation;
+    if (operation?.action !== 'recovery.configure' || operation.teamId !== teamId) fail('recovery_descriptor_invalid');
+    const result = await this.request('/recovery.configure', { teamId, ...operation.payload, operation });
+    await this.signedHead(teamId, await this.state(teamId));
+    return result;
+  }
+  async configureRecovery(teamId, descriptor) { return this.commitRecovery(teamId, await this.prepareRecovery(teamId, descriptor)); }
+  revokeRecovery(teamId, payload) { return this.mutate(teamId, 'recovery.revoke', payload); }
+  async recoverOwner(teamId, payload) {
+    if (!this.endpoint?.signOwnerRecovery) fail('owner_recovery_material_required');
+    const state = await this.state(teamId);
+    const head = await this.signedHead(teamId, state);
+    const signer = Object.fromEntries(['user', 'device', 'curve25519', 'ed25519'].map(key => [key, this.endpoint.identity()[key]]));
+    const body = { version: 1, teamId, seq: head.seq + 1, previous: head.hash, signer, action: 'owner.recover', payload };
+    const operation = { ...body, ...await this.endpoint.signOwnerRecovery(body, { log: state.authorityLog }) };
+    const response = await this.request('/owner.recover', { teamId, ...payload, operation });
+    await this.signedHead(teamId, await this.state(teamId));
     return response;
   }
   async answerChallenges(teamId) {

@@ -28,6 +28,7 @@ const { routing } = require('../e2ee/task-log.mjs');
 const { EncryptedTaskState, EncryptedFixtureHost } = require('./encrypted-task');
 const { EncryptedTaskRun } = require('./encrypted-run');
 const { FreshnessAuthority } = require('./freshness-authority');
+const { recoveryEpoch, requireRecoveryEpoch } = require('../protocol/recovery-epoch.mjs');
 // Match the relay's answer window. Start locally before POST so a delayed request
 // never makes this endpoint retain a nonce longer than the relay accepts it.
 const MEMBERSHIP_CHALLENGE_TTL_MS = 60000;
@@ -45,6 +46,7 @@ class EncryptedHost {
     this.observedMembership = null;
     this.openedTasks = new Map();
     this.controlQueues = new Map();
+    this.keyShareQueue = Promise.resolve();
     this.url = url;                 // http origin of the hub
     this.statePath = statePath;     // durable outbox + checkpoints
     this.projects = projects;       // opaque projectId -> authorized local directory
@@ -116,7 +118,7 @@ class EncryptedHost {
     if (!this.authority) throw Object.assign(new Error('membership_authority_required'), { code: 'membership_authority_required' });
     const received = await this.enrollmentRequest('?team=' + encodeURIComponent(this.runtime.teamId));
     const current = await replayMembership(received.authorityLog, { teamId: this.runtime.teamId,
-      authority: this.authority, checkpoint: this.state.load('authorization:' + this.runtime.teamId) });
+      authority: this.authority, service: new URL(this.url).origin, checkpoint: this.state.load('authorization:' + this.runtime.teamId) });
     this.checkMembershipFloor(current, received.authorityLog);
     // Retain authenticated observations even if the subsequent SQLite write fails.
     // A recovered disk cannot make this live host forget a removal it already saw.
@@ -166,6 +168,15 @@ class EncryptedHost {
     let received, current;
     try {
       ({ received, current } = await this.readMembership());
+      if (this.freshness?.requiresRecovery(current)) {
+        this.membership = current;
+        this.disconnect();
+        // A valid customer recovery claim is public membership evidence. It is not
+        // consent to resume this host. Retain the floor even while awaiting consent.
+        try { this.state.save(key, { seq: current.seq, hash: current.hash }); }
+        finally { await this.runtime.encryptedExecution?.close(); }
+        throw Object.assign(new Error('membership_owner_recovery_required'), { code: 'membership_owner_recovery_required' });
+      }
       if (this.freshness?.isRevoked(current)) {
         this.membership = current;
         // Applying removal must stop execution before a relay gets another chance
@@ -235,9 +246,59 @@ class EncryptedHost {
         throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
       }
       this.checkMembershipFloor(current, received.authorityLog);
+      await this.finishOwnerRecovery(current);
+      if (generation !== this.reconcileGeneration || (needsProof && Date.now() >= this.challengeExpiresAt)) {
+        throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+      }
+      this.checkMembershipFloor(current, received.authorityLog);
     } catch (error) { if (generation === this.reconcileGeneration) this.reconciled = false; throw error; }
     this.reconciled = true;
     return current;
+  }
+
+  async finishOwnerRecovery(current) {
+    const epoch = recoveryEpoch(current.recoveryEpoch);
+    if (!epoch) return;
+    const key = 'recovery:' + this.runtime.teamId;
+    const pending = this.state.load(key);
+    if (!pending || pending.version !== 1 || pending.epoch !== epoch ||
+        !['rotation-pending', 'active'].includes(pending.state)) {
+      throw Object.assign(new Error('membership_owner_recovery_required'), { code: 'membership_owner_recovery_required' });
+    }
+    if (pending.state === 'active') return;
+    // A concurrent reconciliation must join the barrier, not share before rotation
+    // or mark a partially rotated set complete. A failure leaves the durable barrier.
+    if (this.recoveryRotation) return this.recoveryRotation;
+    const generation = this.reconcileGeneration;
+    this.recoveryRotation = (async () => {
+      if (this.runtime.encryptedExecution?.active?.size || this.runtime.encryptedExecution?.pending?.size) {
+        throw Object.assign(new Error('freshness_host_busy'), { code: 'freshness_host_busy' });
+      }
+      const ids = new Set([...this.state.taskIds(), ...this.openedTasks.keys()]);
+      await this.queueKeyShare(async () => {
+        for (const id of ids) {
+          await this.endpoint.shareVerifiedTaskKey(roomFor(id), [this.endpoint.identity()], { rotate: true });
+        }
+      }, { allowPending: true });
+      if (generation !== this.reconcileGeneration || this.freshness.requiresRecovery(current)) {
+        throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+      }
+      const writes = [];
+      for (const id of ids) {
+        const executionKey = 'execution:' + id, saved = this.state.load(executionKey);
+        if (!saved) continue;
+        // Host-local checkpoints and dedupe stay. A recovered epoch starts fresh
+        // provider sessions and never restores a saved approval or uncertain action.
+        writes.push([executionKey, { ...saved, grants: {}, approvalAuthority: null, providerState: {},
+          abandonedApprovals: { ...saved.abandonedApprovals, ...saved.openApprovals }, openApprovals: {},
+          ...(saved.state === 'running' ? { state: 'recovery-required', recoveryLogged: false } : {}) }]);
+      }
+      writes.push([key, { ...pending, state: 'active' }]);
+      this.state.saveMany(writes);
+      this.handedOff.clear();
+    })();
+    try { await this.recoveryRotation; }
+    finally { this.recoveryRotation = null; }
   }
 
   async verifiedEndpointList() {
@@ -250,6 +311,34 @@ class EncryptedHost {
       out.push({ userId: row.userId, identity });
     }
     return out;
+  }
+
+  queueKeyShare(work, { allowPending = false } = {}) {
+    const generation = this.reconcileGeneration;
+    const operation = this.keyShareQueue.then(() => {
+      if (generation !== this.reconcileGeneration || (!allowPending && !this.reconciled)) {
+        throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
+      }
+      return work();
+    });
+    this.keyShareQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  shareTaskKeys(task, room, members, options = {}) {
+    const epoch = recoveryEpoch(this.membership?.recoveryEpoch);
+    return this.queueKeyShare(() => {
+      requireRecoveryEpoch(epoch, this.membership?.recoveryEpoch);
+      for (const member of members) {
+        if (member.user === this.endpoint.identity().user && member.device === this.endpoint.identity().device) continue;
+        if (!this.membership.endpoints.some(row => row.state === 'verified' &&
+            ['user', 'device', 'ed25519', 'curve25519'].every(key => row[key] === member[key])) ||
+            !this.membership.grants.some(row => !row.revoked && row.projectId === task.projectId && matrixUser(row.userId) === member.user)) {
+          throw Object.assign(new Error('member_endpoint_unverified'), { code: 'member_endpoint_unverified' });
+        }
+      }
+      return this.endpoint.shareVerifiedTaskKey(room, members, options);
+    });
   }
 
   async verifiedEndpoints() {
@@ -281,7 +370,20 @@ class EncryptedHost {
         await this.endpoint.confirmEndpoint(creator, { confirmed: true });
         const adapter = new EncryptedFixtureHost({ runtime: this.runtime, endpoint: this.endpoint,
           transport: this.tasks, state: this.state, projects: this.projects,
-          creators: new Map([[task.creatorUserId, creator]]) });
+          creators: new Map([[task.creatorUserId, creator]]),
+          shareTaskKeys: (room, members, options) => this.shareTaskKeys(task, room, members, options),
+          authorizeCreation: async event => {
+            const latest = await this.reconcileMembership();
+            const epoch = recoveryEpoch(event.content?.recoveryEpoch);
+            if ((event.content?.type === 'task.create.v1') !== (epoch === null)) {
+              throw Object.assign(new Error('invalid_recovery_epoch'), { code: 'invalid_recovery_epoch' });
+            }
+            requireRecoveryEpoch(epoch, latest.recoveryEpoch);
+            const activeCreator = latest.endpoints.find(row => row.userId === task.creatorUserId && row.device === event.senderDevice);
+            if (activeCreator?.state !== 'verified' || !latest.grants.some(row => !row.revoked && row.projectId === task.projectId && row.userId === task.creatorUserId)) {
+              throw Object.assign(new Error('task_creator_unverified'), { code: 'task_creator_unverified' });
+            }
+          } });
         const opened = await adapter.open(task);
         return { ...opened, adapter };
       })();
@@ -312,16 +414,24 @@ class EncryptedHost {
     for (const member of members) {
       const key = task.id + '/' + member.identity.user + '/' + member.identity.device;
       if (this.handedOff.has(key)) continue;
+      const envelopeEpoch = recoveryEpoch(this.membership?.recoveryEpoch);
       const history = await adapter.handOff(task, { userId: member.userId, device: member.identity.device });
       const envelope = await this.endpoint.sealControl(member.identity.user, member.identity.device, {
-        type: HISTORY_TYPE, task: routing(task), history
+        ...this.historyContext(), task: routing(task), history
       });
+      const current = await this.reconcileMembership();
+      requireRecoveryEpoch(envelopeEpoch, current.recoveryEpoch);
+      if (!current.endpoints.some(row => row.state === 'verified' && row.user === member.identity.user && row.device === member.identity.device) ||
+          !current.grants.some(row => !row.revoked && row.projectId === task.projectId && row.userId === member.userId)) continue;
       await this.endpoint.transport.deliverToDevice(member.identity.user, member.identity.device, envelope);
       this.handedOff.add(key);
       handed.push(member.userId);
     }
     // Then the session itself, so everything written afterwards needs no further handoff.
-    await adapter.admit(task, members.map((m) => m.identity));
+    const latest = await this.reconcileMembership();
+    const eligible = members.filter(member => latest.endpoints.some(row => row.state === 'verified' && row.user === member.identity.user && row.device === member.identity.device) &&
+      latest.grants.some(row => !row.revoked && row.projectId === task.projectId && row.userId === member.userId));
+    if (eligible.length) await adapter.admit(task, eligible.map(member => member.identity));
     return { admitted: members.map((m) => m.userId), handed };
   }
 
@@ -361,10 +471,12 @@ class EncryptedHost {
     if (pending.length) {
       // Include durable checkpoints from before this process started. The relay
       // cannot skip a room by omitting its task during a restart and later return it.
-      for (const id of new Set([...owned.map(task => task.id), ...this.state.taskIds(), ...this.openedTasks.keys()])) {
-        await this.endpoint.shareVerifiedTaskKey(roomFor(id), [this.endpoint.identity()], { rotate: true });
-        rotated.push(id);
-      }
+      await this.queueKeyShare(async () => {
+        for (const id of new Set([...owned.map(task => task.id), ...this.state.taskIds(), ...this.openedTasks.keys()])) {
+          await this.endpoint.shareVerifiedTaskKey(roomFor(id), [this.endpoint.identity()], { rotate: true });
+          rotated.push(id);
+        }
+      }, { allowPending: hostOnly });
     }
     for (const task of pending.length && !hostOnly ? owned : []) {
       const holders = await this.participants(task.projectId);
@@ -424,7 +536,8 @@ class EncryptedHost {
         const result = await this.apply(match.task, match.read);
         applied.push(result);
         await sendTaskReceipt(this.endpoint, { user: matrixUser(match.read.sender), device: match.read.senderDevice }, {
-          task: match.task, commandId: match.read.commandId, state: result?.state || 'delivered', result
+          task: match.task, commandId: match.read.commandId, state: result?.state || 'delivered', result,
+          recoveryEpoch: match.read.recoveryEpoch
         });
       } catch (error) {
         this.log('task control refused: ' + (error.code || error.message));
@@ -432,6 +545,7 @@ class EncryptedHost {
         refused.push({ taskId: match.task.id, commandId: match.read.commandId, code });
         try { await sendTaskReceipt(this.endpoint, { user: matrixUser(match.read.sender), device: match.read.senderDevice }, {
           task: match.task, commandId: match.read.commandId, state: code === 'command_outcome_unknown' ? 'unknown' : 'rejected', code,
+          recoveryEpoch: match.read.recoveryEpoch,
           ...(error.settled ? { result: { settled: error.settled } } : {})
         }); } catch {}
       }
@@ -483,8 +597,11 @@ class EncryptedHost {
     if (standing !== 'verified') {
       throw Object.assign(new Error('endpoint_' + standing), { code: standing === 'revoked' ? 'endpoint_revoked' : 'endpoint_not_verified' });
     }
+    requireRecoveryEpoch(read.recoveryEpoch, this.membership?.recoveryEpoch);
 
     const opened = await this.openTask(task);
+    requireRecoveryEpoch(read.recoveryEpoch, this.membership?.recoveryEpoch);
+    if (!this.reconciled) throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
     const commandKey = 'control:' + task.id + ':' + commandId;
     const fingerprint = canonical(read);
     const previous = this.state.load(commandKey);
@@ -503,11 +620,12 @@ class EncryptedHost {
       // retains the normal command result without pretending the recipient read it.
       const history = await opened.adapter.handOff(task, { userId: sender, device: senderDevice });
       const envelope = await this.endpoint.sealControl(matrixUser(sender), senderDevice, {
-        type: HISTORY_TYPE, task: routing(task), history
+        ...this.historyContext(), task: routing(task), history
       });
       // Export and encryption await the SDK. Recheck the authenticated state before
       // publishing, so a removal applied during that work cannot receive new keys.
       const current = await this.reconcileMembership();
+      requireRecoveryEpoch(read.recoveryEpoch, current.recoveryEpoch);
       const recipient = current.endpoints.find(endpoint => endpoint.userId === sender && endpoint.device === senderDevice);
       if (recipient?.state !== 'verified') {
         const code = recipient?.state === 'revoked' ? 'endpoint_revoked' : 'endpoint_not_verified';
@@ -604,6 +722,11 @@ class EncryptedHost {
     return result;
   }
 
+  historyContext() {
+    const epoch = recoveryEpoch(this.membership?.recoveryEpoch);
+    return epoch ? { type: 'plexus.task.history.v2', recoveryEpoch: epoch } : { type: HISTORY_TYPE };
+  }
+
   // One task, from opaque record to finished encrypted history.
   async run(wanted, { runTurn, provider = null }) {
     const id = typeof wanted === 'string' ? wanted : wanted.id;
@@ -640,6 +763,7 @@ class EncryptedHost {
     if (!this.closing) this.closing = (async () => {
       this.disconnect();
       await Promise.allSettled([...this.controlQueues.values()]);
+      await this.keyShareQueue;
       try { await this.endpoint?.close(); } finally { this.state?.close(); }
     })();
     return this.closing;

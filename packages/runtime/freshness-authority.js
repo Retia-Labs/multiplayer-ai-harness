@@ -4,6 +4,7 @@
 const crypto = require('node:crypto');
 const { sameIdentity, GENESIS } = require('../e2ee/membership.mjs');
 const { canonical } = require('../protocol/encrypted-task.mjs');
+const { recoveryEpoch } = require('../protocol/recovery-epoch.mjs');
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const identity = value => {
   const keys = ['user', 'device', 'curve25519', 'ed25519'];
@@ -36,6 +37,8 @@ class FreshnessAuthority {
       value.kind !== undefined || !/^[a-f0-9]{32}$/.test(value.activationId || '')) fail('freshness_state_invalid');
     if (value.state === 'revoked' && (!validCheckpoint(value.revokedAt) || value.revokedAt.seq < value.checkpoint.seq ||
       (value.revokedAt.seq === value.checkpoint.seq && value.revokedAt.hash !== value.checkpoint.hash))) fail('freshness_state_invalid');
+    try { recoveryEpoch(value.recoveryEpoch); } catch { fail('freshness_state_invalid'); }
+    if (implicit && value.recoveryEpoch) fail('freshness_state_invalid');
     return value;
   }
   signer() { return this.record()?.signer || this.genesis; }
@@ -46,6 +49,9 @@ class FreshnessAuthority {
   verifiedSigner(head) {
     const signer = this.signer();
     return head.endpoints.some(row => row.state === 'verified' && sameIdentity(row, signer));
+  }
+  requiresRecovery(head) {
+    return recoveryEpoch(head.recoveryEpoch) !== recoveryEpoch(this.record()?.recoveryEpoch);
   }
   isRevoked(head) {
     return this.record()?.state === 'revoked' || head.endpoints.some(row => row.state === 'revoked' && sameIdentity(row, this.signer()));
@@ -63,11 +69,13 @@ class FreshnessAuthority {
     candidate = identity(candidate);
     if (candidate.user !== this.genesis.user) fail('freshness_candidate_not_owner');
     if (!head.endpoints.some(row => row.state === 'verified' && sameIdentity(row, candidate))) fail('freshness_candidate_unverified');
-    if (sameIdentity(candidate, this.signer())) fail('freshness_candidate_unchanged');
+    if (sameIdentity(candidate, this.signer()) && !this.requiresRecovery(head)) fail('freshness_candidate_unchanged');
+    const epoch = recoveryEpoch(head.recoveryEpoch);
     const proposalId = crypto.randomBytes(24).toString('hex');
     const proposal = { proposalId, teamId: this.teamId, runtimeId: this.runtimeId, candidate,
       previousSigner: this.signer(), checkpoint: checkpoint(head),
       priorCheckpoint: checkpoint(this.state.load(this.authorizationKey)), expiresAt: Date.now() + 120000,
+      ...(epoch ? { recoveryEpoch: epoch, recoveryActivation: this.requiresRecovery(head) } : {}),
       accessSummary: { verifiedEndpoints: head.endpoints.filter(row => row.state === 'verified').length,
         projectGrants: head.grants.filter(grant => !grant.revoked).length } };
     // Only one local confirmation is outstanding. Neither a renderer's echoed head
@@ -83,17 +91,23 @@ class FreshnessAuthority {
     const { proposal, priorRecord } = pending;
     if (Date.now() >= proposal.expiresAt) fail('freshness_confirmation_expired');
     if (generation !== pending.generation || !same(checkpoint(head), proposal.checkpoint) ||
+        recoveryEpoch(head.recoveryEpoch) !== recoveryEpoch(proposal.recoveryEpoch) ||
         !same(checkpoint(this.state.load(this.authorizationKey)), proposal.priorCheckpoint) ||
         !same(this.record(), priorRecord)) fail('freshness_confirmation_changed');
     if (!head.endpoints.some(row => row.state === 'verified' && sameIdentity(row, proposal.candidate))) fail('freshness_candidate_unverified');
     const record = { version: 1, teamId: this.teamId, runtimeId: this.runtimeId, genesis: this.genesis,
       signer: proposal.candidate, activationId: crypto.randomBytes(16).toString('hex'),
-      checkpoint: proposal.checkpoint, state: 'active' };
+      checkpoint: proposal.checkpoint, state: 'active',
+      ...(proposal.recoveryEpoch ? { recoveryEpoch: proposal.recoveryEpoch } : {}) };
     // Both writes commit together. A crash cannot leave a new pin with an older floor
     // or acknowledge an appointment that never reached durable storage.
-    this.state.saveMany([[this.authorizationKey, proposal.checkpoint], [this.key, record]]);
+    const writes = [[this.authorizationKey, proposal.checkpoint], [this.key, record]];
+    if (proposal.recoveryActivation) writes.push(['recovery:' + this.teamId, { version: 1,
+      epoch: proposal.recoveryEpoch, checkpoint: proposal.checkpoint, state: 'rotation-pending' }]);
+    this.state.saveMany(writes);
     return { activationId: record.activationId, runtimeId: this.runtimeId, teamId: this.teamId,
-      signer: record.signer, checkpoint: record.checkpoint };
+      signer: record.signer, checkpoint: record.checkpoint,
+      ...(record.recoveryEpoch ? { recoveryEpoch: record.recoveryEpoch } : {}) };
   }
 }
 module.exports = { FreshnessAuthority };

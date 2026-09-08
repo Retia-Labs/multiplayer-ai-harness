@@ -6,7 +6,7 @@ const errors = new Set(['freshness_host_unavailable', 'freshness_team_mismatch',
   'freshness_candidate_not_owner', 'freshness_candidate_unchanged', 'freshness_confirmation_required',
   'freshness_confirmation_expired', 'freshness_confirmation_changed', 'freshness_host_busy',
   'freshness_state_invalid', 'freshness_commit_failed', 'membership_rollback', 'membership_authority_mismatch',
-  'enrollment_unavailable', 'enrollment_signature_invalid', 'membership_freshness_authority_revoked']);
+  'enrollment_unavailable', 'enrollment_signature_invalid', 'membership_freshness_authority_revoked', 'membership_owner_recovery_required']);
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 
 async function localControl(runtime, method, params) {

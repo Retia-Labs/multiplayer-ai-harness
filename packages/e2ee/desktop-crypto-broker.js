@@ -16,6 +16,10 @@ const assets = {
   '/': ['packages/e2ee/host-crypto.html', 'text/html'],
   '/host-crypto.mjs': ['packages/e2ee/host-crypto.mjs', 'text/javascript'],
   '/endpoint-core.mjs': ['packages/e2ee/endpoint-core.mjs', 'text/javascript'],
+  '/owner-recovery-kit.mjs': ['packages/e2ee/owner-recovery-kit.mjs', 'text/javascript'],
+  '/owner-recovery.mjs': ['packages/e2ee/owner-recovery.mjs', 'text/javascript'],
+  '/membership.mjs': ['packages/e2ee/membership.mjs', 'text/javascript'],
+  '/protocol/encrypted-task.mjs': ['packages/protocol/encrypted-task.mjs', 'text/javascript'],
   '/vendor/index.mjs': ['node_modules/@matrix-org/matrix-sdk-crypto-wasm/index.mjs', 'text/javascript'],
   '/vendor/pkg/matrix_sdk_crypto_wasm_bg.js': ['node_modules/@matrix-org/matrix-sdk-crypto-wasm/pkg/matrix_sdk_crypto_wasm_bg.js', 'text/javascript'],
   '/vendor/pkg/matrix_sdk_crypto_wasm_bg.wasm': ['node_modules/@matrix-org/matrix-sdk-crypto-wasm/pkg/matrix_sdk_crypto_wasm_bg.wasm', 'application/wasm']

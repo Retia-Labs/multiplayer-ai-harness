@@ -1,5 +1,13 @@
 # Issues 2–17: integration repairs and remaining acceptance work
 
+**8 September recovery update:** the subsequent customer-held owner recovery
+implementation and its bounded verification are recorded in
+[owner-recovery-handoff.md](owner-recovery-handoff.md). Its browser and source
+Electron no-surviving-teammate flows both pass 6/6. This supersedes the unfinished
+customer-material-only implementation statements for #8, #15 and #17 below.
+The earlier aggregate-suite and installed-artifact results in this document do not
+qualify the later recovery changes; remaining release gates are retained.
+
 The user subsequently excluded testing that requires GitHub Actions from this pass.
 Local macOS, browser and provider verification continues; current Windows execution
 is recorded as not run and does not hold up this local pass. An earlier Windows result

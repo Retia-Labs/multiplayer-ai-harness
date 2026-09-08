@@ -79,6 +79,7 @@
     catchupExplain: null, catchupHostPrompt: null, setupHostPrompt: null,
     inbox: [], inboxOpen: false,
     recoveryOpen: false, recoveryState: null, recoveryDrill: null,
+    ownerRecoveryDrill: null, ownerRecoveryReceipt: null, ownerRecoveryPreview: null,
     // Set from the address bar before anything is connected, acted on once an endpoint exists.
     linkedTaskId: (/^\/t\/([A-Za-z0-9_-]{1,80})$/.exec(location.pathname) || [])[1] || null,
     localRuntimeId: null,
@@ -1222,16 +1223,27 @@
     el.recoveryBtn.classList.toggle('hidden', !state.encrypted);
     if (!state.recoveryOpen) return;
     const view = el.recoveryView;
+    if (state.ownerRecoveryTeam !== state.teamId) {
+      state.ownerRecoveryTeam = state.teamId; state.ownerRecoveryDrill = null;
+      state.ownerRecoveryReceipt = null; state.ownerRecoveryPreview = null; state.ownerRestoreDraft = null; state.ownerKitCiphertext = null;
+    }
+    if (state.ownerRecoveryDrill && view._ownerDrillGeneration === state.ownerRecoveryDrill.generation) return;
     if (state.recoveryDrill && view._recoveryDrillKey === state.recoveryDrill.recoveryKey) return;
     const restoreKey = view.querySelector('[name="restore-recovery-key"]');
     if (restoreKey) state.recoveryRestoreDraft = { key: restoreKey.value, scope: view.querySelector('[name="restore-backup"]')?.value };
+    const ownerKey = view.querySelector('[name="owner-recovery-key"]');
+    if (ownerKey) state.ownerRestoreDraft = { key: ownerKey.value, scope: view.querySelector('[name="owner-kit-scope"]')?.value };
     view._recoveryDrillKey = state.recoveryDrill?.recoveryKey || '';
-    const signature = JSON.stringify([state.recoveryState, state.recoveryDrill, state.encryptedState?.durable]);
+    view._ownerDrillGeneration = state.ownerRecoveryDrill?.generation || '';
+    const signature = JSON.stringify([state.recoveryState, state.recoveryDrill, !!state.ownerRecoveryDrill,
+      state.ownerRecoveryReceipt?.state, state.ownerRecoveryPreview, state.localEncryptedSetup, state.encryptedState?.durable]);
     if (view.dataset.signature === signature) return;
     view.dataset.signature = signature; view.innerHTML = '';
     const head = document.createElement('h3');
     head.textContent = 'Recovery';
     view.appendChild(head);
+    if (!state.recoveryDrill) renderOwnerRecovery(view);
+    if (state.ownerRecoveryDrill) return;
 
     const backups = (state.recoveryState && state.recoveryState.backups) || [];
     const limits = (state.recoveryState && state.recoveryState.limits) || {};
@@ -1279,6 +1291,7 @@
       return;
     }
 
+    view.append(uiNode('h3', null, 'History-only backup'));
     const status = document.createElement('p');
     status.className = 'rec-limit';
     if (backups.length) {
@@ -1286,7 +1299,7 @@
       status.textContent = 'Backed up ' + when.toLocaleString() + ' · ' + backups[0].bytes + ' bytes of ciphertext. '
         + limits.operatorView;
     } else {
-      status.textContent = 'No backup yet. Without one, losing this device means losing the history it can read.';
+      status.textContent = 'No separate history-only backup. Owner kits contain only the history selected when they were prepared.';
     }
     view.appendChild(status);
     appendRecoveryRestore(view, backups);
@@ -1317,7 +1330,7 @@
     view.appendChild(start);
 
     const limitsHead = document.createElement('h4');
-    limitsHead.textContent = 'What recovery cannot do';
+    limitsHead.textContent = 'History-only recovery limits';
     view.appendChild(limitsHead);
     for (const key of ['everythingLost', 'siteDataCleared', 'storageLocked']) {
       if (!limits[key]) continue;
@@ -1337,8 +1350,145 @@
 
   async function refreshRecovery() {
     if (!state.encrypted) return;
-    state.recoveryState = await state.encrypted.recoveryState();
+    const client = state.encrypted, result = await client.recoveryState();
+    if (client !== state.encrypted) return;
+    state.recoveryState = result;
     renderRecovery();
+  }
+
+  function downloadOwnerKit(ciphertext) {
+    const url = URL.createObjectURL(new Blob([ciphertext], { type: 'application/json' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'plexus-owner-recovery-kit.json'; link.click();
+    URL.revokeObjectURL(url);
+  }
+  function renderOwnerRecovery(view) {
+    const information = state.recoveryState?.ownerRecovery || {}, kits = state.recoveryState?.ownerKits || [];
+    const section = uiSection('Owner authority recovery kit',
+      'A separately prepared kit can restore the original owner account on a new device when every trusted device is lost. It contains account-level cross-signing capability and selected authenticated task history. Keep its key outside this machine.');
+    section.id = 'owner-authority-recovery'; section.dataset.state = state.ownerRecoveryDrill ? 'drill' : information.stage ? 'staged' : information.epoch ? 'membership-recovered' : information.descriptor ? 'saved' : 'not-configured';
+    section.append(uiNode('p', 'small', 'The original team fingerprint stays unchanged. Recovery resets device confirmations and project grants. It does not restore provider credentials, pending actions or delegated approvals. Every execution host needs a separate local confirmation.'));
+    if (state.ownerRecoveryDrill) {
+      const draft = state.ownerRecoveryDrill;
+      section.append(uiNode('p', 'ew-explain', 'Store this new key now. Then enter your stored copy so a clean, inactive SDK endpoint can perform a real recovery drill before this kit becomes active.'));
+      section.append(uiNode('pre', 'rec-key', draft.recoveryKey));
+      const typed = uiField('Stored owner recovery key', 'owner-recovery-drill', { type: 'password' });
+      section.append(typed.wrap, uiButton('Test stored key and save kit', 'complete-owner-recovery-kit', async () => {
+        const client = state.encrypted;
+        const receipt = await client.completeOwnerRecoverySetup(typed.input.value);
+        if (client !== state.encrypted) return;
+        typed.input.value = ''; state.ownerRecoveryDrill = null; state.ownerRecoveryReceipt = receipt;
+        await refreshEncrypted(); await refreshRecovery();
+        toast('Owner recovery kit saved after a clean endpoint drill. Download its encrypted file and keep the key separately.');
+      }, true));
+      section.append(uiButton('Cancel this kit setup', 'cancel-owner-recovery-kit', () => {
+        state.encrypted.cancelOwnerRecoverySetup(); state.ownerRecoveryDrill = null; renderRecovery();
+      }));
+      view.append(section); return;
+    }
+    if (information.descriptor) section.append(uiNode('p', 'small', 'Configured authority generation ' + information.descriptor.generation + '. The encrypted kit and its separate customer-held key are both needed.'));
+    else section.append(uiNode('p', 'cu-missing', 'Owner authority recovery is not configured. Existing history-only backups cannot restore owner membership.'));
+    if (state.ownerRecoveryReceipt?.ciphertext) section.append(uiButton('Download encrypted owner kit', 'download-owner-recovery-kit', () => downloadOwnerKit(state.ownerRecoveryReceipt.ciphertext)));
+    if (information.eligible) {
+      section.append(uiButton(information.descriptor ? 'Replace owner recovery kit' : 'Set up owner recovery kit', 'start-owner-recovery-kit', async () => {
+        const replaceAuthority = !!information.generation;
+        if (replaceAuthority && !confirm('Replace the account recovery signing root? Prior kits stop authorizing recovery only after the newer signed descriptor is applied. Previously downloaded history remains readable. Other hosts must apply the change separately.')) return;
+        const client = state.encrypted;
+        const draft = await client.beginOwnerRecoverySetup({ taskIds: state.encryptedTasks.map(task => task.id), replaceAuthority });
+        if (client !== state.encrypted) return;
+        state.ownerRecoveryDrill = draft; renderRecovery();
+      }));
+      if (information.descriptor) section.append(uiButton('Disable owner authority recovery', 'disable-owner-recovery-kit', async () => {
+        if (!confirm('Disable customer-kit owner recovery? Hosts must apply the signed change separately. Keep a verified device or another recovery method; downloaded history cannot be erased.')) return;
+        await state.encrypted.disableOwnerRecovery(); await refreshRecovery();
+      }));
+    } else section.append(uiNode('p', 'small', 'Only a currently verified device of the original owner can provision or replace this authority kit.'));
+
+    const restore = uiSection('Restore an owner kit on a new device',
+      'Your current device stays unchanged while a separate inactive endpoint verifies the kit. No membership or host authority changes during this step.');
+    const key = uiField('Owner recovery key', 'owner-recovery-key', { type: 'password', value: state.ownerRestoreDraft?.key || '' });
+    restore.append(key.wrap);
+    const choose = kits.length ? uiField('Encrypted owner kit', 'owner-kit-scope', { value: state.ownerRestoreDraft?.scope,
+      options: kits.map(kit => ({ id: kit.scope, name: kit.scope + ' · ' + new Date(kit.updatedAt).toLocaleString() })) }) : null;
+    if (choose) restore.append(choose.wrap);
+    const file = uiField('Customer-held encrypted kit file (optional)', 'owner-kit-file', { type: 'file' });
+    file.input.accept = '.json,application/json';
+    restore.append(file.wrap);
+    const stage = uiButton(information.resumeRequired ? 'Resume inactive recovery' : 'Verify kit in an inactive endpoint', 'stage-owner-recovery', async () => {
+      const client = state.encrypted;
+      const status = await client.stageOwnerRecovery({ scope: choose?.input.value, ciphertext: state.ownerKitCiphertext, recoveryKey: key.input.value });
+      if (client !== state.encrypted) return;
+      key.input.value = ''; state.ownerRestoreDraft = null; state.ownerKitCiphertext = null; state.ownerRecoveryPreview = null;
+      state.ownerRecoveryReceipt = { state: 'staged', identity: status.identity };
+      await refreshRecovery();
+    });
+    stage.disabled = !choose && !state.ownerKitCiphertext && !information.resumeRequired;
+    file.input.addEventListener('change', async () => {
+      stage.disabled = true;
+      state.ownerKitCiphertext = file.input.files[0] ? await file.input.files[0].text() : null;
+      stage.disabled = !choose && !state.ownerKitCiphertext && !information.resumeRequired;
+    });
+    restore.append(stage); section.append(restore);
+    if (information.stage) {
+      const staged = information.stage;
+      const confirmation = uiSection('History restored; membership recovery not yet applied',
+        'This is a new endpoint. Publishing recovery resets earlier device confirmations and project grants. Every execution host remains paused until its own local confirmation, and approval authority stays separate.');
+      confirmation.dataset.state = information.resumeRequired ? 'resume-required' : 'history-restored';
+      confirmation.append(uiNode('p', 'ew-fingerprint mono', window.PlexusEncrypted.fingerprint(staged.identity)));
+      for (const taskId of staged.taskIds || []) {
+        const inspect = uiButton('Inspect restored task ' + taskId.slice(-6), 'inspect-owner-recovery-history', async () => {
+          state.ownerRecoveryPreview = await state.encrypted.previewOwnerRecoveryHistory(taskId); renderRecovery();
+        });
+        inspect.disabled = !!information.resumeRequired; confirmation.append(inspect);
+      }
+      if (state.ownerRecoveryPreview) {
+        const preview = state.ownerRecoveryPreview, evidence = uiSection(preview.snapshot.title || preview.taskId,
+          'Verified restored task history through encrypted event ' + preview.snapshot.seq + '. Reading this evidence does not publish membership recovery.');
+        evidence.dataset.taskId = preview.taskId; evidence.append(uiNode('p', null, preview.snapshot.objective));
+        for (const diff of preview.snapshot.diffs || []) evidence.append(uiNode('pre', 'mono ew-code-scroll', diff.patch || JSON.stringify(diff)));
+        confirmation.append(evidence);
+      }
+      const publish = uiButton('Recover owner membership and reset access', 'recover-owner-membership', async () => {
+        if (!confirm('Recover this owner account on the new device and reset prior device confirmations and project grants? Pending actions and delegated approvals will not return. Every execution host remains paused until separately confirmed on that machine.')) return;
+        const client = state.encrypted, receipt = await client.recoverOwnerMembership();
+        if (client !== state.encrypted) return;
+        state.encryptedIdentity = receipt.identity; state.encryptedReceipts.clear(); state.ownerRecoveryReceipt = receipt;
+        state.ownerRecoveryPreview = null; await refreshEncrypted(); await refreshRecovery();
+      }, true);
+      publish.disabled = !!information.resumeRequired; confirmation.append(publish); section.append(confirmation);
+    }
+    if (information.epoch) {
+      const local = state.localEncryptedSetup, selected = selectedRuntime();
+      const localHost = local?.runtimeId === selected?.id && local.teamId === state.teamId;
+      const confirmationSaved = localHost && local.freshnessAuthority?.recoveryEpoch === information.epoch &&
+        ['user', 'device', 'curve25519', 'ed25519'].every(key => local.freshnessAuthority.signer?.[key] === state.encryptedIdentity?.[key]) &&
+        local.freshnessAuthority.state === 'active';
+      const active = localHost && local?.freshnessAuthority?.recoveryEpoch === information.epoch &&
+        local.freshnessAuthority.state === 'active' && local.state === 'ready';
+      const status = uiSection(active ? 'Recovery active on this execution host' : confirmationSaved ? 'Local recovery confirmation saved' : 'Owner membership recovered; hosts need local confirmation',
+        active ? 'Grant this account explicit project access before creating new work. Configure action approval separately. Other hosts need their own local confirmation.'
+          : confirmationSaved ? 'Waiting for membership verification and task key rotation on this host. Reconciliation retries automatically; controls remain unavailable until it finishes. Other hosts still need their own local confirmation.'
+          : 'A membership recovery record alone cannot restart an execution host. Open the installed app on each reachable machine and confirm its new membership signer. Offline hosts remain pending.');
+      status.dataset.state = active ? 'active' : confirmationSaved ? 'rotation-pending' : 'pending-host';
+      for (const runtime of state.runtimes) {
+        const appliedHere = active && runtime.id === local?.runtimeId;
+        const row = uiNode('p', appliedHere ? 'small' : 'cu-missing', (runtime.name || runtime.id) + ': ' +
+          (appliedHere ? 'this host has locally applied this recovery epoch.'
+            : runtime.online ? 'local recovery confirmation is pending or cannot be verified from this client.'
+              : 'offline; local recovery confirmation remains pending.'));
+        row.dataset.recoveryRuntime = runtime.id; row.dataset.recoveryState = appliedHere ? 'active' : 'pending'; status.append(row);
+      }
+      if (!active && !confirmationSaved && window.harnessDesktop?.confirmFreshnessAuthority) {
+        const activate = uiButton('Confirm recovery on this host', 'activate-owner-recovery-host', async () => {
+          await activateMembershipRecovery(selectedRuntime()); await refreshRecovery();
+        });
+        activate.disabled = !localHost || !selected?.online;
+        status.append(activate);
+        if (activate.disabled) status.append(uiNode('p', 'cu-missing', 'Select this machine’s online execution host before confirming recovery locally.'));
+      }
+      section.append(status);
+    }
+    section.append(uiNode('p', 'rec-limit rec-warn', 'If every trusted device and every usable customer recovery key or encrypted kit is lost, the operator cannot recover your history or owner authority. Rewrapping a key does not erase old downloaded history or revoke a copied signing secret.'));
+    view.append(section);
   }
 
   function openRecovery() {
@@ -1548,7 +1698,8 @@
     }
     if (desktop?.confirmApprovalAuthority && state.encryptedState?.state === 'verified') {
       panel.append(uiButton('Set this device as host approver', 'authorize-host-approver', async () => {
-        await desktop.confirmApprovalAuthority({ teamId: state.teamId, identity: state.encrypted.endpoint.identity() });
+        await desktop.confirmApprovalAuthority({ teamId: state.teamId, identity: state.encrypted.endpoint.identity(),
+          recoveryEpoch: state.encryptedState?.membershipIdentity?.recoveryEpoch || null });
         await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
       }));
     }
@@ -1597,6 +1748,7 @@
     const originalAuthorityMatches = ['user', 'device', 'curve25519', 'ed25519'].every(key => membership?.owner?.[key] === original[key]);
     const owner = original.user === identity.user && originalAuthorityMatches;
     const verified = membership?.state === 'verified';
+    const currentEpoch = (selected?.recoveryEpoch || null) === (membership?.recoveryEpoch || null);
     const section = uiSection('Membership recovery on this host',
       'A verified replacement device for the original owner can confirm current membership for this execution host. The original team identity stays unchanged.');
     section.dataset.state = selected?.state || 'original';
@@ -1607,33 +1759,37 @@
     if (!desktop?.confirmFreshnessAuthority) {
       section.append(uiNode('p', 'cu-missing', 'Open the installed app on the execution machine to appoint a replacement device.'));
     } else if (membership?.state === 'revoked' || selected?.state === 'revoked' && sameDevice) {
-      section.append(uiNode('p', 'cu-missing', 'This device is revoked. Use a different owner device and have a surviving verified teammate compare its fingerprint before appointing it locally.'));
+      section.append(uiNode('p', 'cu-missing', 'This device is revoked. Use a different owner device verified by a surviving teammate, or restore a separately prepared owner authority kit on a new device before local confirmation.'));
     } else if (!owner || !verified) {
       section.append(uiNode('p', 'cu-missing', !membership?.owner
         ? 'Compare the original team owner fingerprint in Team & access. A surviving verified teammate must then verify this replacement device.'
         : !originalAuthorityMatches ? 'The verified team identity does not match this host’s original authority. Compare the original fingerprint with a trusted teammate before continuing.'
         : original.user !== identity.user ? 'Only a verified replacement device of the original team owner can be appointed here.'
-          : 'A surviving verified teammate must compare and verify this device in Team & access before it can confirm membership. Restored history alone does not authorize it.'));
-    } else if (!sameDevice) {
-      section.append(uiButton('Use this verified device for membership recovery', 'authorize-freshness-authority', async () => {
-        const teamId = state.teamId, runtimeId = runtime.id;
-        try {
-          const result = await desktop.confirmFreshnessAuthority({ teamId, identity });
-          if (!result?.confirmed) return;
-          if (state.teamId !== teamId || selectedRuntime()?.id !== runtimeId) return;
-          await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
-          toast('This host now uses the replacement membership signer. Other hosts, approval rights and provider credentials are unchanged.');
-        } catch (error) {
-          const code = error.code || error.message || '';
-          throw new Error(code.includes('freshness_host_busy')
-            ? 'Finish or interrupt the active agent turn, then retry membership recovery on this host.'
-            : code.includes('local_runtime_restart_failed')
-              ? 'The replacement signer was saved, but the execution host did not restart. Retry local host startup and check its selected signer before continuing.'
-              : 'Membership recovery could not be verified. Refresh local setup to check the selected signer before retrying. The replacement device must be verified by a surviving teammate.');
-        }
-      }));
+          : 'A surviving teammate must verify this device, or you can restore a separately prepared owner authority kit. History-only backups do not authorize membership.'));
+    } else if (!sameDevice || !currentEpoch) {
+      section.append(uiButton('Use this verified device for membership recovery', 'authorize-freshness-authority', () => activateMembershipRecovery(runtime)));
     } else section.append(uiNode('p', 'small', 'This device is already the selected membership signer for this host.'));
     panel.append(section);
+  }
+  async function activateMembershipRecovery(runtime) {
+    const local = state.localEncryptedSetup, desktop = window.harnessDesktop;
+    if (!runtime || !desktop?.confirmFreshnessAuthority || local?.runtimeId !== runtime.id || local.teamId !== state.teamId) {
+      throw new Error('Open the installed app on the selected execution host to confirm recovery locally.');
+    }
+    const teamId = state.teamId, runtimeId = runtime.id, identity = state.encrypted.endpoint.identity();
+    try {
+      const result = await desktop.confirmFreshnessAuthority({ teamId, identity });
+      if (!result?.confirmed || state.teamId !== teamId || selectedRuntime()?.id !== runtimeId) return;
+      await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
+      toast('This host now uses the replacement membership signer. Other hosts, approval rights and provider credentials are unchanged.');
+    } catch (error) {
+      const code = error.code || error.message || '';
+      throw new Error(code.includes('freshness_host_busy')
+        ? 'Finish or interrupt the active agent turn, then retry membership recovery on this host.'
+        : code.includes('local_runtime_restart_failed')
+          ? 'The signer was saved, but the host did not restart. Retry local startup and check the selected signer before continuing.'
+          : 'Membership recovery could not be verified. Refresh local setup and verify this device through a trusted teammate or a valid owner authority kit before retrying.');
+    }
   }
   async function selectEncryptedTask(id) {
     $('#encrypted-composer-error')?.remove();
@@ -2022,6 +2178,14 @@
     }
     section.append(uiNode('p', 'small', 'Your device: ' + (state.encryptedState?.device || 'starting') + ' · ' + (state.encryptedState?.state || 'unknown')));
     section.append(uiNode('p', 'ew-fingerprint mono', state.encryptedIdentity?.fingerprint || 'Fingerprint unavailable'));
+    const membership = state.encryptedState?.membershipIdentity;
+    if (membership?.recoveryEpoch && projectId && membership.state === 'verified' && membership.owner?.user === state.encryptedIdentity?.user &&
+        !membership.grants.some(grant => grant.projectId === projectId && grant.userId === state.me.id && !grant.revoked)) {
+      section.append(uiSection('Project access reset by owner recovery', 'History remains readable. Grant this account new project access before issuing any new task controls.'));
+      section.append(uiButton('Grant this account project access', 'reclaim-recovery-project', async () => {
+        await state.encrypted.reclaimProjectAccess(projectId); await refreshEncrypted();
+      }, true));
+    }
     for (const endpoint of state.encryptedState?.endpoints || []) {
       const card = uiNode('article', 'ew-device'); card.dataset.device = endpoint.device;
       card.append(uiNode('h4', null, (nameFor(endpoint.userId) || endpoint.userId) + ' · ' + endpoint.device), uiNode('p', 'small', endpoint.state), uiNode('p', 'ew-fingerprint mono', endpoint.fingerprint));

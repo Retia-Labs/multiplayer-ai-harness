@@ -1,4 +1,5 @@
 'use strict';
+import { assertPublishedStore, createOwnerRecoveryKitAPI } from './owner-recovery-kit.mjs';
 // One cryptographic endpoint - a desktop app, a browser profile, or an execution host.
 //
 // Spike for issue #3. This is a thin seam over @matrix-org/matrix-sdk-crypto-wasm: the
@@ -60,19 +61,15 @@ class Endpoint {
   // works in a browser or an Electron renderer and NOT in Node, where it throws. Omitting
   // it yields a memory store whose keys die with the process. See the threat model.
   static async create(opts) {
-    await init();
-    const ep = new Endpoint(opts);
-    if (opts.storeName) {
-      if (!opts.storeKey && !opts.storePassphrase) throw new Error('encrypted_store_key_required');
-      const handle = opts.storeKey
-        ? await sdk.StoreHandle.openWithKey(opts.storeName, Uint8Array.from(opts.storeKey))
-        : await sdk.StoreHandle.open(opts.storeName, opts.storePassphrase);
-      ep.machine = await sdk.OlmMachine.initFromStore(userId(ep.user), deviceId(ep.device), handle);
-    } else {
-      ep.machine = await sdk.OlmMachine.initialize(userId(ep.user), deviceId(ep.device));
+    const marker = await assertPublishedStore(opts);
+    const ep = await openInactive(opts);
+    try {
+      if (marker?.identity && !['user', 'device', 'curve25519', 'ed25519'].every(key => marker.identity[key] === ep.identity()[key])) {
+        throw Object.assign(new Error('owner_recovery_store_mismatch'), { code: 'owner_recovery_store_mismatch' });
+      }
+      await ep.sync(); return ep;
     }
-    await ep.sync();
-    return ep;
+    catch (error) { ep.close(); throw error; }
   }
 
   static async storageSupport() {
@@ -88,19 +85,15 @@ class Endpoint {
   // Publish our public keys and pick up everyone else's. The hub only ever handles public
   // material here; the private half never leaves this process.
   async sync() {
-    for (const req of await this.machine.outgoingRequests()) {
-      const kind = req.constructor.name;
-      const type = REQUEST_TYPES[kind];
-      if (!type) { this.log('unhandled request ' + kind); continue; }
-      const response = await this.transport.send(type, { user: this.user, device: this.device, body: req.body, id: req.id });
-      await this.machine.markRequestAsSent(req.id, sdk.RequestType[type], response);
-    }
+    ownerRecovery.assertActive(this);
+    return syncRequests(this);
   }
 
   // `updateTrackedUsers` only marks users as interesting; the key query is issued lazily
   // off a sync we do not have. `queryKeysForUsers` forces it, which is what makes another
   // endpoint visible right now rather than eventually.
   async track(users) {
+    ownerRecovery.assertActive(this);
     await this.machine.updateTrackedUsers(users.map(userId));
     const req = this.machine.queryKeysForUsers(users.map(userId));
     if (req) {
@@ -134,6 +127,7 @@ class Endpoint {
 
   // Establish sessions with any of `users`' devices we have not talked to yet.
   async ensureSessions(users) {
+    ownerRecovery.assertActive(this);
     const missing = await this.machine.getMissingSessions(users.map(userId));
     if (!missing) return;
     const response = await this.transport.send('KeysClaim', { user: this.user, device: this.device, body: missing.body, id: missing.id });
@@ -165,6 +159,7 @@ class Endpoint {
   // actually protected in transit; a `PlainText` or `UnableToDecrypt` event must never be
   // treated as authentic, which is why that distinction is surfaced rather than flattened.
   async open(envelopes) {
+    ownerRecovery.assertActive(this);
     const processed = await this.machine.receiveSyncChanges(
       JSON.stringify(envelopes), new sdk.DeviceLists(), new Map(), undefined,
       new sdk.DecryptionSettings(sdk.TrustRequirement.Untrusted)
@@ -197,6 +192,7 @@ class Endpoint {
 
   // Hand the current group session to everyone who should be able to read what follows.
   async shareTaskKey(roomId, users, { members } = {}) {
+    ownerRecovery.assertActive(this);
     // The group key itself travels sealed to each device, so the Olm sessions have to
     // exist before it can be handed out at all.
     await this.ensureSessions(users);
@@ -314,24 +310,14 @@ class Endpoint {
   // retain the existing root and signatures; a reset needs a separate rotation ceremony.
   // The keys it publishes are public; the private halves stay in this machine's store.
   async bootstrapCrossSigning() {
-    const reqs = await this.machine.bootstrapCrossSigning(false);
-    for (const req of [reqs.uploadKeysRequest, reqs.uploadSigningKeysRequest, reqs.uploadSignaturesRequest]) {
-      if (!req) continue;
-      const kind = req.constructor.name;
-      const type = REQUEST_TYPES[kind] || (kind.includes('SigningKeys') ? 'SigningKeysUpload' : null);
-      if (!type) continue;
-      await this.transport.send(type, { user: this.user, device: this.device, body: req.body, id: req.id });
-      if (sdk.RequestType[type] !== undefined && req.id) {
-        try { await this.machine.markRequestAsSent(req.id, sdk.RequestType[type], '{}'); } catch {}
-      }
-    }
-    await this.sync();
-    return this.machine.crossSigningStatus();
+    ownerRecovery.assertActive(this);
+    return publishCrossSigning(this, false);
   }
 
   // An already-trusted endpoint vouching for another one. This is the step that stops a
   // relay-supplied key from being accepted just because the relay served it.
   async verifyEndpoint(user, device) {
+    ownerRecovery.assertActive(this);
     const target = await this.getDevice(user, device);
     if (!target) throw new Error('unknown endpoint ' + user + '/' + device);
     const req = await target.verify();
@@ -348,6 +334,18 @@ class Endpoint {
     const target = await this.getDevice(user, device);
     return !!(target && target.isVerified());
   }
+
+  // Owner authority recovery creates a different inactive store. The ordinary create
+  // path cannot reopen it until the explicit publication ceremony has completed.
+  static stageOwnerRecovery(options) { return ownerRecovery.stage(options); }
+  static resumeOwnerRecovery(options) { return ownerRecovery.stage(options, true); }
+  static drillOwnerRecoveryKit(options) { return ownerRecovery.drillKit(options); }
+  ownerRecoveryIdentity(options) { return ownerRecovery.identity(this, options); }
+  provisionOwnerRecoveryKit(options) { return ownerRecovery.provision(this, options); }
+  ownerRecoveryStatus() { return ownerRecovery.status(this); }
+  drillOwnerRecovery() { return ownerRecovery.drill(this); }
+  publishOwnerRecovery(options) { return ownerRecovery.publish(this, options); }
+  signOwnerRecovery(body, options) { return ownerRecovery.signRecovery(this, body, options); }
 
   // ---- customer-held recovery ----
 
@@ -386,6 +384,7 @@ class Endpoint {
   }
 
   async sign(message) {
+    ownerRecovery.assertActive(this);
     if (typeof message !== 'string') throw new Error('invalid_signed_message');
     const signatures = await this.machine.sign(message);
     const signature = signatures.getSignature(userId(this.user), new sdk.DeviceKeyId('ed25519:' + this.device));
@@ -498,6 +497,52 @@ class Endpoint {
     return { user: this.user, device: this.device, curve25519: keys.curve25519.toBase64(), ed25519: keys.ed25519.toBase64() };
   }
 }
+
+// Internal construction deliberately makes no outgoing SDK request. Only normal
+// creation and explicit validated recovery publication may call the transport helpers.
+async function openInactive(opts) {
+  await init();
+  const endpoint = new Endpoint(opts);
+  if (opts.storeName) {
+    if (!opts.storeKey && !opts.storePassphrase) throw new Error('encrypted_store_key_required');
+    const handle = opts.storeKey
+      ? await sdk.StoreHandle.openWithKey(opts.storeName, Uint8Array.from(opts.storeKey))
+      : await sdk.StoreHandle.open(opts.storeName, opts.storePassphrase);
+    endpoint.machine = await sdk.OlmMachine.initFromStore(userId(endpoint.user), deviceId(endpoint.device), handle);
+  } else endpoint.machine = await sdk.OlmMachine.initialize(userId(endpoint.user), deviceId(endpoint.device));
+  // initFromStore may return the identity already in the database. Caller labels
+  // cannot rename it, including when resuming an inactive recovery store.
+  if (endpoint.machine.userId.toString() !== opts.user || endpoint.machine.deviceId.toString() !== opts.device) {
+    endpoint.close();
+    throw Object.assign(new Error('owner_recovery_store_mismatch'), { code: 'owner_recovery_store_mismatch' });
+  }
+  return endpoint;
+}
+async function syncRequests(endpoint) {
+  for (const req of await endpoint.machine.outgoingRequests()) {
+    const type = REQUEST_TYPES[req.constructor.name];
+    if (!type) { endpoint.log('unhandled request ' + req.constructor.name); continue; }
+    const response = await endpoint.transport.send(type, { user: endpoint.user, device: endpoint.device, body: req.body, id: req.id });
+    await endpoint.machine.markRequestAsSent(req.id, sdk.RequestType[type], response);
+  }
+}
+async function publishCrossSigning(endpoint, replaceAuthority, transport = endpoint.transport) {
+  endpoint.transport = transport;
+  const reqs = await endpoint.machine.bootstrapCrossSigning(replaceAuthority);
+  for (const req of [reqs.uploadKeysRequest, reqs.uploadSigningKeysRequest, reqs.uploadSignaturesRequest]) {
+    if (!req) continue;
+    const kind = req.constructor.name;
+    const type = REQUEST_TYPES[kind] || (kind.includes('SigningKeys') ? 'SigningKeysUpload' : null);
+    if (!type) continue;
+    await transport.send(type, { user: endpoint.user, device: endpoint.device, body: req.body, id: req.id });
+    if (sdk.RequestType[type] !== undefined && req.id) {
+      try { await endpoint.machine.markRequestAsSent(req.id, sdk.RequestType[type], '{}'); } catch {}
+    }
+  }
+  await syncRequests(endpoint);
+  return endpoint.machine.crossSigningStatus();
+}
+const ownerRecovery = createOwnerRecoveryKitAPI({ sdk, openInactive, publishCrossSigning });
 
 return { Endpoint, REQUEST_TYPES, init, sdk };
 }

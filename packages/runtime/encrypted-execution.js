@@ -6,6 +6,7 @@ const { TurnSession } = require('./session');
 const { EncryptedTaskRun, eventId: runEventId } = require('./encrypted-run');
 const { Events, Errors } = require('../protocol');
 const { sameIdentity } = require('../e2ee/membership.mjs');
+const { recoveryEpoch, requireRecoveryEpoch } = require('../protocol/recovery-epoch.mjs');
 
 const refuse = (code, details = {}) => { throw Object.assign(new Error(code), { code, ...details }); };
 const recoveryEventId = (task, turnId, part) => 'ev_' + crypto.createHash('sha256')
@@ -27,6 +28,7 @@ class EncryptedExecution {
   approvalOwner() {
     const authority = this.runtime.approvalAuthority;
     if (!authority || (authority.teamId && authority.teamId !== this.runtime.teamId)) return null;
+    if (recoveryEpoch(authority.recoveryEpoch) !== recoveryEpoch(this.host.membership?.recoveryEpoch)) return null;
     const verified = this.host.membership?.endpoints.find(endpoint => endpoint.state === 'verified' && sameIdentity(endpoint, authority));
     if (!verified) return null;
     return Object.fromEntries(['user', 'device', 'curve25519', 'ed25519'].map(key => [key, authority[key]]));
@@ -103,6 +105,10 @@ class EncryptedExecution {
     if (this.closed) refuse('host_stopped');
     if (this.active.has(task.id) || this.pending.has(task.id)) refuse('turn_already_running');
     if (opened.reader.state.outcome) refuse('task_already_settled');
+    // Automatic first execution belongs to the encrypted creation request's epoch.
+    // An explicit new command may continue old history after the customer reviews it.
+    if (!commandId) requireRecoveryEpoch(opened.creationEpoch, this.host.membership?.recoveryEpoch);
+    const epoch = recoveryEpoch(this.host.membership?.recoveryEpoch);
     const old = this.state(task);
     if (old?.state === 'running') {
       await this.reconcile(task, opened);
@@ -136,7 +142,7 @@ class EncryptedExecution {
     // Persist before the provider can execute. A crash from this point is an explicit
     // recovery-required state, even if no output made it back yet.
     const saved = { state: 'running', turnId, settings: chosen, openApprovals: {}, providerState: providerState(),
-      approvalAuthority: this.approvalOwner(),
+      approvalAuthority: this.approvalOwner(), recoveryEpoch: epoch,
       settledApprovals: old?.settledApprovals || {}, grants: {}, commandId: commandId || null };
     try { this.save(task, saved); }
     catch (error) { this.pending.delete(task.id); throw error; }
@@ -155,6 +161,7 @@ class EncryptedExecution {
       },
       runTurn: async (emit) => {
         if (this.closed) refuse('host_stopped');
+        requireRecoveryEpoch(epoch, this.host.membership?.recoveryEpoch);
         if (saved.approvalAuthority && !sameIdentity(saved.approvalAuthority, this.approvalOwner())) refuse('approval_authority_revoked');
         session = new TurnSession({ thread, turnId, by: actor, input: requested,
           provider, model: chosen.model, settings: chosen, executor: this.runtime.executor,
@@ -285,8 +292,12 @@ class EncryptedExecution {
 
   async close() {
     this.closed = true;
-    for (const { session } of this.active.values()) session.interrupt();
+    let failure;
+    for (const { session } of this.active.values()) {
+      try { session.interrupt(); } catch (error) { failure ||= error; }
+    }
     await Promise.allSettled([...(this.completions || [])]);
+    if (failure) throw failure;
   }
 }
 

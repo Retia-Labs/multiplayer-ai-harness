@@ -11,6 +11,7 @@
 // from a name the sender typed. A client asserting its own identity here would leave the log
 // recording a claim and calling it a fact.
 import { routing, newId } from './task-log.mjs';
+import { recoveryEpoch as epochValue, requireRecoveryEpoch } from '../protocol/recovery-epoch.mjs';
 
 // What sealControl stamps on the wire, and what this module puts inside it. The same sealed
 // channel carries project history handoffs, so a message that is not a task control is not
@@ -40,35 +41,42 @@ export const accountOf = (user) => {
  * seal for a device this endpoint has not confirmed, so an unconfirmed host cannot be sent
  * anything at all - the same gate the catch-up screen puts in front of reading.
  */
-export async function sendTaskControl(endpoint, writer, { task, action, payload, commandId = newId('cmd') }) {
+export async function sendTaskControl(endpoint, writer, { task, action, payload, commandId = newId('cmd'), recoveryEpoch }) {
   if (!ACTIONS.includes(action)) fail('unsupported_task_control');
   if (!commandIdentity(commandId)) fail('invalid_command_id');
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('invalid_task_control');
+  const epoch = epochValue(recoveryEpoch);
   const envelope = await endpoint.sealControl(writer.user, writer.device, {
-    type: CONTROL_TYPE, task: routing(task), commandId, action, payload
+    type: epoch ? 'plexus.task.control.v2' : CONTROL_TYPE, task: routing(task), commandId, action, payload,
+    ...(epoch ? { recoveryEpoch: epoch } : {})
   });
   await endpoint.transport.deliverToDevice(writer.user, writer.device, envelope);
   return { commandId, state: 'submitted' };
 }
 
-export async function sendTaskReceipt(endpoint, target, { task, commandId, state, result, code }) {
+export async function sendTaskReceipt(endpoint, target, { task, commandId, state, result, code, recoveryEpoch }) {
   if (!commandIdentity(commandId) || !RECEIPT_STATES.includes(state)) fail('invalid_task_receipt');
+  const epoch = epochValue(recoveryEpoch);
   const envelope = await endpoint.sealControl(target.user, target.device, {
-    type: RECEIPT_TYPE, task: routing(task), commandId, state,
+    type: epoch ? 'plexus.task.receipt.v2' : RECEIPT_TYPE, task: routing(task), commandId, state,
+    ...(epoch ? { recoveryEpoch: epoch } : {}),
     ...(result === undefined ? {} : { result }), ...(code ? { code } : {})
   });
   await endpoint.transport.deliverToDevice(target.user, target.device, envelope);
   return { commandId, state };
 }
 
-export function readTaskReceipt(event, task, writer) {
-  if (event?.type !== ENVELOPE_TYPE || event.content?.type !== RECEIPT_TYPE) return null;
+export function readTaskReceipt(event, task, writer, options = {}) {
+  if (event?.type !== ENVELOPE_TYPE || ![RECEIPT_TYPE, 'plexus.task.receipt.v2'].includes(event.content?.type)) return null;
   if (!event.decrypted || !event.verified || event.sender !== writer?.user ||
       event.senderDevice !== writer?.device || event.senderKey !== writer?.curve25519) fail('task_receipt_unauthenticated');
   const content = event.content;
   if (Object.entries(routing(task)).some(([key, value]) => content.task?.[key] !== value)) return null;
   if (!commandIdentity(content.commandId) || !RECEIPT_STATES.includes(content.state)) fail('invalid_task_receipt');
+  const epoch = readEpoch(content, RECEIPT_TYPE);
+  if (Object.hasOwn(options, 'recoveryEpoch')) requireRecoveryEpoch(epoch, options.recoveryEpoch);
   return { commandId: content.commandId, state: content.state,
+    ...(epoch ? { recoveryEpoch: epoch } : {}),
     ...(content.result === undefined ? {} : { result: content.result }), ...(content.code ? { code: content.code } : {}) };
 }
 
@@ -90,23 +98,31 @@ export function readTaskReceipt(event, task, writer) {
  * The verification stays exactly where #8 put it: acceptProjectAccess checks the seal came
  * from the writer, and this adds nothing to that.
  */
-export function readTaskHistory(event, task) {
+export function readTaskHistory(event, task, options = {}) {
   if (!event || event.type !== ENVELOPE_TYPE) return null;
   if (!event.decrypted || !event.verified || !event.senderDevice) fail('task_control_unauthenticated');
   const content = event.content;
-  if (!content || content.type !== HISTORY_TYPE) return null;
+  if (!content || ![HISTORY_TYPE, 'plexus.task.history.v2'].includes(content.type)) return null;
   const named = content.task || {};
   const expected = routing(task);
   if (Object.keys(expected).some((key) => named[key] !== expected[key])) return null;
   if (!content.history || typeof content.history.blob !== 'string' || !content.history.envelope) fail('invalid_task_control');
+  const epoch = readEpoch(content, HISTORY_TYPE);
+  if (Object.hasOwn(options, 'recoveryEpoch')) requireRecoveryEpoch(epoch, options.recoveryEpoch);
   return { sender: accountOf(event.sender), senderDevice: event.senderDevice, history: content.history };
+}
+
+function readEpoch(content, legacyType) {
+  const epoch = epochValue(content.recoveryEpoch);
+  if ((content.type === legacyType) !== (epoch === null)) fail('invalid_recovery_epoch');
+  return epoch;
 }
 
 export function readTaskControl(event, task) {
   if (!event || event.type !== ENVELOPE_TYPE) return null;
   if (!event.decrypted || !event.verified || !event.senderDevice) fail('task_control_unauthenticated');
   const content = event.content;
-  if (!content || content.type !== CONTROL_TYPE) return null;
+  if (!content || ![CONTROL_TYPE, 'plexus.task.control.v2'].includes(content.type)) return null;
   if (!ACTIONS.includes(content.action) ||
       !commandIdentity(content.commandId) ||
       !content.payload || typeof content.payload !== 'object' || Array.isArray(content.payload)) {
@@ -117,5 +133,6 @@ export function readTaskControl(event, task) {
   if (Object.keys(expected).some((key) => named[key] !== expected[key])) return null;
   const sender = accountOf(event.sender);
   if (!sender) fail('task_control_unauthenticated');
-  return { sender, senderDevice: event.senderDevice, commandId: content.commandId, action: content.action, payload: content.payload };
+  return { sender, senderDevice: event.senderDevice, commandId: content.commandId, action: content.action, payload: content.payload,
+    recoveryEpoch: readEpoch(content, CONTROL_TYPE) };
 }

@@ -41,6 +41,7 @@ let hub, browser; const hosts = [], errors = [];
   const creatorContext = await browser.newContext(), readerContext = await browser.newContext();
   const creator = await makeClient(creatorContext); let reader = await makeClient(readerContext);
   await creator.evaluate(() => client.announce());
+  await reader.evaluate(identity => client.confirmAuthority(identity), await creator.evaluate(() => client.endpoint.identity()));
   await creator.evaluate(identity => client.confirmHost('rt_mailbox_B', identity), hosts[1].endpoint.identity());
   await reader.evaluate(identity => client.confirmHost('rt_mailbox_A', identity), hosts[0].endpoint.identity());
   const readerIdentity = await reader.evaluate(() => client.endpoint.identity());

@@ -7,7 +7,8 @@ const REMOTE_ERRORS = new Set(['freshness_host_unavailable', 'freshness_team_mis
   'freshness_candidate_unverified', 'freshness_candidate_not_owner', 'freshness_candidate_unchanged',
   'freshness_confirmation_required', 'freshness_confirmation_expired', 'freshness_confirmation_changed',
   'freshness_host_busy', 'freshness_state_invalid', 'freshness_commit_failed', 'membership_rollback',
-  'membership_authority_mismatch', 'membership_freshness_authority_revoked', 'enrollment_unavailable', 'enrollment_signature_invalid']);
+  'membership_authority_mismatch', 'membership_freshness_authority_revoked', 'membership_owner_recovery_required',
+  'enrollment_unavailable', 'enrollment_signature_invalid']);
 const failure = code => Object.assign(new Error(code), { code });
 function alive(child) { return child && child.connected !== false && child.exitCode === null && child.signalCode === null; }
 function encoded(value, maxBytes) {
@@ -88,6 +89,7 @@ function freshnessDialog(proposal) {
       '\n\nReviewed host checkpoint: ' + proposal.checkpoint.seq + ' / ' + proposal.checkpoint.hash +
       '\nPrior trusted checkpoint: ' + proposal.priorCheckpoint.seq + ' / ' + proposal.priorCheckpoint.hash +
       '\nKnown access: ' + proposal.accessSummary.verifiedEndpoints + ' verified endpoints; ' + proposal.accessSummary.projectGrants + ' project grants.' +
+      (proposal.recoveryActivation ? '\n\nCustomer recovery resets prior endpoint confirmations and project grants. This host will rotate every known task session before live sharing. Reconfirm people and project access explicitly; other hosts still need their own local confirmation.\nRecovery: ' + proposal.recoveryEpoch : '') +
       '\n\nUnseen membership changes may be withheld by the service. Confirm only after comparing this state through a trusted channel.' +
       '\n\nThis replaces freshness attestation only. It does not grant action-approval rights, change the original enrollment owner, or authorize provider-account use. This execution host will restart after saving the replacement.',
     buttons: ['Cancel', 'Trust freshness signer'], defaultId: 0, cancelId: 0 };
@@ -116,6 +118,8 @@ function createFreshnessConfirmation({ getRuntime, confirm, restart, now = Date.
           proposal.checkpoint.seq < proposal.priorCheckpoint.seq ||
           (proposal.checkpoint.seq === proposal.priorCheckpoint.seq && !sameCheckpoint(proposal.checkpoint, proposal.priorCheckpoint)) ||
           !Number.isSafeInteger(proposal.expiresAt) || proposal.expiresAt > now() + 130000 ||
+          (proposal.recoveryEpoch !== undefined && !/^[a-f0-9]{32}$/.test(proposal.recoveryEpoch)) ||
+          (proposal.recoveryActivation !== undefined && (typeof proposal.recoveryActivation !== 'boolean' || !proposal.recoveryEpoch)) ||
           !['verifiedEndpoints', 'projectGrants'].every(key => Number.isSafeInteger(proposal.accessSummary?.[key]) && proposal.accessSummary[key] >= 0)) {
         throw failure('freshness_state_invalid');
       }
@@ -125,10 +129,12 @@ function createFreshnessConfirmation({ getRuntime, confirm, restart, now = Date.
       if (proposal.expiresAt <= now()) throw failure('freshness_confirmation_expired');
       const result = await rpc.request('freshness.commit', { proposalId: proposal.proposalId });
       if (!result || !textValue(result.activationId) || result.runtimeId !== captured.runtimeId || result.teamId !== teamId ||
-          !sameIdentity(result.signer, candidate) || !sameCheckpoint(result.checkpoint, proposal.checkpoint)) throw failure('freshness_state_invalid');
+          !sameIdentity(result.signer, candidate) || !sameCheckpoint(result.checkpoint, proposal.checkpoint) ||
+          (result.recoveryEpoch || null) !== (proposal.recoveryEpoch || null)) throw failure('freshness_state_invalid');
       current();
       const receipt = { activationId: result.activationId, runtimeId: result.runtimeId, teamId: result.teamId,
-        signer: candidate, checkpoint: { seq: result.checkpoint.seq, hash: result.checkpoint.hash } };
+        signer: candidate, checkpoint: { seq: result.checkpoint.seq, hash: result.checkpoint.hash },
+        ...(result.recoveryEpoch ? { recoveryEpoch: result.recoveryEpoch } : {}) };
       try { await restart(captured); } catch { throw failure('local_runtime_restart_failed'); }
       return { confirmed: true, receipt };
     } finally { rpc?.close(); busy = false; }
