@@ -17,6 +17,7 @@
     "test:e2ee": "npm run test:e2ee:acceptance && node test/e2ee-complete.js",
     "test:e2ee:spike": "node test/e2ee-spike.js",
     "test:desktop": "node test/desktop-smoke.js",
+    "test:afk": "node test/afk-tray.js",
     "dist": "electron-builder --publish never",
     "dist:win": "electron-builder --win --publish never",
     "dist:mac": "electron-builder --mac --publish never",

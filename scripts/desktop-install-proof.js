@@ -178,6 +178,8 @@ function runTest(script, executable) {
       runTest('desktop-smoke.js', installed) ? 'pass' : 'fail');
     record('the installed copy reports readiness, holds a failed start and recovers on retry',
       runTest('desktop-bootstrap.js', installed) ? 'pass' : 'fail');
+    record('the installed copy keeps its host running when the window closes, and quits explicitly',
+      runTest('afk-tray.js', installed) ? 'pass' : 'fail');
     try {
       if (process.platform === 'win32') await uninstallWindows(target);
       else fs.rmSync(target, { recursive: true, force: true });

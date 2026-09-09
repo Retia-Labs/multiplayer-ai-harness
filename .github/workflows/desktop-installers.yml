@@ -11,6 +11,7 @@ on:
       - 'packages/runtime/**'
       - 'scripts/desktop-install-proof.js'
       - 'test/desktop-*.js'
+      - 'test/afk-tray.js'
       - 'build/**'
       - 'package*.json'
       - '.github/workflows/desktop-installers.yml'

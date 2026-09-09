@@ -19,6 +19,14 @@ A participant explicitly authorized to resolve an agent's pending action approva
 **Execution host**:
 The machine on which a collaborative agent task runs. Changing the teammate responsible for the task does not change its execution host.
 
+**Host availability**:
+Whether an execution host is answering, and whether it said anything on its way out. A host
+whose owner quit is unavailable and accounted for: it stops its own turns and reports them
+before it goes. A host that stops answering without saying so is unavailable and unaccounted
+for, and the work it was running has no known outcome. Closing the app window changes neither:
+the window is a client of the host, not the host.
+_Avoid_: Offline (it says nothing about whether the work was finished)
+
 **Responsibility handoff**:
 Reassigning responsibility for ongoing agent work to another teammate while preserving its shared context and existing execution host.
 _Avoid_: Execution migration

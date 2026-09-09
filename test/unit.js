@@ -1,5 +1,8 @@
 // Unit tests: policy engine, Codex exec JSONL translator, line diff, hub store.
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { decideCommand, decideFileWrite, PRESETS } = require('../packages/runtime/policy');
 const { translate, sandboxFlags, buildArgs } = require('../packages/runtime/codex-exec');
 const codexProbe = require('../packages/runtime/codex-probe');
@@ -8,6 +11,7 @@ const { lineDiff } = require('../packages/runtime/diff');
 const cc = require('../packages/runtime/claude-code');
 const { HubStore } = require('../packages/hub/store');
 const { Events } = require('../packages/protocol');
+const desktop = require('../apps/desktop/lifecycle');
 
 let n = 0;
 function t(name, fn) { fn(); n++; console.log('  ✓ ' + name); }
@@ -177,6 +181,58 @@ t('hub: runtime disconnect settles retries without dispatching the action again'
   assert.equal(received.length, 1);
   assert.equal(hub.pendingCommands.size, 0);
   hub.store.close();
+});
+
+t('desktop: the quit warning names the work it would end, and defaults to not doing it', () => {
+  const one = desktop.quitDialog([{ name: 'Fix the flaky test', by: 'bob', waitingOnApproval: true }]);
+  assert.match(one.message, /A task is still running/);
+  assert.ok(one.detail.includes('Fix the flaky test') && one.detail.includes('bob'), 'names the task and who started it');
+  assert.ok(one.detail.includes('waiting for approval'), 'and says somebody is blocked on it');
+  assert.ok(one.detail.includes('Closing the window instead'), 'and offers the alternative to ending it');
+  assert.equal(one.defaultId, one.cancelId, 'the safe answer is the default');
+  assert.notEqual(one.confirmId, one.cancelId);
+  const many = desktop.quitDialog(Array.from({ length: 6 }, (_, i) => ({ name: 'task ' + i })));
+  assert.match(many.message, /6 tasks are still running/);
+  assert.ok(many.detail.includes('and 2 more'), 'a long list is summarised, not silently truncated');
+});
+
+t('desktop: the tray says what is running and always offers a way out', () => {
+  const idle = desktop.trayMenuTemplate({ hostName: 'kalai@laptop', active: [], hubUrl: 'http://127.0.0.1:7777', windowVisible: false });
+  const labels = idle.map((i) => i.label);
+  assert.ok(labels.includes('Open Plexus') && labels.includes('Quit Plexus\u2026'));
+  assert.ok(labels.includes('Host: kalai@laptop') && labels.includes('No tasks running'));
+  const busy = desktop.trayMenuTemplate({ hostName: 'h', active: [{ name: 'Ship it', waitingOnApproval: true }, { name: 'Other' }] });
+  const busyLabels = busy.map((i) => i.label || '');
+  assert.ok(busyLabels.includes('2 tasks running \u00b7 1 waiting for approval'));
+  assert.ok(busyLabels.some((l) => l.includes('Ship it') && l.includes('needs approval')), 'work blocked on a person is raised, not just counted');
+  // With no relay to point at, those entries grey out rather than disappearing: a menu that
+  // changes shape is harder to trust than one whose entries are visibly unavailable.
+  assert.equal(busy.find((i) => i.label === 'Copy team link').enabled, false);
+});
+
+t('desktop: restored setup carries no way to replay work', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-state-')), 'desktop-state.json');
+  desktop.saveState(file, { hubUrl: 'http://127.0.0.1:7777', userName: 'kalai', bounds: { x: 1, y: 2, width: 800, height: 600 } });
+  // A caller that tries to stash a task, a turn or a command gets none of it back. The
+  // allowlist is the guarantee - not the discipline of whoever writes the next feature.
+  desktop.saveState(file, { threadId: 'thr_1', pendingCommand: { method: 'turn/start' } });
+  const state = desktop.loadState(file);
+  assert.deepEqual(Object.keys(state).sort(), ['bounds', 'hubUrl', 'userName']);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).threadId, undefined);
+  assert.deepEqual(desktop.loadState(file + '.missing'), {}, 'a first launch with no state still starts');
+});
+
+t('desktop: a service is asked to stop over its own channel, and only while it has one', () => {
+  const sent = [];
+  const connected = { pid: 1, connected: true, exitCode: null, send: (m) => sent.push(m) };
+  assert.equal(desktop.requestShutdown(connected), true);
+  assert.deepEqual(sent, [{ type: 'shutdown', reason: 'quit' }]);
+  // Windows cannot deliver a signal a child can act on, so this message is the only polite
+  // stop that exists on every platform the app ships to. A child with no channel left gets
+  // no message and has to be taken by force instead - see the tree kill in afk-tray.
+  assert.equal(desktop.requestShutdown({ pid: 2, connected: false, exitCode: null, send: () => sent.push('never') }), false);
+  assert.equal(desktop.requestShutdown(null), false);
+  assert.equal(sent.length, 1);
 });
 
 console.log(`\n${n} unit tests passed ✅`);
