@@ -11,9 +11,16 @@ const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'plexus-task-browser-')),root=pat
 let hub,keyRelay,runtime,host,browser,state,socket;
 const waitFor=async(fn)=>{for(let n=0;n<200;n++){if(fn())return;await new Promise(r=>setTimeout(r,25));}throw new Error('fixture_timeout');};
 (async()=>{
-  for(const name of['packages/e2ee/endpoint-core.mjs','packages/e2ee/http-transport.mjs','packages/e2ee/task-log.mjs','packages/e2ee/enrollment.mjs','packages/e2ee/membership.mjs','packages/protocol/encrypted-task.mjs']){
+  // Whatever the relay is willing to serve a browser is exactly what this fixture has to
+  // serve one. Listing the modules here by hand is how it drifted: `owner-recovery-kit.mjs`
+  // and `recovery-epoch.mjs` became imports and this list did not follow, so the page 404ed
+  // and never defined `fixture` - which reads as a timeout, not as a missing file.
+  for(const rel of Hub.SHARED_MODULES){
+    const name=path.join('packages',rel);
     fs.mkdirSync(path.dirname(path.join(web,name)),{recursive:true});fs.copyFileSync(path.join(root,name),path.join(web,name));
   }
+  fs.mkdirSync(path.join(web,'packages/e2ee'),{recursive:true});
+  fs.copyFileSync(path.join(root,'packages/e2ee/http-transport.mjs'),path.join(web,'packages/e2ee/http-transport.mjs'));
   fs.cpSync(path.join(root,'node_modules/@matrix-org/matrix-sdk-crypto-wasm'),path.join(web,'vendor'),{recursive:true});
   fs.copyFileSync(path.join(__dirname,'fixtures/encrypted-task-client.html'),path.join(web,'index.html'));
   fs.copyFileSync(path.join(__dirname,'fixtures/encrypted-task-client.mjs'),path.join(web,'fixture.mjs'));
@@ -34,7 +41,11 @@ const waitFor=async(fn)=>{for(let n=0;n<200;n++){if(fn())return;await new Promis
   const cfg={endpoint:{user:matrixUser(user.id),device:'BROWSER',storeName:'fixture',storeKey:[...randomBytes(32)],transport:keyRelay.enroll(matrixUser(user.id),'BROWSER')},token:user.token,task,writer:host.identity()};
   const launch=async()=>{
     browser=await chromium.launchPersistentContext(path.join(tmp,'profile'),{executablePath:process.env.CHROMIUM_PATH||undefined,headless:true});
-    const page=browser.pages()[0];await page.goto(url);await page.waitForFunction(()=>globalThis.fixture);
+    const page=browser.pages()[0];
+    // A module this fixture forgot to serve reads as `fixture_timeout` and says nothing about
+    // which file was missing. It cost an afternoon once; naming the 404 is cheap.
+    page.on('response',(r)=>{if(r.status()>=400)console.log('  fixture asset '+r.status()+': '+r.url());});
+    await page.goto(url);await page.waitForFunction(()=>globalThis.fixture);
     const identity=await page.evaluate(c=>fixture.init(c),cfg);return {page,identity};
   };
   let {page,identity}=await launch();

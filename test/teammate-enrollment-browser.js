@@ -32,10 +32,16 @@ const checks = [];
 const pass = (name, detail) => { checks.push({ name, status: 'pass' }); console.log('PASS ' + name + (detail ? ' - ' + detail : '')); };
 
 (async () => {
-  for (const name of ['packages/e2ee/endpoint-core.mjs', 'packages/e2ee/http-transport.mjs', 'packages/e2ee/task-log.mjs', 'packages/e2ee/enrollment.mjs', 'packages/e2ee/membership.mjs', 'packages/protocol/encrypted-task.mjs']) {
+  // Whatever the relay is willing to serve a browser is exactly what this fixture has to
+  // serve one. Listing the modules by hand is how it drifted: new imports landed and this
+  // list did not follow, so the page 404ed and never defined `fixture`.
+  for (const rel of Hub.SHARED_MODULES) {
+    const name = path.join('packages', rel);
     fs.mkdirSync(path.dirname(path.join(web, name)), { recursive: true });
     fs.copyFileSync(path.join(root, name), path.join(web, name));
   }
+  fs.mkdirSync(path.join(web, 'packages/e2ee'), { recursive: true });
+  fs.copyFileSync(path.join(root, 'packages/e2ee/http-transport.mjs'), path.join(web, 'packages/e2ee/http-transport.mjs'));
   fs.cpSync(path.join(root, 'node_modules/@matrix-org/matrix-sdk-crypto-wasm'), path.join(web, 'vendor'), { recursive: true });
   fs.copyFileSync(path.join(__dirname, 'fixtures/encrypted-task-client.html'), path.join(web, 'index.html'));
   fs.copyFileSync(path.join(__dirname, 'fixtures/encrypted-task-client.mjs'), path.join(web, 'fixture.mjs'));
