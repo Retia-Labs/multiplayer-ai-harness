@@ -126,6 +126,7 @@ function launchRuntime() {
 // way back to a running host, so closing would have to end it - which is exactly the
 // behaviour issue #18 exists to remove.
 let tray = null;
+let trayMenu = null;
 let quitting = false;
 
 function runtimeRunning() {
@@ -140,13 +141,14 @@ function refreshTray() {
     windowOpen: !!(win && !win.isDestroyed() && win.isVisible())
   });
   tray.setToolTip(state.tooltip);
-  tray.setContextMenu(Menu.buildFromTemplate([
+  trayMenu = Menu.buildFromTemplate([
     { label: state.tooltip, enabled: false },
     ...(state.detail ? [{ label: state.detail, enabled: false }] : []),
     { type: 'separator' },
     { label: 'Open Plexus', click: () => showWindow() },
     { label: 'Quit Plexus', click: () => requestQuit() }
-  ]));
+  ]);
+  tray.setContextMenu(trayMenu);
 }
 
 // What the host says is running, asked of the host over the IPC channel it was spawned with.
@@ -447,6 +449,17 @@ global.__plexusDesktop = {
   closeWindow: () => { if (win && !win.isDestroyed()) win.close(); },
   showWindow: () => showWindow(),
   quitPlanNow: () => currentQuitPlan(),
+  // The menu that is actually on the tray, and the item's own handler. A test cannot make the
+  // OS open a tray menu, but it can invoke the entry a person would choose from it - which is
+  // a smaller gap than calling the function that entry happens to be wired to.
+  trayMenuLabels: () => (trayMenu ? trayMenu.items.map((i) => i.label || '---') : []),
+  clickTrayItem: (label) => {
+    const item = trayMenu && trayMenu.items.find((i) => i.label === label);
+    if (!item) throw new Error('no tray item labelled ' + JSON.stringify(label));
+    if (!item.enabled) throw new Error('tray item is disabled: ' + label);
+    item.click();
+    return true;
+  },
   servicePids: () => ({ hub: hubChild ? hubChild.pid : null, runtime: runtimeChild ? runtimeChild.pid : null }),
   activeWork: () => refreshActive(),
   setup: () => (stateFile ? lifecycle.loadState(stateFile) : {}),

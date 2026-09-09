@@ -183,6 +183,23 @@ t('hub: runtime disconnect settles retries without dispatching the action again'
   hub.store.close();
 });
 
+t('hub: a host that is quit still leaves anything it could not finish as unknown', () => {
+  // #18 made an explicit quit report `interrupted`, which is honest because the host is still
+  // there to say so. The risk is that it blurs #17's line: a host that goes away without
+  // accounting for its work must still leave `unknown`, whether or not it said goodbye first.
+  const hub = new Hub({ dbFile: ':memory:', log: () => {} });
+  hub.store.upsertThread({ id: 'thr', orgId: 'team', runtimeId: 'rt', status: { type: 'active', activeFlags: [] }, activeTurnId: 'turn_1', pendingApproval: { requestId: 'req_1' } });
+  const before = hub.store.eventsFrom('thr', 0).length;
+  hub.markRunningThreadsUnknown('rt', 'team');
+  const after = hub.store.getThread('thr');
+  assert.equal(after.status.type, 'unknown');
+  assert.equal(after.status.wasRunning, 'turn_1', 'and it names the turn it cannot account for');
+  assert.equal(after.pendingApproval, null, 'an approval nobody can answer is withdrawn');
+  // The important negative: no outcome was invented for the turn on the way past.
+  assert.equal(hub.store.eventsFrom('thr', 0).length, before, 'no turn/completed and no turn/abandoned');
+  hub.store.close();
+});
+
 t('desktop: closing a window only ends the session when there is no way back', () => {
   assert.equal(desktop.shouldQuitOnWindowClose({ hasTray: true }), false);
   // Without a tray icon there is nothing to reopen from, so hiding would strand the app with

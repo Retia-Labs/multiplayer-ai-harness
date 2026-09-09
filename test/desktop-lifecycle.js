@@ -89,10 +89,13 @@ function connect(url, hello) {
     cwd: path.join(__dirname, '..'), env, timeout: 120000
   });
 
-  app = await launch();
+  const trace = (a) => {
+    a.process().stdout.on('data', (d) => process.stdout.write('  [app] ' + d));
+    a.process().stderr.on('data', (d) => process.stdout.write('  [app!] ' + d));
+    return a;
+  };
+  app = trace(await launch());
   const url = 'http://127.0.0.1:' + port;
-  app.process().stdout.on('data', (d) => process.stdout.write('  [app] ' + d));
-  app.process().stderr.on('data', (d) => process.stdout.write('  [app!] ' + d));
   console.log('  launched, waiting for the host');
   const state = () => app.evaluate(() => (global.__plexusDesktop ? global.__plexusDesktop.lifecycle() : { runtimeRunning: false, pending: true }));
   await waitFor(async () => (await state()).runtimeRunning, 'host started');
@@ -175,11 +178,14 @@ function connect(url, hello) {
   pass('the tray says the host is still running and the window is merely closed', closed.tray.tooltip);
 
   // ---- criterion 1: reopen, and get no second host ----
-  await app.evaluate(() => global.__plexusDesktop.showWindow());
+  const menu = await app.evaluate(() => global.__plexusDesktop.trayMenuLabels());
+  assert.ok(menu.includes('Open Plexus') && menu.includes('Quit Plexus'), 'the tray offers both: ' + menu.join(' | '));
+  assert.ok(menu.some((l) => /execution host running/.test(l)), 'and says what the host is doing');
+  await app.evaluate(() => global.__plexusDesktop.clickTrayItem('Open Plexus'));
   await waitFor(async () => (await state()).windows === 1, 'window reopened');
   const reopened = await state();
   assert.equal(reopened.runtimePid, pidBefore, 'reopening did not start a second host');
-  pass('reopening the window does not produce a duplicate runtime', 'still pid ' + reopened.runtimePid);
+  pass('the tray entry reopens the window, and produces no duplicate runtime', 'still pid ' + reopened.runtimePid);
 
   messages.length = 0;
   const after = await runtimes();
@@ -226,7 +232,8 @@ function connect(url, hello) {
   assert.equal(alive(pids.hub) && alive(pids.runtime), true, 'both managed processes are running before the quit');
   app.evaluate(() => {
     global.__plexusDesktop.onQuitPrompt(async () => 0);   // "Quit anyway"
-    return global.__plexusDesktop.requestQuit();
+    // Chosen from the tray, the way a person ends this - not by calling the function behind it.
+    return global.__plexusDesktop.clickTrayItem('Quit Plexus');
   }).catch(() => { /* the app exits mid-call */ });
 
   const stopped = await waitFor(async () => socket.events.find((e) => e.method === 'turn/completed' && e.turnId === pending.turnId), 'the interrupted turn', 800);
@@ -251,7 +258,7 @@ function connect(url, hello) {
     'nothing that could replay work: ' + Object.keys(setup).join(', '));
   pass('a launch restores where to connect, who this is and how the window sat', Object.keys(setup).join(', '));
 
-  app = await launch();
+  app = trace(await launch());
   await waitFor(async () => (await state()).runtimeRunning, 'host restarted');
   // The same teammate coming back, with the token they were issued - not a new person who
   // happens to share a name, who would not be in this team and could not see the task at all.
@@ -271,7 +278,7 @@ function connect(url, hello) {
   try { back.ws.close(); } catch {}
 
   note('the tray icon itself was not clicked',
-    'no supported platform exposes a tray click to an automated test; the tray menu calls the same functions this test calls');
+    'no supported platform lets a test make the OS open a tray menu; the entries in the menu the app installed are invoked by their own handlers, so what is untested is the click that opens it');
   note('the quit dialog was not clicked either',
     'a native modal cannot be answered by a test in this harness; its text, buttons and default are asserted from the plan it is built from, and the answer is chosen for it');
 

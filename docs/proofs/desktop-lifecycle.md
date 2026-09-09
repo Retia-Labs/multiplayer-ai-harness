@@ -92,28 +92,54 @@ no command re-issued, and the file the unapproved `rm -rf` would have deleted st
 ## Reproduce
 
 `npm run test:desktop-lifecycle` — 17 checks and 2 recorded limits, driving the **real Electron
-app with a real task in flight**:
+app with a real task in flight**, and reopening and quitting through the **entries in the tray
+menu the app installed**, not the functions behind them:
 
 - the tray exists, and a teammate on a separate socket sees the host online
 - the window closes and the host survives with the same pid; the teammate still sees it
 - **and can still use it**: the teammate approves the pending action and the turn runs to
   completion with the window closed — seeing a host is not the same as being able to work on it
 - the tray says the host is running and the window is merely closed
-- reopening produces no second host, and the fleet still lists one
+- the tray menu's own `Open Plexus` entry reopens the window, and produces no second host;
+  the fleet still lists one
 - the idle quit plan says what teammates will see; the busy one warns, names the task from what
   the host reports, says a teammate is blocked on it, and defaults to **Keep running**
 - a refused quit changes nothing, driven through the app's own quit path
-- a confirmed quit records the turn as `interrupted`, tells the fleet the owner quit, and both
-  managed processes are gone according to the OS
+- the tray menu's own `Quit Plexus` entry, confirmed, records the turn as `interrupted`, tells
+  the fleet the owner quit, and leaves both managed processes gone according to the OS
 - launching again restores the workspace with nothing replayed
 
 `npm run test:desktop` and `npm run test:desktop-bootstrap` still pass, as do `test:unit`
-(7 checks here), `test:protocol`, `test:team`, `test:steering`, `test:approvals`,
+(8 checks here), `test:protocol`, `test:team`, `test:steering`, `test:approvals`,
 `test:recover-after-loss`, `test:handover`, `test:help-inbox`, `test:related-work`,
 `test:revocation` and `test:recovery`.
 
-`scripts/desktop-install-proof.js` runs these same checks against the **installed** copy on
-Windows and macOS, because the criterion is about the installed window rather than a checkout.
+One of those unit checks exists because of what this issue changed. Making a quit report
+`interrupted` is honest — the host is there to say it — but it could have blurred #17's line,
+so `markRunningThreadsUnknown` is asserted directly: a host that goes away without accounting
+for its work still leaves `unknown`, still names the turn, still withdraws the approval, and
+still appends **no** event. A reason for an absence never becomes an outcome for a turn.
+
+`scripts/desktop-install-proof.js` runs these same checks against the **installed** copy,
+because the criterion says *the installed window* and a checkout is not that. Run on Windows at
+`9897f6f`:
+
+```
+the packaged installer builds for this platform and architecture   pass  Plexus-0.1.0-win-x64-setup.exe
+installing outside a checkout produces a runnable app              pass  %TEMP%\plexus-install-proof\Plexus.exe
+the installed copy starts its services … with no Node on PATH      pass
+the installed copy reports readiness, holds a failed start …       pass
+the installed copy keeps its host running when the window closes,
+  and quits explicitly                                             pass
+uninstalling removes the installed copy                            pass
+```
+
+installer sha256 `6c2604f3…0b1b2ca8`, Electron 44.2.0, Windows 10.0.26200, with the launched app
+given `PATH=C:\WINDOWS\system32;C:\WINDOWS` so no developer Node could be reached.
+
+**macOS was not run.** The install proof covers `macos-15` in CI, and CI has been unable to
+start a job on any branch since 2026-09-07 (see the PR). Everything above is Windows only, and
+the macOS half of this criterion rests on a job that has not run.
 
 ## What this broke, and why that was the right kind of breakage
 
@@ -127,10 +153,12 @@ tests stopped depending on a behaviour the product no longer has.
 
 ## Limits, stated rather than implied
 
-**The tray icon itself was not clicked.** No platform this is built for exposes a tray click to
-an automated test. The tray menu's items call the same functions the test calls, so the
-behaviour behind them is covered and the click is not. That is a real gap and it is recorded in
-the test output as a note rather than counted as a pass.
+**The tray icon itself was not clicked.** No platform this is built for lets a test make the
+operating system open a tray menu. What the test now does instead is take the menu the app
+installed on the tray and invoke the entry a person would choose, through that entry's own
+handler — so the control is exercised and what remains untested is the click that opens the
+menu. That is a smaller gap than it was, and it is still recorded as a note rather than counted
+as a pass.
 
 **The quit confirmation dialog was not clicked either.** `quitPlan()` is asserted directly —
 its text, its buttons and its default — because a modal dialog cannot be answered by a test in
