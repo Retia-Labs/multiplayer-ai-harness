@@ -1,5 +1,8 @@
 // Unit tests: policy engine, Codex exec JSONL translator, line diff, hub store.
 const assert = require('assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { decideCommand, decideFileWrite, PRESETS } = require('../packages/runtime/policy');
 const { translate, sandboxFlags, buildArgs } = require('../packages/runtime/codex-exec');
 const codexProbe = require('../packages/runtime/codex-probe');
@@ -8,6 +11,7 @@ const { lineDiff } = require('../packages/runtime/diff');
 const cc = require('../packages/runtime/claude-code');
 const { HubStore } = require('../packages/hub/store');
 const { Events } = require('../packages/protocol');
+const desktop = require('../apps/desktop/lifecycle');
 
 let n = 0;
 function t(name, fn) { fn(); n++; console.log('  ✓ ' + name); }
@@ -177,6 +181,78 @@ t('hub: runtime disconnect settles retries without dispatching the action again'
   assert.equal(received.length, 1);
   assert.equal(hub.pendingCommands.size, 0);
   hub.store.close();
+});
+
+t('desktop: closing a window only ends the session when there is no way back', () => {
+  assert.equal(desktop.shouldQuitOnWindowClose({ hasTray: true }), false);
+  // Without a tray icon there is nothing to reopen from, so hiding would strand the app with
+  // no window and no way to reach it. On a desktop without one, close means close.
+  assert.equal(desktop.shouldQuitOnWindowClose({ hasTray: false }), true);
+});
+
+t('desktop: the quit warning names the work it would end, and defaults to not doing it', () => {
+  const idle = desktop.quitPlan({ activeTasks: 0 });
+  assert.equal(idle.confirm, false);
+  assert.match(idle.detail, /unavailable until you start Plexus again/);
+  const one = desktop.quitPlan({ activeTasks: 1, activeTaskNames: ['Fix the flaky test'], blocked: 1 });
+  assert.equal(one.confirm, true);
+  assert.match(one.message, /One task is running/);
+  assert.match(one.detail, /Fix the flaky test/);
+  assert.match(one.detail, /teammate is waiting on an approval/);
+  assert.match(one.detail, /interrupted rather than finished/);
+  assert.match(one.detail, /Closing the window instead/);
+  assert.deepEqual(one.buttons, ['Quit anyway', 'Keep running']);
+  const many = desktop.quitPlan({ activeTasks: 5, activeTaskNames: ['a', 'b', 'c', 'd', 'e'] });
+  assert.match(many.detail, /and others/, 'a long list is summarised, not silently truncated');
+});
+
+t('desktop: the tray says whether the host is up and what it is doing', () => {
+  const closed = desktop.trayState({ runtimeRunning: true, activeTasks: 2, windowOpen: false });
+  assert.match(closed.tooltip, /2 tasks running/);
+  assert.match(closed.detail, /window is closed/);
+  const open = desktop.trayState({ runtimeRunning: true, activeTasks: 0, windowOpen: true });
+  assert.match(open.tooltip, /idle/);
+  assert.equal(open.detail, null, 'with the window open there is nothing to explain');
+  assert.match(desktop.trayState({ runtimeRunning: false }).tooltip, /stopped/);
+});
+
+t('desktop: reopening a window never starts a second host', () => {
+  assert.equal(desktop.shouldLaunchRuntime(null), true);
+  assert.equal(desktop.shouldLaunchRuntime({ exitCode: null, signalCode: null }), false);
+  assert.equal(desktop.shouldLaunchRuntime({ exitCode: 1, signalCode: null }), true);
+  assert.equal(desktop.shouldLaunchRuntime({ exitCode: null, signalCode: 'SIGKILL' }), true);
+});
+
+t('desktop: stopping a service reaches its children, per platform', () => {
+  // Killing the parent leaves a provider CLI still running and a workspace still being written
+  // to, so the sweep has to reach the tree. There is no portable way to say that.
+  assert.deepEqual(desktop.killTreeCommand(4321, 'win32'), { file: 'taskkill', args: ['/pid', '4321', '/T', '/F'] });
+  assert.deepEqual(desktop.killTreeCommand(4321, 'darwin'), { file: 'kill', args: ['-TERM', '-4321'] });
+  assert.equal(desktop.killTreeCommand(0, 'win32'), null);
+  assert.equal(desktop.killTreeCommand(-1, 'linux'), null);
+});
+
+t('desktop: a service is asked to stop over its own channel, and only while it has one', () => {
+  const sent = [];
+  assert.equal(desktop.requestShutdown({ pid: 1, connected: true, exitCode: null, send: (m) => sent.push(m) }), true);
+  assert.deepEqual(sent, [{ type: 'shutdown', reason: 'quit' }]);
+  // Windows cannot deliver a signal a child can act on, so this message is the only polite
+  // stop that exists on every platform this ships to. A child with no channel left gets no
+  // message and has to be taken by force instead.
+  assert.equal(desktop.requestShutdown({ pid: 2, connected: false, exitCode: null, send: () => sent.push('never') }), false);
+  assert.equal(desktop.requestShutdown(null), false);
+  assert.equal(sent.length, 1);
+});
+
+t('desktop: restored setup carries no way to replay work', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-state-')), 'desktop-state.json');
+  desktop.saveState(file, { hubUrl: 'http://127.0.0.1:7777', userName: 'dana', bounds: { x: 1, y: 2, width: 800, height: 600 } });
+  // A caller that tries to stash a task, a turn or a command gets none of it back. The
+  // allowlist is the guarantee - not the discipline of whoever writes the next feature.
+  desktop.saveState(file, { threadId: 'thr_1', pendingCommand: { method: 'turn/start' } });
+  assert.deepEqual(Object.keys(desktop.loadState(file)).sort(), ['bounds', 'hubUrl', 'userName']);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).threadId, undefined);
+  assert.deepEqual(desktop.loadState(file + '.missing'), {}, 'a first launch with no state still starts');
 });
 
 console.log(`\n${n} unit tests passed ✅`);

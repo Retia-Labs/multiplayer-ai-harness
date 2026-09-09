@@ -168,6 +168,7 @@ class Runtime {
       else if (msg.type === 'workspace.activity') this.activity = { threads: msg.threads || [], overlaps: msg.overlaps || [] };
       else if (msg.type === 'paired') this.onPaired(msg);
       else if (msg.type === 'unpaired') this.onUnpaired();
+      else if (msg.type === 'runtime.offline.ack' && this.offlineAck) this.offlineAck();
     });
     this.hub.connect();
     return this;
@@ -408,16 +409,54 @@ class Runtime {
   // Approvals that were outstanding go the same way. An answer to a request whose turn no
   // longer exists cannot authorise anything, and #11 already refuses one with
   // approval_stale_after_restart; this makes the thread stop advertising the prompt.
-  // How many turns are actually running here, written where the desktop shell can read it.
+  // What this host is running right now, in the terms a person needs before deciding to end
+  // it: whose task it is, and whether somebody is already blocked waiting on it.
   //
-  // The shell cannot ask over the websocket - it may be quitting, and the answer has to be
-  // available at exactly the moment the connection is about to go away - so this is a file the
-  // host keeps current. Nobody should be told "2 tasks are running" from a number that was
-  // true ten minutes ago.
-  publishActiveTasks() {
-    if (!this.dataDir) return;
-    const running = [...this.sessions.values()].filter((s) => s && s.running).length;
-    try { fs.writeFileSync(path.join(this.dataDir, 'active-tasks'), String(running)); } catch {}
+  // Asked for over the IPC channel the desktop shell spawned this process with, rather than
+  // published to a file. The shell cannot ask over the websocket - it may be quitting, and
+  // that connection is the thing about to go away - but its own channel to this child is open
+  // for exactly as long as the decision takes, and it can carry names rather than a count.
+  activeWork() {
+    const out = [];
+    for (const [threadId, session] of this.sessions) {
+      if (!session || !session.running) continue;
+      const thread = this.store.getThread(threadId);
+      out.push({
+        threadId,
+        name: (thread && thread.name) || 'Untitled task',
+        by: (session.by && session.by.name) || (thread && thread.createdBy && thread.createdBy.name) || null,
+        turnId: session.turnId,
+        waitingOnApproval: session.pendingApprovals.size > 0
+      });
+    }
+    return out;
+  }
+
+  // A deliberate quit, as distinct from a host that simply stopped answering.
+  //
+  // #17 made the relay say `unknown` when a host vanishes, because connectivity is not an
+  // outcome. A quit is not that situation: this host is still here, it knows exactly what it
+  // is stopping, and it can say so. Each running turn is interrupted and given the chance to
+  // write its own `turn/completed: interrupted` before the socket goes, and the team is told
+  // the host left on purpose instead of being left to infer it from a silence.
+  async shutdown({ reason = 'quit', timeoutMs = 6000 } = {}) {
+    if (this.shuttingDown) return this.shuttingDown;
+    this.shuttingDown = (async () => {
+      const running = [...this.sessions.values()].filter((s) => s && s.running);
+      for (const s of running) s.interrupt();
+      await Promise.race([
+        Promise.all(running.map((s) => s.done || Promise.resolve())),
+        new Promise((r) => setTimeout(r, timeoutMs))
+      ]);
+      if (this.hub) {
+        const acked = new Promise((r) => { this.offlineAck = r; });
+        this.hub.send({ type: 'runtime.offline', reason });
+        await Promise.race([acked, new Promise((r) => setTimeout(r, 2000))]);
+      }
+      this.stop();
+      this.log(`shut down (${reason})`);
+    })();
+    return this.shuttingDown;
   }
 
   reconcileAfterRestart() {
@@ -479,7 +518,6 @@ class Runtime {
   async threadDelete(threadId) {
     const s = this.sessions.get(threadId);
     if (s) { s.interrupt(); this.sessions.delete(threadId); }
-    this.publishActiveTasks();
     // Old worktrees are left for the host operator to clean up. A remote delete must not
     // launch repository-controlled Git hooks or subprocesses.
     this.store.deleteThread(threadId);
@@ -552,7 +590,6 @@ class Runtime {
       }
     });
     this.sessions.set(thread.id, session);
-    this.publishActiveTasks();
     if (thread.name === 'New thread') {
       const text = cmd.input.filter((i) => i.type === 'text').map((i) => i.text).join(' ').trim();
       if (text) {
@@ -561,11 +598,12 @@ class Runtime {
         this.appendEvent(thread.id, { method: Events.THREAD_NAME_UPDATED, name: thread.name });
       }
     }
-    session.run().then(() => {
+    // Kept so a shutdown can wait for the interrupted turn to write its own outcome rather
+    // than closing the socket out from under it.
+    session.done = session.run().then(() => {
       if (this.stopped) return;
       thread.updatedAt = Date.now(); this.store.upsertThread(thread);
       if (this.sessions.get(thread.id) === session) this.sessions.delete(thread.id);
-      this.publishActiveTasks();
     });
     return { turnId: session.turnId };
   }
@@ -622,7 +660,29 @@ if (require.main === module) {
     log: (m) => console.log('[runtime]', m)
   });
   rt.start().then(() => console.log(`[runtime] ${rt.name} → ${rt.hubUrl}`));
-  process.on('SIGINT', () => { rt.stop(); process.exit(0); });
+  let quitting = false;
+  const quit = async (reason) => {
+    if (quitting) return;
+    quitting = true;
+    await rt.shutdown({ reason });
+    process.exit(0);
+  };
+  process.on('SIGINT', () => quit('quit'));
+  process.on('SIGTERM', () => quit('quit'));
+
+  // The desktop shell spawned this process with an IPC channel and asks over it. A signal
+  // would not do: Windows cannot deliver SIGTERM to a child in a form the child can act on,
+  // so "stop politely" has to be a message to exist on every platform this ships to.
+  process.on('message', (msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'shutdown') quit(msg.reason || 'quit');
+    else if (msg.type === 'runtime.status' && process.send) {
+      process.send({ type: 'runtime.status', runtimeId: rt.id, name: rt.name, active: rt.activeWork() });
+    }
+  });
+  // The channel closing means the shell died without asking. Nothing here can usefully outlive
+  // it, and an orphaned host still holding a workspace is worse than no host.
+  process.on('disconnect', () => quit('host_gone'));
 }
 
 module.exports = { Runtime, parseArgs, providersFromEnv, commandFingerprint };

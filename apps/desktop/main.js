@@ -8,7 +8,8 @@
 // the hub needs `node:sqlite`, which arrived in Node 22.5, so "whatever node is on PATH"
 // was never a safe answer either.
 const { app, BrowserWindow, ipcMain, dialog, shell, Tray, Menu, nativeImage } = require('electron');
-const { shouldQuitOnWindowClose, quitPlan, shouldLaunchRuntime, trayState, killTreeCommand } = require('./lifecycle');
+const lifecycle = require('./lifecycle');
+const { shouldQuitOnWindowClose, quitPlan, shouldLaunchRuntime, trayState } = lifecycle;
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
@@ -30,9 +31,12 @@ let win = null;
 const children = [];
 const serviceLogs = { hub: [], runtime: [] };
 let runtimeChild = null;
+let hubChild = null;
 let runtimeLaunch = null;
 // Where the workspace was loaded from, so reopening a window does not re-run boot.
 let bootedUrl = null;
+let stateFile = null;
+let setup = {};
 
 // An installed app has no console to print to, so a startup failure would otherwise be
 // invisible to the user and unreportable to us. Everything the shell prints also goes here.
@@ -68,7 +72,13 @@ function spawnService(label, script, args, env) {
     // cwd has to be somewhere the OS can actually chdir to.
     cwd: SERVICE_CWD,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...env },
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    // Its own process group, so the sweep in killTreeCommand has a group to reach. A child
+    // that is not a group leader gives `kill -TERM -pid` nothing to take. Windows has no
+    // groups and uses `taskkill /T` instead, where detaching would only outlive the parent
+    // it is supposed to follow.
+    detached: process.platform !== 'win32',
+    windowsHide: true
   });
   // Without this, a spawn that fails outright throws an unhandled error event and the app
   // dies with nothing on screen - the exact failure mode this slice is meant to remove.
@@ -139,15 +149,32 @@ function refreshTray() {
   ]));
 }
 
-// What the host says is running. Read from its own state rather than remembered here, so a
-// task that ended while the window was closed is not counted.
-function activeTaskCount() {
-  try {
-    if (!runtimeLaunch) return 0;
-    const raw = fs.readFileSync(path.join(runtimeLaunch.dataDir, 'active-tasks'), 'utf8').trim();
-    const n = Number(raw);
-    return Number.isFinite(n) && n > 0 ? n : 0;
-  } catch { return 0; }
+// What the host says is running, asked of the host over the IPC channel it was spawned with.
+// It is the only process that knows, and it can answer at the moment a quit is being decided -
+// which the websocket cannot, because that is exactly what is about to go away. The answer is
+// kept here so the tray and the quit warning are built from the same snapshot and cannot
+// disagree with each other.
+let active = { count: 0, names: [], blocked: 0 };
+
+async function refreshActive() {
+  const status = await lifecycle.askService(runtimeChild, { type: 'runtime.status' });
+  const running = (status && status.active) || [];
+  active = {
+    count: running.length,
+    names: running.map((a) => a.name).filter(Boolean),
+    blocked: running.filter((a) => a.waitingOnApproval).length
+  };
+  return active;
+}
+
+function activeTaskCount() { return runtimeRunning() ? active.count : 0; }
+
+// A task that started or ended while nobody was looking still has to show up in the tray, so
+// the snapshot is refreshed on a timer rather than only when something asks.
+let activeTimer = null;
+function watchActive() {
+  if (activeTimer) return;
+  activeTimer = setInterval(() => { refreshActive().then(refreshTray, () => {}); }, 5000);
 }
 
 async function showWindow() {
@@ -161,38 +188,58 @@ async function showWindow() {
   refreshTray();
 }
 
+// What the person is about to be shown, built from what the host reports right now.
+async function currentQuitPlan() {
+  if (runtimeRunning()) await refreshActive();
+  return quitPlan({ activeTasks: activeTaskCount(), activeTaskNames: active.names, blocked: active.blocked });
+}
+
 // Quitting is allowed to stop work. It is not allowed to stop it quietly.
 async function requestQuit() {
-  const plan = quitPlan({ activeTasks: activeTaskCount() });
+  if (quitting) return true;
+  const plan = await currentQuitPlan();
   if (plan.confirm) {
-    const choice = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+    const choice = await askToQuit({
       type: 'warning', title: plan.title, message: plan.message, detail: plan.detail,
       buttons: plan.buttons, defaultId: 1, cancelId: 1
     });
-    if (choice.response !== 0) return false;
+    if (choice !== 0) { refreshTray(); return false; }
   }
-  quitting = true;
-  app.quit();
+  await shutdown();
   return true;
 }
 
-function stopService(child) {
-  if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolve) => {
-    let forceTimer;
-    const done = () => { clearTimeout(forceTimer); resolve(); };
-    child.once('exit', done);
-    child.kill();
-    forceTimer = setTimeout(() => {
-      if (child.exitCode !== null) return;
-      // A provider CLI spawned by the runtime is not killed by killing the runtime, so a
-      // "quit" could leave a model running and a workspace still being written to. Reach the
-      // whole tree before falling back to killing the one process we have a handle on.
-      const sweep = killTreeCommand(child.pid);
-      if (sweep) { try { spawn(sweep.file, sweep.args, { stdio: 'ignore' }).on('error', () => {}); } catch {} }
-      try { child.kill('SIGKILL'); } catch {}
-    }, 2000);
-  });
+// Replaced in tests, which cannot answer a native modal. The warning is still built and its
+// content still asserted; only the click is stood in for.
+let askToQuit = async (options) => {
+  const parent = win && !win.isDestroyed() && win.isVisible() ? win : undefined;
+  return (await dialog.showMessageBox(parent, options)).response;
+};
+
+// Stop the managed processes for real.
+//
+// The host goes first and is asked rather than killed, so it can interrupt its turns, let each
+// one write its own outcome, and tell the relay it left on purpose - #17's `unknown` is for a
+// host that vanished, and this one has not. Anything still alive after that is taken with its
+// whole tree.
+async function shutdown() {
+  if (quitting) return;
+  quitting = true;
+  if (activeTimer) clearInterval(activeTimer);
+  if (stateFile) lifecycle.saveState(stateFile, { lastQuitAt: Date.now() });
+  await stopService(runtimeChild, { timeoutMs: 6000 });
+  await stopService(hubChild, { timeoutMs: 3000 });
+  await Promise.all(children.filter((c) => c !== runtimeChild && c !== hubChild).map((c) => stopService(c, { timeoutMs: 2000 })));
+  if (tray && !tray.isDestroyed()) tray.destroy();
+  app.exit(0);
+}
+
+// Ask over the child's own IPC channel, then take its whole tree if asking does not work.
+// `child.kill()` alone is not enough on either count: Windows cannot deliver a signal a child
+// can act on, and killing the parent leaves a provider CLI still running and a workspace still
+// being written to.
+function stopService(child, options = {}) {
+  return lifecycle.stopService(child, { timeoutMs: 2500, ...options });
 }
 
 function addProjectToRuntimeConfig(dataDir, dir) {
@@ -287,7 +334,7 @@ async function boot() {
   status('hub', 'working', remote ? 'Connecting to ' + remote : 'Starting the local team service…');
   if (!remote) {
     const port = parseInt(process.env.HUB_PORT || '7777', 10);
-    spawnService('hub', path.join(ROOT, 'packages', 'hub', 'server.js'), [String(port)], { HUB_DB: path.join(dataDir, 'hub.sqlite') });
+    hubChild = spawnService('hub', path.join(ROOT, 'packages', 'hub', 'server.js'), [String(port)], { HUB_DB: path.join(dataDir, 'hub.sqlite') });
     httpUrl = `http://127.0.0.1:${port}`;
   }
   const hub = await waitForHub(httpUrl);
@@ -323,11 +370,19 @@ async function boot() {
   status('ui', 'working', 'Opening the workspace…');
   bootedUrl = httpUrl + '/?name=' + encodeURIComponent(userName);
   await win.loadURL(bootedUrl);
+  // Where to connect, who this is, and how the window sat. Deliberately nothing about a task,
+  // a turn or a command: a launch restores the workspace, and never re-issues work.
+  if (stateFile) lifecycle.saveState(stateFile, { hubUrl: httpUrl, userName });
+  await refreshActive();
+  watchActive();
+  refreshTray();
 }
 
 async function createWindow() {
+  const saved = (setup.bounds && setup.bounds.width) ? setup.bounds : {};
   win = new BrowserWindow({
-    width: 1360, height: 860, minWidth: 960, minHeight: 620,
+    width: saved.width || 1360, height: saved.height || 860, x: saved.x, y: saved.y,
+    minWidth: 960, minHeight: 620,
     title: 'Plexus', backgroundColor: '#080a09', autoHideMenuBar: true,
     icon: path.join(ROOT, 'apps', 'web', 'brand', 'plexus-app-icon-256.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
@@ -336,6 +391,10 @@ async function createWindow() {
   // blank frame or - worse - no window at all when something fails.
   await win.loadFile(path.join(__dirname, 'boot.html'));
   win.webContents.setWindowOpenHandler(({ url }) => { if (url.startsWith('https://')) shell.openExternal(url); return { action: 'deny' }; });
+  const remember = () => { if (stateFile && win && !win.isDestroyed() && !win.isMinimized()) lifecycle.saveState(stateFile, { bounds: win.getBounds() }); };
+  win.on('resize', remember);
+  win.on('move', remember);
+  win.on('close', remember);
 }
 
 async function runBoot() {
@@ -387,13 +446,20 @@ global.__plexusDesktop = {
   }),
   closeWindow: () => { if (win && !win.isDestroyed()) win.close(); },
   showWindow: () => showWindow(),
-  quitPlanNow: () => quitPlan({ activeTasks: activeTaskCount() }),
+  quitPlanNow: () => currentQuitPlan(),
+  servicePids: () => ({ hub: hubChild ? hubChild.pid : null, runtime: runtimeChild ? runtimeChild.pid : null }),
+  activeWork: () => refreshActive(),
+  setup: () => (stateFile ? lifecycle.loadState(stateFile) : {}),
+  // A native modal cannot be answered by a test, so the answer a person would give is chosen
+  // for it. What the modal says is asserted from the plan it is built from.
+  onQuitPrompt: (fn) => { askToQuit = fn; },
+  requestQuit: () => requestQuit(),
   pairingCode: () => localPairingCode(),
   // Quitting without the question. A tray app does not exit when its last window closes -
   // that is the whole point of #18 - so an automated close has to say what it means, the
   // same way a person does by choosing Quit. Without this the app correctly stays alive and
   // the test harness waits for an exit that is never coming.
-  forceQuit: () => { quitting = true; app.quit(); }
+  forceQuit: () => shutdown()
 };
 
 function createTray() {
@@ -407,7 +473,14 @@ function createTray() {
   return tray;
 }
 
-app.whenReady().then(async () => { openLog(); createTray(); await createWindow(); return runBoot(); });
+app.whenReady().then(async () => {
+  openLog();
+  stateFile = path.join(app.getPath('userData'), 'desktop-state.json');
+  setup = lifecycle.loadState(stateFile);
+  createTray();
+  await createWindow();
+  return runBoot();
+});
 app.on('activate', async () => { if (BrowserWindow.getAllWindows().length === 0) { await showWindow(); } });
 // Closing a window is a statement about a window. The execution host keeps running, and a
 // teammate working in a browser keeps working, until somebody quits on purpose.

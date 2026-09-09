@@ -8,6 +8,9 @@
 //
 // The decisions live here rather than inline in main.js because they are the part worth
 // testing, and because an Electron main process is an awkward place to reason about anything.
+const { execFile } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 // Closing the last window quits only when there is nothing left to keep the app alive for.
 // With a tray icon there is: the host keeps running and the tray is how somebody gets it back.
@@ -22,7 +25,7 @@ function shouldQuitOnWindowClose({ hasTray }) {
  * allowed to stop work quietly. Somebody who quits while two tasks are running should be told
  * that, in those words, before it happens.
  */
-function quitPlan({ activeTasks = 0, activeTaskNames = [] } = {}) {
+function quitPlan({ activeTasks = 0, activeTaskNames = [], blocked = 0 } = {}) {
   if (!activeTasks) {
     return {
       confirm: false,
@@ -38,11 +41,15 @@ function quitPlan({ activeTasks = 0, activeTaskNames = [] } = {}) {
     message: activeTasks === 1
       ? 'One task is running on this machine.'
       : activeTasks + ' tasks are running on this machine.',
-    // Named, because "some tasks are running" is not something anybody can act on.
+    // Named, because "some tasks are running" is not something anybody can act on. A teammate
+    // already waiting on an approval is named too: they are the person this decision costs.
     detail: (names ? names + (activeTasks > 3 ? ', and others' : '') + '.\n\n' : '')
+      + (blocked ? (blocked === 1 ? 'A teammate is waiting on an approval in that work.\n\n'
+        : blocked + ' of them have a teammate waiting on an approval.\n\n') : '')
       + 'Quitting stops them where they are. Whatever they already did stays done, and what they '
-      + 'were part-way through will show as abandoned rather than finished. Teammates will see '
-      + 'this host as unavailable until you start Plexus again.',
+      + 'were part-way through is recorded as interrupted rather than finished. Teammates will '
+      + 'see this host as unavailable until you start Plexus again.\n\n'
+      + 'Closing the window instead leaves them running, and anyone in the task can carry on.',
     buttons: ['Quit anyway', 'Keep running']
   };
 }
@@ -68,6 +75,41 @@ function trayState({ runtimeRunning, activeTasks = 0, windowOpen }) {
   };
 }
 
+// ---- stopping a managed service ----
+//
+// The shell asks over the IPC channel it spawned the service with. A signal is not an option:
+// Windows cannot deliver SIGTERM to a child in a form the child can act on, so a "polite stop"
+// that only existed as a signal would be a polite stop that only existed on macOS and Linux.
+// Asking is what lets the host interrupt its turns, report them, and tell the team it is going.
+function requestShutdown(child, reason = 'quit') {
+  if (!child || !child.connected || child.exitCode !== null) return false;
+  try { child.send({ type: 'shutdown', reason }); return true; } catch { return false; }
+}
+
+// Ask a service a question and wait for its answer on that same channel.
+function askService(child, request, { timeoutMs = 2500 } = {}) {
+  if (!child || !child.connected || child.exitCode !== null) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => { child.off('message', onMessage); resolve(null); }, timeoutMs);
+    const onMessage = (message) => {
+      if (!message || message.type !== request.type) return;
+      clearTimeout(timer);
+      child.off('message', onMessage);
+      resolve(message);
+    };
+    child.on('message', onMessage);
+    try { child.send(request); } catch { clearTimeout(timer); child.off('message', onMessage); resolve(null); }
+  });
+}
+
+function waitForExit(child, ms) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), ms);
+    child.once('exit', () => { clearTimeout(timer); resolve(true); });
+  });
+}
+
 /**
  * Stopping a child process and its descendants.
  *
@@ -83,4 +125,54 @@ function killTreeCommand(pid, platform = process.platform) {
   return { file: 'kill', args: ['-TERM', '-' + pid] };
 }
 
-module.exports = { shouldQuitOnWindowClose, quitPlan, shouldLaunchRuntime, trayState, killTreeCommand };
+function killTree(pid, platform = process.platform) {
+  const sweep = killTreeCommand(pid, platform);
+  if (!sweep) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    try { execFile(sweep.file, sweep.args, () => resolve(true)); } catch { resolve(false); }
+  });
+}
+
+// Politely first, so the host can stop its turns and tell the team it is going; forcefully
+// after that, so quitting never leaves half a fleet behind on the machine.
+async function stopService(child, { timeoutMs = 6000, platform = process.platform, reason = 'quit' } = {}) {
+  if (!child || !child.pid) return 'already-exited';
+  if (child.exitCode !== null && child.exitCode !== undefined) return 'already-exited';
+  if (child.signalCode !== null && child.signalCode !== undefined) return 'already-exited';
+  const asked = requestShutdown(child, reason);
+  if (asked && await waitForExit(child, timeoutMs)) return 'graceful';
+  await killTree(child.pid, platform);
+  try { child.kill('SIGKILL'); } catch { /* already gone, or gone by the time we asked */ }
+  await waitForExit(child, 2000);
+  return 'killed';
+}
+
+// ---- the setup a fresh launch restores ----
+//
+// Where to connect, who this is, and how the window sat. Nothing about a task, a turn or a
+// command: a launch reconnects and replays the log the relay already holds, and there is
+// deliberately nothing here that could re-issue work whose outcome nobody can vouch for. The
+// allowlist is the guarantee, not the discipline of whoever writes the next feature.
+const STATE_KEYS = ['hubUrl', 'userName', 'bounds', 'lastQuitAt'];
+
+function loadState(file) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Object.fromEntries(Object.entries(raw).filter(([k]) => STATE_KEYS.includes(k)));
+  } catch { return {}; }
+}
+
+function saveState(file, patch) {
+  const kept = Object.fromEntries(Object.entries(patch).filter(([k]) => STATE_KEYS.includes(k)));
+  const next = { ...loadState(file), ...kept };
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+  } catch { /* a remembered window size is never worth failing a launch over */ }
+  return next;
+}
+
+module.exports = {
+  shouldQuitOnWindowClose, quitPlan, shouldLaunchRuntime, trayState, killTreeCommand,
+  requestShutdown, askService, waitForExit, killTree, stopService, loadState, saveState, STATE_KEYS
+};

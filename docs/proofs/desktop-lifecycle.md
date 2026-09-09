@@ -35,14 +35,35 @@ machine means two runtime ids, two pairing codes, and a fleet list implying a ma
 has.
 
 **Quitting is allowed to stop work, but not quietly.** With nothing running, the quit dialog
-still says what teammates will see. With work in flight it warns, names the tasks, defaults to
-**Keep running**, and says what happens to a part-finished turn — it will show as *abandoned*
-rather than finished, which is #17's distinction and the honest word for it.
+still says what teammates will see. With work in flight it warns, names the tasks, says whether
+a teammate is already blocked waiting on an approval in one of them, defaults to **Keep
+running**, and says what happens to a part-finished turn.
 
 **Killing a process is not killing its tree.** On Windows a provider CLI spawned by the runtime
 survives the runtime being killed, so a "quit" could leave a model running and a workspace
-still being written to. The force path now reaches the whole tree with `taskkill /T` before
-falling back to the single handle.
+still being written to. The force path reaches the whole tree with `taskkill /T` — and because
+a POSIX group kill only reaches a group, the services are spawned detached there, so there is
+a group to take.
+
+**A quit is asked for, not signalled.** Windows cannot deliver a signal a child can act on, so
+a polite stop that only existed as a signal would be a polite stop that only existed on macOS
+and Linux. The shell asks over the IPC channel it spawned each service with. That is also how
+it knows what to warn about: the host is the only process that knows what it is running, and
+it can answer at the moment the decision is being made — which the websocket cannot, because
+that connection is the thing about to go away.
+
+**The host accounts for its own work before it goes.** This is the part #17 could not do for
+it. A host that *vanishes* leaves `unknown`, because connectivity is not an outcome. A host
+that is *quit* is still here: it interrupts each running turn, waits for each to write its own
+`turn/completed: interrupted`, and tells the relay it left on purpose. So the thread reads
+`interrupted` rather than being reconstructed as `abandoned` on the next launch, and the fleet
+records `lastOffline.reason = quit` — teammates are told, rather than left to read a silence.
+
+**A launch restores setup, not work.** `desktop-state.json` holds where to connect, who this
+is, and how the window sat. Nothing else, and that is an allowlist rather than the discipline
+of whoever writes the next feature: a caller that tries to persist a thread, a turn or a
+command gets none of it back. The conversation comes back from the relay's log, which is the
+record; the command does not, because nobody can vouch for how far the old one got.
 
 ## The criteria
 
@@ -56,23 +77,43 @@ unavailable** — met. The warning is asserted with its text and its default but
 is asserted against the operating system.
 
 **3 · platform process cleanup and tray controls; sleep or lost connectivity is not reported as
-completed or stopped** — partly met, and the gap is named below. The cleanup path exists and
-`killTreeCommand` is unit-tested per platform. The "not reported as completed" half is #17's
-work: a host that goes away leaves its threads `unknown`, never `idle`.
+completed or stopped** — met. `killTreeCommand` is unit-tested per platform, and the test now
+also checks that **both** managed processes are gone after a quit, according to the operating
+system rather than a relay that also went away. The "not reported as completed" half is #17's
+work and is unchanged: a host that goes away leaves its threads `unknown`, never `idle`. What
+is new is the other side of that distinction — a host that is quit says `interrupted` itself,
+so the two situations no longer look alike.
 
-**4 · fresh launch restores connection state without replaying an uncertain task** — met by
-#17's `reconcileAfterRestart()`, which records an interrupted turn as `abandoned` and replays
-nothing.
+**4 · fresh launch restores connection state without replaying an uncertain task** — met. The
+setup a launch restores is an allowlist that cannot carry a task, and the test relaunches the
+app after a quit and checks the workspace comes back with the task idle, two turns in the log,
+no command re-issued, and the file the unapproved `rm -rf` would have deleted still there.
 
 ## Reproduce
 
-`npm run test:desktop-lifecycle` — 11 checks driving the **real Electron app**: the tray
-exists, a teammate on a separate socket sees the host online, the window closes and the host
-survives with the same pid, the teammate still sees it, the tray says so, reopening produces no
-second host, the fleet still lists one, both quit plans are correct, and after an explicit quit
-the host process is gone according to the OS.
+`npm run test:desktop-lifecycle` — 17 checks and 2 recorded limits, driving the **real Electron
+app with a real task in flight**:
 
-`npm run test:desktop` (the existing smoke) still passes.
+- the tray exists, and a teammate on a separate socket sees the host online
+- the window closes and the host survives with the same pid; the teammate still sees it
+- **and can still use it**: the teammate approves the pending action and the turn runs to
+  completion with the window closed — seeing a host is not the same as being able to work on it
+- the tray says the host is running and the window is merely closed
+- reopening produces no second host, and the fleet still lists one
+- the idle quit plan says what teammates will see; the busy one warns, names the task from what
+  the host reports, says a teammate is blocked on it, and defaults to **Keep running**
+- a refused quit changes nothing, driven through the app's own quit path
+- a confirmed quit records the turn as `interrupted`, tells the fleet the owner quit, and both
+  managed processes are gone according to the OS
+- launching again restores the workspace with nothing replayed
+
+`npm run test:desktop` and `npm run test:desktop-bootstrap` still pass, as do `test:unit`
+(7 checks here), `test:protocol`, `test:team`, `test:steering`, `test:approvals`,
+`test:recover-after-loss`, `test:handover`, `test:help-inbox`, `test:related-work`,
+`test:revocation` and `test:recovery`.
+
+`scripts/desktop-install-proof.js` runs these same checks against the **installed** copy on
+Windows and macOS, because the criterion is about the installed window rather than a checkout.
 
 ## What this broke, and why that was the right kind of breakage
 
@@ -95,6 +136,8 @@ the test output as a note rather than counted as a pass.
 its text, its buttons and its default — because a modal dialog cannot be answered by a test in
 this harness.
 
-**Process-tree cleanup is asserted as a decision, not as a killed tree.** `killTreeCommand()`
-returns the right command per platform and that is unit-tested; proving a grandchild process
-actually dies needs a provider running under an installed app, which is #19's territory.
+**A grandchild process was not proven to die.** Both managed processes are now checked against
+the operating system after a quit, and `killTreeCommand()` is unit-tested per platform, so the
+sweep and its effect on the processes this app owns are covered. What is still not covered is a
+provider CLI running *underneath* the host at the moment of the quit: producing one needs a real
+provider under an installed app, which is #19's territory.
