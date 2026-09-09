@@ -196,12 +196,14 @@ async function controlPlane({ alice, bob, rt, project }) {
   });
 
   const completed = await waitEvent(alice, thread.id, (m) => m.method === 'turn/completed', 60000, 'turn completion');
+  await waitEvent(bob, thread.id, (m) => m.method === 'turn/completed', 60000, 'teammate turn completion');
 
   await check(C1, 'identical-ordered-log', async () => {
     const a = eventsFor(alice, thread.id).map((e) => e.seq);
     const b = eventsFor(bob, thread.id).map((e) => e.seq);
-    const shared = a.filter((s) => b.includes(s));
+    const shared = a;
     if (!shared.length) throw new Error('the two clients shared no events');
+    if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error('the clients received different event sequences');
     const ordered = shared.every((s, i) => i === 0 || s > shared[i - 1]);
     if (!ordered) throw new Error('the shared event log was not monotonically ordered');
     return {

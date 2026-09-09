@@ -14,11 +14,10 @@
 //   * Nothing is invented. An event with no encrypted counterpart is dropped rather than
 //     approximated, and the dropped kinds are named here so the omission is deliberate
 //     rather than discovered later by someone reading a gap in a task history.
-const { Events, ItemTypes, TurnStatus } = require('../protocol');
+const { Events, ItemTypes, ItemStatus, TurnStatus } = require('../protocol');
 
 // Turn events that deliberately do not reach the log, and why.
 const NOT_TRANSLATED = {
-  [Events.TURN_STARTED]: 'the log records what happened, and a turn beginning is not yet anything',
   [Events.ITEM_STARTED]: 'an item that has started has not done anything yet',
   [Events.AGENT_MESSAGE_DELTA]: 'a fragment of a sentence is not a message',
   [Events.REASONING_DELTA]: 'reasoning is not recorded in the task log at all',
@@ -29,6 +28,17 @@ const NOT_TRANSLATED = {
 // replayed item cannot append twice.
 function translate(event) {
   const method = event.method;
+  if (method === Events.TURN_STARTED) {
+    return { type: 'turn.started', payload: {
+      turnId: event.turnId, actor: event.by?.userId || 'execution-host', provider: event.provider || 'unknown'
+    } };
+  }
+  if (method === Events.TURN_INTERRUPT_REQUESTED) {
+    return { type: 'activity.recorded', payload: {
+      description: 'Interruption requested; waiting for the provider to stop', paths: [],
+      turnId: event.turnId, actor: event.by?.userId || 'execution-host', state: 'stopping'
+    } };
+  }
   if (method === Events.TURN_PLAN_UPDATED) {
     const steps = (event.plan || []).map((entry) => ({
       text: entry.step ?? entry.text ?? '',
@@ -42,12 +52,17 @@ function translate(event) {
     // somebody's decision and arrives on its own event; this records only what the turn did.
     const status = event.status === TurnStatus.COMPLETED ? 'completed'
       : event.status === 'interrupted' ? 'interrupted' : 'failed';
-    return { type: 'turn.completed', payload: { status } };
+    return { type: 'turn.completed', payload: { status, ...(event.turnId ? { turnId: event.turnId } : {}),
+      ...(event.error ? { error: event.error.message || 'provider_failed' } : {}) } };
   }
   if (method !== Events.ITEM_COMPLETED || !event.item) return null;
   const item = event.item;
   if (item.type === ItemTypes.USER_MESSAGE || item.type === ItemTypes.AGENT_MESSAGE) {
-    return { type: 'message.added', payload: { id: item.id, text: item.text || '' } };
+    return { type: 'message.added', payload: { id: item.id, text: item.text || '',
+      role: item.type === ItemTypes.USER_MESSAGE ? 'user' : 'assistant',
+      ...(item.by?.userId ? { actor: item.by.userId } : {}),
+      ...(event.turnId ? { turnId: event.turnId } : {})
+    } };
   }
   if (item.type === ItemTypes.COMMAND_EXECUTION) {
     return { type: 'tool.completed', payload: {
@@ -60,10 +75,20 @@ function translate(event) {
     } };
   }
   if (item.type === ItemTypes.FILE_CHANGE) {
+    if (item.status !== ItemStatus.COMPLETED) {
+      return { type: 'tool.completed', payload: {
+        id: item.id, name: 'workspace.write',
+        arguments: { paths: (item.changes || []).map((change) => change.path) },
+        result: { status: item.status, applied: false }
+      } };
+    }
     const files = (item.changes || []).map((change) => ({
       path: change.path,
-      patch: change.kind + (typeof change.additions === 'number' ? ' +' + change.additions : '') +
-        (typeof change.deletions === 'number' ? ' -' + change.deletions : '')
+      patch: ['--- ' + (change.kind === 'add' ? '/dev/null' : 'a/' + change.path),
+        '+++ b/' + change.path,
+        ...(change.lines || []).map((line) =>
+          (line.kind === 'add' ? '+' : line.kind === 'remove' || line.kind === 'del' ? '-' : ' ') + line.text)
+      ].join('\n')
     }));
     return { type: 'diff.updated', payload: { files } };
   }
@@ -87,15 +112,27 @@ function translateApproval(event, actorName) {
     return { type: 'approval.requested', payload: {
       id: event.requestId,
       action,
+      ...(Object.prototype.hasOwnProperty.call(event, 'approvalOwner') ? { approvalOwner: event.approvalOwner } : {}),
+      ...(event.turnId ? { turnId: event.turnId } : {}),
+      ...(event.fingerprint ? { fingerprint: event.fingerprint } : {}),
+      kind: event.method === Events.COMMAND_REQUEST_APPROVAL ? 'command' : 'file-change',
+      ...(event.command ? { command: event.command } : {}),
+      ...(event.changes ? { changes: event.changes } : {}),
       ...(event.reason ? { reason: event.reason } : {}),
       ...(Number.isSafeInteger(event.expiresAt) ? { expiresAt: event.expiresAt } : {})
     } };
   }
   if (event.method !== Events.SERVER_REQUEST_RESOLVED) return null;
   return { type: 'decision.recorded', payload: {
-    actor: actorName || (event.by && event.by.name) || 'unknown',
-    text: 'Approval ' + event.decision,
-    basis: event.requestId
+    actor: actorName || event.by?.userId || event.by?.name || 'unknown',
+    text: event.reason === 'turn_interrupted' ? 'Approval cancelled because the turn was interrupted'
+      : event.reason === 'approval_authority_revoked' ? 'Approval cancelled because its approving device was removed'
+      : event.reason === 'approval_settlement_failed' ? 'Approval cancelled because the host could not save the decision'
+      : event.reason === 'provider_disconnected' ? 'Approval cancelled because the provider disconnected'
+      : event.reason === 'approval_expired' ? 'Approval expired without a response'
+      : 'Approval ' + event.decision,
+    basis: event.requestId, decision: event.decision, ...(event.turnId ? { turnId: event.turnId } : {}),
+    ...(event.reason ? { reason: event.reason } : {})
   } };
 }
 
@@ -113,7 +150,7 @@ const eventId = (taskId, seq) => 'ev_' + require('crypto').createHash('sha256')
  * the turn is done; the runtime supplies one that builds a TurnSession.
  */
 class EncryptedTaskRun {
-  constructor({ opened, task, runTurn, provider = null, log = () => {} }) {
+  constructor({ opened, task, runTurn, provider = null, onAppendFailure = () => {}, log = () => {} }) {
     this.opened = opened;
     this.task = task;
     this.runTurn = runTurn;
@@ -123,6 +160,9 @@ class EncryptedTaskRun {
     // reading this task later actually has.
     this.provider = provider;
     this.log = log;
+    this.onAppendFailure = onAppendFailure;
+    this.failure = null;
+    this.appendQueue = Promise.resolve();
     // Continue the log rather than restarting it. Ids are derived from a running count, so a
     // second turn on the same task starting from zero would collide with the first turn's
     // events - which is what happens the moment anybody corrects an agent's work.
@@ -132,9 +172,24 @@ class EncryptedTaskRun {
 
   // Appends are serialized through the writer's own queue, so the log keeps the order the
   // turn produced rather than whichever encryption finished first.
-  async append(entry) {
-    const seq = ++this.written;
-    await this.opened.writer.append(entry, eventId(this.task.id, seq));
+  append(entry) {
+    const work = this.appendQueue.then(async () => {
+      if (this.failure) throw this.failure;
+      const seq = ++this.written;
+      try { return await this.opened.writer.append(entry, eventId(this.task.id, seq)); }
+      catch (error) {
+        this.failure = error;
+        this.log('encrypted append failed: ' + (error.code || 'encrypted_append_failed'));
+        // Interrupt as soon as the first failure is known, while the provider may still
+        // be waiting to perform its next action. A callback failure cannot replace it.
+        try { Promise.resolve(this.onAppendFailure(error)).catch(() => {}); } catch {}
+        throw error;
+      }
+    });
+    // The queue is always observed. Callers awaiting append still receive the failure;
+    // event emitters retain it for start() without a detached rejected promise.
+    this.appendQueue = work.catch(() => {});
+    return work;
   }
 
   async start() {
@@ -147,24 +202,21 @@ class EncryptedTaskRun {
         ...(this.provider ? { provider: this.provider } : {})
       } });
     }
-    const queue = [];
-    let pump = Promise.resolve();
     const emit = (event) => {
+      if (this.failure) return;
       const entry = translate(event) || translateApproval(event);
       if (!entry) {
         const why = NOT_TRANSLATED[event.method];
         if (why) this.dropped.set(event.method, why);
         return;
       }
-      queue.push(entry);
-      pump = pump.then(() => this.append(queue.shift())).catch((error) => {
-        // A failed append must stop the task rather than leave a hole in the history.
-        this.log('encrypted append failed: ' + (error.code || error.message));
-        throw error;
-      });
+      this.append(entry).catch(() => {});
     };
-    await this.runTurn(emit, objective);
-    await pump;
+    let providerError;
+    try { await this.runTurn(emit, objective); } catch (error) { providerError = error; }
+    await this.appendQueue;
+    if (this.failure) throw this.failure;
+    if (providerError) throw providerError;
     return { events: this.written, dropped: [...this.dropped.keys()] };
   }
 }

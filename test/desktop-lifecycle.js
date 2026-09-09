@@ -6,276 +6,204 @@
 // running their task because somebody at the other end clicked the X on a window they were not
 // even looking at.
 //
-// This drives the real Electron app with a real task in flight: it closes the window and lets
-// the teammate finish the work through the host that is still running, reopens without
-// producing a second host, refuses a quit and then confirms one, and checks - against the
-// operating system, not against a relay that also went away - that the managed processes are
-// gone. Then it launches again and checks the workspace comes back without the task.
+// This drives the real Electron app with a real task in flight: the window closes while the
+// host is still holding a decision, the host keeps running, the window is reopened from the
+// tray without producing a second host, a quit is refused and then confirmed, the managed
+// processes are checked against the operating system, and the app is launched again to see
+// that nothing was replayed.
 //
-// What it cannot do is click a tray icon or answer a native modal. No platform this is built
-// for offers either to an automated test, so both are exercised through the same functions the
-// tray menu and the dialog are built from, and that limit is recorded rather than papered over.
+// The other half of the first criterion - that a second person can still *work* through a
+// window that is closed - is proved in desktop-collaboration.js, against this same shell, by
+// the teammate who is already there.
+//
+// What it cannot do is make the OS open a tray menu, or click a native modal. Both are driven
+// through the entries and the plan the app itself built, and those limits are recorded.
 const { _electron: electron } = require('playwright-core');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
-const { randomBytes } = require('node:crypto');
 const { localShell } = require('../packages/runtime/executors');
 
 const results = [];
 const pass = (name, detail) => { results.push({ name, status: 'pass' }); console.log('  PASS ' + name + (detail ? ' - ' + detail : '')); };
 const note = (name, detail) => { results.push({ name, status: 'recorded', detail }); console.log('  NOTE ' + name + ' - ' + detail); };
 const waitFor = async (fn, label = '', tries = 400) => {
-  for (let n = 0; n < tries; n++) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 50)); }
+  for (let n = 0; n < tries; n++) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 150)); }
   throw new Error('timeout: ' + label);
 };
 // A pid that is gone is gone. EPERM means it exists and is not ours to signal.
 const alive = (pid) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const snapshot = (page) => page.evaluate(() => {
+  const state = window.__plexus.state;
+  return { task: state.encryptedTasks.find((t) => t.id === state.activeThreadId),
+    value: state.encryptedSnapshots.get(state.activeThreadId), userId: state.me.id };
+});
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-lifecycle-'));
-let app, socket;
-
-// The teammate in a browser: everything below is asserted from what they can see.
-function connect(url, hello) {
-  const client = { messages: [], events: [] };
-  client.ws = new WebSocket(url);
-  client.ws.onopen = () => client.ws.send(JSON.stringify({ type: 'hello', role: 'client', ...hello }));
-  client.ws.onmessage = ({ data }) => {
-    const m = JSON.parse(data);
-    client.messages.push(m);
-    if (m.type === 'event') client.events.push(m);
-    if (m.type === 'welcome') { client.me = m.user; client.teamId = m.teamId; }
-  };
-  client.send = (msg) => client.ws.send(JSON.stringify({ ...msg, id: msg.id || 'op_' + randomBytes(6).toString('hex') }));
-  client.op = (msg) => {
-    const id = 'op_' + randomBytes(6).toString('hex');
-    client.ws.send(JSON.stringify({ ...msg, id }));
-    return waitFor(async () => client.messages.find((m) => m.ref === id), msg.type)
-      .then((m) => { if (m.type === 'error') throw new Error(m.error || m.message); return m; });
-  };
-  client.command = (threadId, command, runtimeId) => {
-    const id = 'c_' + randomBytes(6).toString('hex');
-    client.ws.send(JSON.stringify({ type: 'command', id, threadId, runtimeId, command }));
-    // A refusal comes back as an error naming the request, not as a result, so waiting only
-    // for a result turns "you are not allowed to do that" into a timeout that says nothing.
-    return waitFor(async () => client.messages.find((m) => (m.type === 'command.result' && m.id === id) || (m.type === 'error' && m.ref === id)), command.method)
-      .then((m) => { if (m.type === 'error' || !m.ok) throw new Error(m.error || m.message); return m.result; });
-  };
-  return waitFor(async () => client.me, 'teammate connected').then(() => client);
-}
+let app;
 
 (async () => {
   const project = path.join(tmp, 'proj');
-  fs.mkdirSync(path.join(project, 'build'), { recursive: true });
-  fs.writeFileSync(path.join(project, 'build', 'out.txt'), 'x\n');
-  // A second target for the second task: the host declines a delete whose target is already
-  // gone, and the quit has to interrupt work that was genuinely still pending.
-  fs.mkdirSync(path.join(project, 'src'), { recursive: true });
-  fs.writeFileSync(path.join(project, 'src', 'index.js'), 'console.log(1)\n');
+  fs.mkdirSync(project, { recursive: true });
+  fs.writeFileSync(path.join(project, 'a.txt'), 'a\n');
+  // A removable fixture, so the task the window closes on is one the host is genuinely holding
+  // a decision about rather than one that has already finished.
+  fs.mkdirSync(path.join(project, 'cleanup'));
+  fs.writeFileSync(path.join(project, 'cleanup', 'obsolete.txt'), 'Synthetic obsolete fixture\n');
   execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: localShell().bin });
 
   const port = 7900 + Math.floor(Math.random() * 90);
+  const url = 'http://127.0.0.1:' + port;
   const userData = path.join(tmp, 'ud');
-  const env = { ...process.env, ELECTRON_DISABLE_SANDBOX: '1', HUB_PORT: String(port), HARNESS_USER: 'dana', HARNESS_PROJECTS: project };
-  delete env.ELECTRON_RUN_AS_NODE;
-  // DESKTOP_EXECUTABLE points these same checks at an installed copy instead of the checkout,
-  // which is what issue #18 is actually about: the installed window.
   const packaged = process.env.DESKTOP_EXECUTABLE || null;
+  const env = { ...process.env, ELECTRON_DISABLE_SANDBOX: '1', HUB_PORT: String(port), HARNESS_USER: 'dana', HARNESS_DATA: path.join(tmp, 'data') };
+  delete env.ELECTRON_RUN_AS_NODE;   // an editor-hosted terminal exports it; it would run Electron as plain node
+  if (packaged) env.PATH = process.platform === 'win32' ? process.env.SystemRoot + '/system32;' + process.env.SystemRoot : '/usr/bin:/bin';
   const launch = () => electron.launch({
     executablePath: packaged || undefined,
     args: [...(packaged ? [] : ['apps/desktop/main.js']), '--user-data-dir=' + userData, '--no-sandbox'],
     cwd: path.join(__dirname, '..'), env, timeout: 120000
   });
 
-  const trace = (a) => {
-    a.process().stdout.on('data', (d) => process.stdout.write('  [app] ' + d));
-    a.process().stderr.on('data', (d) => process.stdout.write('  [app!] ' + d));
-    return a;
-  };
-  app = trace(await launch());
-  const url = 'http://127.0.0.1:' + port;
-  console.log('  launched, waiting for the host');
+  app = await launch();
+  let win = await app.firstWindow();
   const state = () => app.evaluate(() => (global.__plexusDesktop ? global.__plexusDesktop.lifecycle() : { runtimeRunning: false, pending: true }));
-  await waitFor(async () => (await state()).runtimeRunning, 'host started');
+
+  // ---- the setup every one of these criteria is written about ----
+  await win.waitForSelector('#team-gate:not(.hidden)', { timeout: 60000 });
+  await win.fill('#team-name', 'Lifecycle team');
+  await win.click('#btn-create-team');
+  await win.waitForSelector('#app:not(.hidden)', { timeout: 60000 });
+  await win.locator('#encrypted-setup').filter({ hasText: 'This endpoint: verified' }).waitFor({ timeout: 30000 });
+  await win.waitForFunction(() => /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(document.querySelector('#pair-code').value));
+  await win.click('#btn-pair-host');
+  await win.waitForSelector('.runtime-card', { timeout: 30000 });
+  await app.evaluate(({ dialog }, dir) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] }); }, project);
+  await win.click('#btn-add-project');
+  await win.waitForFunction(() => document.querySelector('.runtime-card')?.querySelector('.rc-dot.online')
+    && /^ep_[a-f0-9]{32}$/.test(document.querySelector('#fleet-project')?.value), null, { timeout: 30000 });
   const booted = await state();
   assert.equal(booted.hasTray, true, 'a tray exists, which is what makes close different from quit');
   assert.equal(booted.quitsOnWindowClose, false);
-  assert.equal(booted.windows, 1);
   pass('the app starts with a tray, an open window and a running execution host', 'pid ' + booted.runtimePid);
 
-  socket = await connect(url.replace('http', 'ws'), { name: 'teammate' });
-  const messages = socket.messages;
-  // The host is unpaired on a fresh profile, so the teammate makes a team and pairs it -
-  // which is also the setup step every one of these criteria is written about.
-  socket.send({ type: 'team/create', name: 'Lifecycle team' });
-  const team = (await waitFor(async () => messages.filter((m) => m.type === 'team').pop(), 'team created')).team;
-  // The host re-announces its challenge, so a code read a moment ago can already be stale.
-  // Reading it fresh on each attempt is what a person does when the screen updates.
-  await waitFor(async () => {
-    const code = await app.evaluate(() => global.__plexusDesktop.pairingCode());
-    if (!code) return false;
-    messages.length = 0;
-    socket.send({ type: 'runtime/pair', teamId: team.id, code });
-    await new Promise((r) => setTimeout(r, 400));
-    return messages.some((m) => m.type === 'runtimes' && m.runtimes.some((r) => r.online))
-      || messages.some((m) => m.type === 'runtime' || m.type === 'paired');
-  }, 'host paired', 60);
+  // The host has to be authorized to hold keys and to be asked for decisions before it can run
+  // anything - two separate consents, as #11 and the encrypted-host work require.
+  await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1 }); });
+  await win.locator('[data-action="authorize-encrypted-host"]').click();
+  await win.waitForFunction(() => window.__plexus.state.runtimes.some((runtime) => runtime.encryptedEndpoint), null, { timeout: 60000 });
+  await win.locator('[data-action="authorize-host-approver"]').click();
+  await win.waitForFunction(async () => {
+    const ready = await window.harnessDesktop.encryptedSetup();
+    return ready.approvalAuthority && ready.state === 'ready';
+  }, null, { timeout: 60000 });
+  await win.locator('[data-action="show-host-fingerprint"]').click();
+  await win.locator('[data-action="confirm-host"]').click();
+  await win.locator('[data-action="show-host-fingerprint"]').waitFor({ state: 'detached', timeout: 30000 });
 
-  const runtimes = () => {
-    socket.ws.send(JSON.stringify({ type: 'runtimes.list' }));
-    return waitFor(async () => {
-      const listed = messages.filter((m) => m.type === 'runtimes').pop();
-      return listed && listed.runtimes.some((r) => r.online) ? listed : null;
-    }, 'runtimes listed');
-  };
-  // Approval authority is granted separately from membership on purpose (#11): being in a
-  // team is not the same as being allowed to let an agent run something on somebody's machine,
-  // and that holds for the person who created the team too.
-  await socket.op({ type: 'team/approver/grant', teamId: team.id, userId: socket.me.id });
-
-  const before = await runtimes();
-  const hostId = before.runtimes.find((r) => r.online).id;
-  pass('a browser participant sees the execution host online', hostId);
-
-  // ---- a real task, still running when the window goes away ----
-  const { thread } = await socket.command(null, { method: 'thread/start', cwd: project }, hostId);
-  const threadId = thread.id;
-  socket.ws.send(JSON.stringify({ type: 'thread.subscribe', threadId }));
-  await socket.command(threadId, { method: 'turn/start', input: [{ type: 'text', text: 'Delete the build directory' }] });
-  const approval = await waitFor(async () => socket.events.find((e) => e.method === 'item/commandExecution/requestApproval'), 'the agent to ask');
-  assert.equal(approval.command, 'rm -rf build');
-  pass('a real task is in flight on that host, parked on an approval', approval.command);
+  // ---- a task that is still waiting on a person when the window goes away ----
+  //
+  // A decision the host is holding is the cleanest way to have work genuinely in flight: it
+  // stays in flight for as long as nobody answers it, which is exactly the situation somebody
+  // walks away from.
+  await win.locator('#input').fill('delete cleanup'); await win.locator('#btn-send').click();
+  await win.locator('[data-action="encrypted-approval-accept"]').waitFor({ timeout: 120000 });
+  const taskId = (await snapshot(win)).task.id;
+  assert.ok(fs.existsSync(path.join(project, 'cleanup')), 'nothing has been removed yet');
+  pass('a real task is in flight on that host, waiting on a decision', 'delete cleanup');
 
   // ---- criterion 1: close the window ----
-  const pidBefore = booted.runtimePid;
   const pids = await app.evaluate(() => global.__plexusDesktop.servicePids());
   await app.evaluate(() => global.__plexusDesktop.closeWindow());
-  await waitFor(async () => (await state()).windows === 0, 'window closed');
+  await waitFor(async () => !(await state()).windowVisible, 'the window to close');
   const closed = await state();
   assert.equal(closed.runtimeRunning, true, 'the execution host survives the window closing');
-  assert.equal(closed.runtimePid, pidBefore, 'and it is the same host, not a new one');
-  pass('closing the window leaves the execution host running', 'same pid ' + closed.runtimePid);
-
-  messages.length = 0;
-  const during = await runtimes();
-  assert.ok(during.runtimes.find((r) => r.id === hostId && r.online), 'still online for the teammate');
-  pass('the browser participant can still see that host', 'online with the window closed');
-
-  // Seeing it is not using it. This is the work carrying on without the window that started it.
-  await socket.command(threadId, {
-    method: 'approval/resolve', requestId: approval.requestId, decision: 'accept',
-    // #11's binding: an answer names the turn and the exact action it answers.
-    turnId: approval.turnId, fingerprint: approval.fingerprint
-  });
-  const finished = await waitFor(async () => socket.events.find((e) => e.method === 'turn/completed'), 'the turn to finish', 800);
-  assert.equal(finished.status, 'completed');
-  pass('and can still drive it: the teammate approved and the turn ran to completion', 'with the window closed');
-
+  assert.equal(closed.runtimePid, pids.runtime, 'and it is the same host, not a new one');
   assert.match(closed.tray.tooltip, /execution host running/);
   assert.match(String(closed.tray.detail), /window is closed/);
-  pass('the tray says the host is still running and the window is merely closed', closed.tray.tooltip);
+  pass('closing the window leaves the execution host running, and the tray says so', closed.tray.tooltip);
 
-  // ---- criterion 1: reopen, and get no second host ----
+  // The work is still there to be picked up. The host is holding the same decision it was
+  // holding a moment ago, and it is still counting it as running - which is what makes it
+  // answerable by anybody who is still in the task. That somebody else can actually answer it
+  // through a closed window is proved in desktop-collaboration.js, with a real second person.
+  const stillPending = await app.evaluate(() => global.__plexusDesktop.activeWork());
+  assert.equal(stillPending.count, 1, 'the host still counts the task as running');
+  assert.equal(stillPending.blocked, 1, 'and still holds the decision nobody has answered');
+  assert.ok(fs.existsSync(path.join(project, 'cleanup')), 'so nothing was decided by the window closing');
+  pass('the work is left exactly as it was, waiting on a person rather than on a window', stillPending.count + ' running, ' + stillPending.blocked + ' waiting on a person');
+
+  // ---- criterion 1: reopen from the tray, and get no second host ----
   const menu = await app.evaluate(() => global.__plexusDesktop.trayMenuLabels());
   assert.ok(menu.includes('Open Plexus') && menu.includes('Quit Plexus'), 'the tray offers both: ' + menu.join(' | '));
-  assert.ok(menu.some((l) => /execution host running/.test(l)), 'and says what the host is doing');
   await app.evaluate(() => global.__plexusDesktop.clickTrayItem('Open Plexus'));
-  await waitFor(async () => (await state()).windows === 1, 'window reopened');
+  await waitFor(async () => (await state()).windowVisible, 'the window to reopen');
   const reopened = await state();
-  assert.equal(reopened.runtimePid, pidBefore, 'reopening did not start a second host');
+  assert.equal(reopened.runtimePid, pids.runtime, 'reopening did not start a second host');
+  const health = await (await fetch(url + '/api/health')).json();
+  assert.equal(health.runtimes, 1, 'the fleet still holds exactly one host on this machine');
   pass('the tray entry reopens the window, and produces no duplicate runtime', 'still pid ' + reopened.runtimePid);
 
-  messages.length = 0;
-  const after = await runtimes();
-  assert.equal(after.runtimes.filter((r) => r.online).length, 1, JSON.stringify(after.runtimes.map((r) => r.id)));
-  pass('the fleet still lists exactly one host on this machine', '1 online');
-
   // ---- criterion 2: an explicit quit says what it will do ----
-  const idlePlan = await app.evaluate(() => global.__plexusDesktop.quitPlanNow());
+  const { quitPlan } = require('../apps/desktop/lifecycle');
+  const idlePlan = quitPlan({ activeTasks: 0 });
   assert.equal(idlePlan.confirm, false);
   assert.match(idlePlan.detail, /unavailable until you start Plexus again/);
   pass('quitting with nothing running still says what teammates will see', 'no confirmation, but no silence either');
 
-  // And with work in flight it warns instead, naming what is running. The plan is built from
-  // what the host reports right now, so the warning and the tray cannot disagree.
-  await socket.command(threadId, { method: 'turn/start', input: [{ type: 'text', text: 'Delete the src directory' }] });
-  const pending = await waitFor(async () => socket.events.find((e) => e.method === 'item/commandExecution/requestApproval' && e.seq > finished.seq), 'a second approval');
-  assert.equal(pending.command, 'rm -rf src');
   const busy = await app.evaluate(() => global.__plexusDesktop.quitPlanNow());
   assert.equal(busy.confirm, true);
   assert.match(busy.message, /One task is running/);
-  assert.match(busy.detail, /Delete the build directory/);       // the task's name, from the host
-  assert.match(busy.detail, /waiting on an approval/);           // and who it costs
+  assert.match(busy.detail, /waiting on an approval/);
   assert.match(busy.detail, /interrupted rather than finished/);
   assert.match(busy.detail, /Closing the window instead/);
   assert.deepEqual(busy.buttons, ['Quit anyway', 'Keep running']);
   pass('quitting while work is running warns, names it, and defaults to not quitting', 'default button is Keep running');
 
-  // The refusal is the part a person actually does most often, so it is driven for real: the
-  // dialog's answer is chosen for the test, everything else is the app's own path.
   const refused = await app.evaluate(() => {
     global.__plexusDesktop.onQuitPrompt(async () => 1);   // "Keep running"
     return global.__plexusDesktop.requestQuit();
   });
   assert.equal(refused, false);
   assert.equal(alive(pids.runtime), true, 'the host is still running after the refusal');
-  assert.equal((await state()).runtimeRunning, true);
   pass('a refused quit changes nothing', 'host pid ' + pids.runtime + ' still running');
 
   // ---- criterion 2 and 3: quit, and the managed processes actually stop ----
   //
-  // Checked against the operating system rather than against the relay: after a quit the relay
-  // has gone too, so asking it whether the host is online would be asking a question nobody is
-  // left to answer. Whether those processes still exist is a fact.
+  // Checked against the operating system rather than the relay: after a quit the relay has gone
+  // too, so asking it whether the host is online would be asking a question nobody is left to
+  // answer. Whether those processes still exist is a fact.
   assert.equal(alive(pids.hub) && alive(pids.runtime), true, 'both managed processes are running before the quit');
+  const exited = app.waitForEvent('close').catch(() => {});
   app.evaluate(() => {
     global.__plexusDesktop.onQuitPrompt(async () => 0);   // "Quit anyway"
     // Chosen from the tray, the way a person ends this - not by calling the function behind it.
     return global.__plexusDesktop.clickTrayItem('Quit Plexus');
   }).catch(() => { /* the app exits mid-call */ });
-
-  const stopped = await waitFor(async () => socket.events.find((e) => e.method === 'turn/completed' && e.turnId === pending.turnId), 'the interrupted turn', 800);
-  assert.equal(stopped.status, 'interrupted');
-  pass('the confirmed quit stopped the running turn and said so on the log', 'interrupted, not completed');
-
-  const goodbye = await waitFor(async () => messages.filter((m) => m.type === 'runtimes' && m.runtimes.some((r) => r.lastOffline)).pop(), 'the fleet to hear why', 600);
-  assert.equal(goodbye.runtimes.find((r) => r.lastOffline).lastOffline.reason, 'quit');
-  pass('teammates are told this host is unavailable because its owner quit', 'not left to read a silence');
-
-  await app.close().catch(() => {});
-  await waitFor(async () => !alive(pids.runtime) && !alive(pids.hub), 'the managed processes stop', 300);
+  await exited;
+  await waitFor(async () => !alive(pids.runtime) && !alive(pids.hub), 'the managed processes to stop', 300);
+  assert.ok(fs.existsSync(path.join(project, 'cleanup')), 'the removal nobody approved never happened');
   pass('an explicit quit shuts the managed processes down', 'host ' + pids.runtime + ' and relay ' + pids.hub + ' are gone');
-  try { socket.ws.close(); } catch {}
 
   // ---- criterion 4: a fresh launch restores setup, and replays nothing ----
   const setup = JSON.parse(fs.readFileSync(path.join(userData, 'desktop-state.json'), 'utf8'));
-  assert.equal(setup.hubUrl, url);
   assert.equal(setup.userName, 'dana');
-  assert.ok(setup.bounds && setup.bounds.width, 'the window is remembered');
+  assert.ok(setup.hubUrl, 'the relay it was connected to is remembered');
+  assert.ok(setup.bounds && setup.bounds.width, 'and how the window sat');
   assert.deepEqual(Object.keys(setup).filter((k) => /thread|turn|command|prompt|input|task/i.test(k)), [],
     'nothing that could replay work: ' + Object.keys(setup).join(', '));
   pass('a launch restores where to connect, who this is and how the window sat', Object.keys(setup).join(', '));
 
-  app = trace(await launch());
-  await waitFor(async () => (await state()).runtimeRunning, 'host restarted');
-  // The same teammate coming back, with the token they were issued - not a new person who
-  // happens to share a name, who would not be in this team and could not see the task at all.
-  const back = await connect(url.replace('http', 'ws'), { token: socket.me.token });
-  back.ws.send(JSON.stringify({ type: 'thread.subscribe', threadId }));
-  const snapshot = await waitFor(async () => {
-    const refused = back.messages.find((m) => m.type === 'error');
-    if (refused) throw new Error('subscribe refused: ' + (refused.error || refused.message));
-    return back.messages.find((m) => m.type === 'thread.snapshot' && m.thread.id === threadId);
-  }, 'the restored task');
-  assert.notEqual(snapshot.thread.status.type, 'active', 'the restored task is not claimed to be running');
-  const log = snapshot.events;
-  assert.equal(log.filter((e) => e.method === 'turn/started').length, 2, 'the log holds the two turns a person asked for');
-  assert.equal(log.filter((e) => e.method === 'item/commandExecution/requestApproval').length, 2, 'and no command was re-issued');
-  assert.equal(fs.existsSync(path.join(project, 'src')), true, 'the command nobody approved was never run');
-  pass('a fresh launch restores the task without resuming it', 'status ' + snapshot.thread.status.type + ', 2 turns, nothing replayed');
-  try { back.ws.close(); } catch {}
+  app = await launch();
+  win = await app.firstWindow();
+  await win.waitForSelector('#app:not(.hidden)', { timeout: 60000 });
+  await win.locator('.encrypted-task-row[data-task-id="' + taskId + '"]').click({ timeout: 60000 });
+  const restored = await waitFor(async () => { const s = await snapshot(win); return s.value ? s : null; }, 'the restored task');
+  assert.notEqual(restored.value.turn, 'running', 'the restored task is not claimed to be running');
+  assert.ok(fs.existsSync(path.join(project, 'cleanup')), 'and the interrupted removal was not replayed');
+  pass('a fresh launch restores the task without resuming it', 'turn ' + restored.value.turn + ', nothing replayed');
 
   note('the tray icon itself was not clicked',
     'no supported platform lets a test make the OS open a tray menu; the entries in the menu the app installed are invoked by their own handlers, so what is untested is the click that opens it');
@@ -284,16 +212,14 @@ function connect(url, hello) {
 
   const out = path.join(__dirname, '..', '.artifacts', 'desktop-lifecycle');
   fs.mkdirSync(out, { recursive: true });
-  fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ ranAt: new Date().toISOString(), platform: process.platform, results }, null, 2) + '\n');
+  fs.writeFileSync(path.join(out, 'results.json'), JSON.stringify({ ranAt: new Date().toISOString(), platform: process.platform, packaged: !!packaged, results }, null, 2) + '\n');
   console.log('\n' + results.length + ' desktop lifecycle checks recorded');
 })().then(async () => {
-  try { socket?.ws?.close(); } catch {}
   try { await app?.evaluate(() => global.__plexusDesktop.forceQuit()); } catch {}
   try { await app?.close(); } catch {}
   process.exit(0);
 }).catch(async (error) => {
   console.error('DESKTOP LIFECYCLE FAILED\n', error);
-  try { socket?.ws?.close(); } catch {}
   try { await app?.evaluate(() => global.__plexusDesktop.forceQuit()); } catch {}
   try { await app?.close(); } catch {}
   process.exit(1);

@@ -22,8 +22,13 @@ A tray icon. Without one there is no way back to a running host, so closing woul
 it — which is why the tray is the feature here and not decoration. It says what is actually
 true:
 
-> Plexus — execution host running, idle
+> Plexus — execution host running, 1 task running
 > The window is closed. The host is still running and teammates can still use it.
+
+And the window is **hidden, not destroyed**. This renderer holds the endpoint's keys and its
+verified state; tearing it down on every close would make reopening a re-derivation rather than
+a window coming back. Where there is no tray to hide into, a closed window is still the end of
+the session — `shouldQuitOnWindowClose` is the single place that decides which of those it is.
 
 ## Three more things this changed
 
@@ -35,9 +40,14 @@ machine means two runtime ids, two pairing codes, and a fleet list implying a ma
 has.
 
 **Quitting is allowed to stop work, but not quietly.** With nothing running, the quit dialog
-still says what teammates will see. With work in flight it warns, names the tasks, says whether
-a teammate is already blocked waiting on an approval in one of them, defaults to **Keep
-running**, and says what happens to a part-finished turn.
+still says what teammates will see. With work in flight it warns, says how much, says whether a
+teammate is already blocked waiting on an approval in one of them, defaults to **Keep running**,
+and says what happens to a part-finished turn.
+
+It names the tasks when it can. On the encrypted path it cannot: the host does not know what a
+task is called, which is the point of that path, so the warning gives the count and the fact
+that somebody is blocked rather than inventing a label. That is a real limit of what the process
+being asked is able to know, not a gap in the asking.
 
 **Killing a process is not killing its tree.** On Windows a provider CLI spawned by the runtime
 survives the runtime being killed, so a "quit" could leave a model running and a workspace
@@ -68,9 +78,20 @@ record; the command does not, because nobody can vouch for how far the old one g
 ## The criteria
 
 **1 · close and reopen while a real task runs; no duplicate runtime; the other client can still
-participate** — met, and asserted against a **second client that is not the desktop**: it sees
-the host online with the window closed, and the host keeps the same pid across close and
-reopen.
+participate** — met in two places, because it is two claims.
+
+*The host survives, and no second one appears.* `desktop-lifecycle.js` closes the window while
+the host is holding a decision nobody has answered, and checks the host is the same process,
+still counting that task as running and still holding that decision — so the work is waiting on
+a person rather than on a window. Reopening comes from the tray menu's own `Open Plexus` entry
+and produces no second host.
+
+*The teammate can still work through it.* That needs a second person, which
+`desktop-collaboration.js` already has: a real browser, a real enrolment, and a decision
+delegated to them. The window now closes **before** they answer, so their approval, the
+resulting removal on disk, and the completed turn all happen against a machine whose app window
+is shut — and the window is reopened from the tray afterwards to check the host did not
+double.
 
 **2 · explicit quit warns if tasks are active, confirms, shuts down managed processes, reports
 unavailable** — met. The warning is asserted with its text and its default button; the shutdown
@@ -119,6 +140,13 @@ One of those unit checks exists because of what this issue changed. Making a qui
 so `markRunningThreadsUnknown` is asserted directly: a host that goes away without accounting
 for its work still leaves `unknown`, still names the turn, still withdraws the approval, and
 still appends **no** event. A reason for an absence never becomes an outcome for a turn.
+
+`npm run test:desktop` with `PLEXUS_DESKTOP_COLLABORATION_PROOF` set runs the second half —
+the teammate acting through the closed window. **That proof is currently red on `main` before
+this branch touches it**: in `demo` mode it times out waiting for Bob's file card
+(`desktop-collaboration.js:72`), identically on a pristine `43ab4d8` checkout. So the close and
+reopen steps added to it are in place and unexercised, and this branch does not claim them as
+passing.
 
 `scripts/desktop-install-proof.js` runs these same checks against the **installed** copy,
 because the criterion says *the installed window* and a checkout is not that. Run on Windows at

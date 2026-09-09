@@ -1,0 +1,191 @@
+{
+  "version": "codex-cli 0.137.0",
+  "source": "codex app-server generate-json-schema --out <directory>",
+  "methods": {
+    "TurnSteerParams": {
+      "sha256": "a8c722611743b757a83949e3c90a0f09fb436f66e8d96ec2f364be0340c51531",
+      "required": [
+        "expectedTurnId",
+        "input",
+        "threadId"
+      ],
+      "properties": [
+        "threadId",
+        "clientUserMessageId",
+        "expectedTurnId",
+        "input"
+      ]
+    },
+    "TurnSteerResponse": {
+      "sha256": "a669b85e3b75b86468e39e6a2f760966bffe83f378b514c6898fb04b838cd78d",
+      "required": [
+        "turnId"
+      ],
+      "properties": [
+        "turnId"
+      ]
+    },
+    "TurnInterruptParams": {
+      "sha256": "49132b57b09f09dc545ed1cd373c12eede6e880e9afb54ae50add78bb42490cd",
+      "required": [
+        "threadId",
+        "turnId"
+      ],
+      "properties": [
+        "threadId",
+        "turnId"
+      ]
+    },
+    "TurnInterruptResponse": {
+      "sha256": "531de6be06fe979b5963f249bab82498a175e614bf65ac12fb2e849dfe60bcf1",
+      "required": [],
+      "properties": []
+    },
+    "ThreadResumeParams": {
+      "sha256": "d79b52c3c43be24a78e5080e9e06a2caa6bca4667218817fee3fd1d69a76ba28",
+      "required": [
+        "threadId"
+      ],
+      "properties": [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "baseInstructions",
+        "config",
+        "cwd",
+        "developerInstructions",
+        "threadId",
+        "serviceTier",
+        "sandbox",
+        "model",
+        "modelProvider",
+        "personality"
+      ]
+    },
+    "FileChangeRequestApprovalParams": {
+      "sha256": "7b465f7c5671adffdc5c339f50799860950307456e2a2b52c5ce1d3018f4babd",
+      "required": [
+        "itemId",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "properties": [
+        "grantRoot",
+        "itemId",
+        "reason",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "DynamicToolCallParams": {
+      "experimental": true,
+      "sha256": "e36242b331ca665c74993e55abbea381b1c8a961b29a42579029cff1ad26b20d",
+      "required": [
+        "arguments",
+        "callId",
+        "threadId",
+        "tool",
+        "turnId"
+      ],
+      "properties": [
+        "arguments",
+        "callId",
+        "namespace",
+        "threadId",
+        "tool",
+        "turnId"
+      ]
+    },
+    "DynamicToolCallResponse": {
+      "experimental": true,
+      "sha256": "50410ccaaefc9871a42fa25ee0c0d4f488a6f0e08c35856842e12d3103410fd1",
+      "required": [
+        "contentItems",
+        "success"
+      ],
+      "properties": [
+        "contentItems",
+        "success"
+      ]
+    },
+    "ThreadStartParams": {
+      "experimental": true,
+      "sha256": "3163fd6a5f23eef486234cdcb2dce6b0206046d6dd65f1447c5d2dcb7165a42b",
+      "required": [],
+      "properties": [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "baseInstructions",
+        "config",
+        "cwd",
+        "developerInstructions",
+        "dynamicTools",
+        "environments",
+        "ephemeral",
+        "experimentalRawEvents",
+        "mockExperimentalField",
+        "model",
+        "modelProvider",
+        "permissions",
+        "personality",
+        "runtimeWorkspaceRoots",
+        "sandbox",
+        "serviceName",
+        "serviceTier",
+        "sessionStartSource",
+        "threadSource"
+      ]
+    },
+    "TurnStartParams": {
+      "experimental": true,
+      "sha256": "deb954971814db0fd6d516514c7326a22c09d377982f0a994701691a5f20b3d6",
+      "required": [
+        "input",
+        "threadId"
+      ],
+      "properties": [
+        "additionalContext",
+        "approvalPolicy",
+        "approvalsReviewer",
+        "clientUserMessageId",
+        "collaborationMode",
+        "cwd",
+        "effort",
+        "environments",
+        "input",
+        "model",
+        "outputSchema",
+        "permissions",
+        "personality",
+        "responsesapiClientMetadata",
+        "runtimeWorkspaceRoots",
+        "sandboxPolicy",
+        "serviceTier",
+        "summary",
+        "threadId"
+      ]
+    }
+  },
+  "experimentalSource": "codex app-server generate-json-schema --experimental --out <directory>",
+  "readOnlyPolicy": {
+    "type": "object",
+    "required": [
+      "type"
+    ],
+    "properties": {
+      "networkAccess": {
+        "default": false,
+        "type": "boolean"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "readOnly"
+        ],
+        "title": "ReadOnlySandboxPolicyType"
+      }
+    },
+    "title": "ReadOnlySandboxPolicy"
+  }
+}

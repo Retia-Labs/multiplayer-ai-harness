@@ -123,6 +123,7 @@ let hub, runtime, encrypted, clients = [];
       transport: new HubKeyTransport({ url, token: token(client), device: who.toUpperCase() + 'DEV' })
     });
   }
+  for (const who of Object.keys(endpoints)) enrol[who].bindEndpoint(endpoints[who]);
   await enrol.alex.bootstrap(team.id, announcement(endpoints.alex));
   for (const who of ['maya', 'sam']) {
     await enrol[who].announce(team.id, announcement(endpoints[who]));
@@ -131,11 +132,15 @@ let hub, runtime, encrypted, clients = [];
   }
 
   const projectId = newId('ep');
+  await enrol.alex.ownProject(team.id, projectId);
   encrypted = new EncryptedHost({
+    authority: endpoints.alex.identity(), endpointFactory: (options) => Endpoint.create(options),
     runtime, url, statePath: path.join(tmp, 'outbox.sqlite'),
     projects: new Map([[projectId, project]]), log: () => {}
   });
   const hostIdentity = await encrypted.start();
+  await encrypted.beginReconcile();
+  await enrol.alex.answerChallenges(team.id);
   for (const who of ['alex', 'maya', 'sam']) await endpoints[who].confirmEndpoint(hostIdentity, { confirmed: true });
 
   // ---- a task, and a real turn on it ----

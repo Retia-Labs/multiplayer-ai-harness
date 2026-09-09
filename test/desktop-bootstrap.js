@@ -5,14 +5,16 @@ const path = require('node:path');
 const http = require('node:http');
 const { _electron: electron } = require('playwright-core');
 const { Hub } = require('../packages/hub/server');
+const { desktopProfile } = require('../apps/desktop/profile');
 
-// The app stays alive when its window closes - it is a tray app now - so a test that wants it
-// gone has to say so, exactly as a person does by choosing Quit from the tray.
+// A tray app does not exit when its window closes - that is what #18 changed - so a test that
+// wants it gone has to say so, exactly as a person does by choosing Quit from the tray.
 async function quitApp(app) {
   if (!app) return;
   try { await app.evaluate(() => { if (global.__plexusDesktop) global.__plexusDesktop.forceQuit(); }); } catch {}
   try { await app.close(); } catch {}
 }
+
 const root = path.join(__dirname, '..');
 const out = path.join(root, '.artifacts', 'desktop-bootstrap');
 fs.mkdirSync(out, { recursive: true });
@@ -46,6 +48,7 @@ const launch = (dataDir, env) => electron.launch({
   if (process.platform === 'win32') env.PATH = `${process.env.SystemRoot}\\system32;${process.env.SystemRoot}`;
   else if (packaged) env.PATH = '/usr/bin:/bin';
   try {
+    console.log('RECOVERY TEST: deliberately unavailable hub; an error screen is expected until retry.');
     app = await launch(temp, env);
     const page = await app.firstWindow();
     await page.waitForSelector('#step-hub.working');
@@ -74,9 +77,11 @@ const launch = (dataDir, env) => electron.launch({
     console.log('PASS: retry reaches remote hub and starts this exact local host without Node on PATH');
     await quitApp(app); app = null;
     const failureData = path.join(temp, 'runtime-failure');
-    const runtimeConfig = path.join(failureData, 'harness', 'runtime.json');
+    const runtimeConfig = path.join(desktopProfile({ userData: failureData, hubUrl: env.HUB_HTTP_URL,
+      dataRoot: env.HARNESS_DATA }).dataDir, 'runtime.json');
     fs.mkdirSync(path.dirname(runtimeConfig), { recursive: true });
     fs.writeFileSync(runtimeConfig, JSON.stringify({ maxPreset: 'invalid-preset' }));
+    console.log('RECOVERY TEST: deliberately invalid runtime configuration; an error screen is expected until repair.');
     app = await launch(failureData, env);
     const failedPage = await app.firstWindow();
     await failedPage.waitForSelector('#step-ui.failed', { timeout: 20000 });

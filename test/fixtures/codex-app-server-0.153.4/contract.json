@@ -1,0 +1,192 @@
+{
+  "version": "codex-cli 0.153.4",
+  "source": "codex app-server generate-json-schema --experimental --out <directory>",
+  "methods": {
+    "v2/ThreadStartParams": {
+      "sha256": "25f490368ec6df52a2a3b82a5469d2413307eb93439121b309f415b5648eee7a",
+      "required": [],
+      "properties": [
+        "allowProviderModelFallback",
+        "approvalPolicy",
+        "approvalsReviewer",
+        "baseInstructions",
+        "config",
+        "cwd",
+        "developerInstructions",
+        "dynamicTools",
+        "environments",
+        "ephemeral",
+        "experimentalRawEvents",
+        "historyMode",
+        "mockExperimentalField",
+        "model",
+        "modelProvider",
+        "multiAgentMode",
+        "permissions",
+        "personality",
+        "projectId",
+        "runtimeWorkspaceRoots",
+        "sandbox",
+        "selectedCapabilityRoots",
+        "serviceName",
+        "serviceTier",
+        "sessionStartSource",
+        "threadSource"
+      ],
+      "environments": {
+        "description": "Optional sticky environments for this thread.\n\nOmitted selects the default environment when environment access is enabled. Empty disables environment access for turns that do not provide a turn override. Non-empty selects the first environment as the current turn environment.",
+        "items": {
+          "$ref": "#/definitions/TurnEnvironmentParams"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "v2/ThreadResumeParams": {
+      "sha256": "324e96004c49de35935cade3386958431c93a4fd3997a839f9796772ea4c8072",
+      "required": [
+        "threadId"
+      ],
+      "properties": [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "baseInstructions",
+        "config",
+        "cwd",
+        "developerInstructions",
+        "excludeTurns",
+        "history",
+        "initialTurnsPage",
+        "model",
+        "modelProvider",
+        "path",
+        "permissions",
+        "personality",
+        "runtimeWorkspaceRoots",
+        "sandbox",
+        "serviceTier",
+        "threadId"
+      ]
+    },
+    "v2/ThreadStartResponse": {
+      "sha256": "a338467af5fc271ace917f9d1262405642c3df3b66116aa105343db86cc9a76d",
+      "required": [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "cwd",
+        "model",
+        "modelProvider",
+        "sandbox",
+        "thread"
+      ],
+      "properties": [
+        "activePermissionProfile",
+        "approvalPolicy",
+        "approvalsReviewer",
+        "cwd",
+        "instructionSources",
+        "model",
+        "modelProvider",
+        "multiAgentMode",
+        "reasoningEffort",
+        "runtimeWorkspaceRoots",
+        "sandbox",
+        "serviceTier",
+        "thread"
+      ]
+    },
+    "v2/TurnStartParams": {
+      "sha256": "b36fb37326b1cf69f75c8b306f1f886d53a57c4b1b985e08e298e2407ea2ad02",
+      "required": [
+        "input",
+        "threadId"
+      ],
+      "properties": [
+        "additionalContext",
+        "approvalPolicy",
+        "approvalsReviewer",
+        "clientUserMessageId",
+        "collaborationMode",
+        "cwd",
+        "cyberAccessProgram",
+        "effort",
+        "environments",
+        "input",
+        "model",
+        "multiAgentMode",
+        "outputSchema",
+        "permissions",
+        "personality",
+        "responsesapiClientMetadata",
+        "runtimeWorkspaceRoots",
+        "sandboxPolicy",
+        "serviceTier",
+        "serviceTierForTurn",
+        "summary",
+        "threadId",
+        "toolOutput",
+        "turnTrigger"
+      ],
+      "environments": {
+        "description": "Optional environments for this turn and subsequent turns.\n\nOmitted uses the thread sticky environments. Empty disables environment access for this turn. Non-empty selects the first environment as the current turn environment for this turn.",
+        "items": {
+          "$ref": "#/definitions/TurnEnvironmentParams"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    "v2/ConfigReadResponse": {
+      "sha256": "96a04a3f7fff2dc7fafc9f831e8bcd422e021d697dd2c14c801f098a9f21396d",
+      "required": [
+        "config",
+        "origins"
+      ],
+      "properties": [
+        "config",
+        "layers",
+        "origins"
+      ]
+    },
+    "v2/ConfigRequirementsReadResponse": {
+      "sha256": "14ae1953f5077a5d37399aa467f6e08c74601af5fa0c4ffc703b8a2858b0cc81",
+      "required": [],
+      "properties": [
+        "requirements"
+      ]
+    },
+    "DynamicToolCallParams": {
+      "sha256": "401bba20cfbd95762bef0467d840430c46be53369093ad9f26425ba757e34efc",
+      "required": [
+        "arguments",
+        "callId",
+        "threadId",
+        "tool",
+        "turnId"
+      ],
+      "properties": [
+        "arguments",
+        "callId",
+        "namespace",
+        "threadId",
+        "tool",
+        "turnId"
+      ]
+    },
+    "DynamicToolCallResponse": {
+      "sha256": "abb082cad67f11fcc98ba75f2eff75d7d1723af0c657655329b83ff160451a02",
+      "required": [
+        "contentItems",
+        "success"
+      ],
+      "properties": [
+        "contentItems",
+        "success"
+      ]
+    }
+  }
+}

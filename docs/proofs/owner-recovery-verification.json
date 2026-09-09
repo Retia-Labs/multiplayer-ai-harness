@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "recordedOn": "2026-09-08",
+  "implementationCheckpoint": "28f567ee46fc4832e2717ffa15e002a1e1442b66",
+  "evidenceProvenance": {
+    "sourceState": "pre-commit working tree",
+    "sourceElectronRecordedBaseCommit": "db3153511a2dc67110c95054592a70813288a58e",
+    "exactCommittedArtifactAttestation": false,
+    "rawArtifactsPublished": false,
+    "hashPurpose": "Identify retained local evidence only; not independent verification."
+  },
+  "checks": [
+    {
+      "scope": "kit-protocol-epoch-two-host-runtime",
+      "status": "pass",
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0,
+      "evidenceSha256": "537da4472b83c382918b47830a78515c5a1c1033fea379f6fc730c78a7a13bfd"
+    },
+    {
+      "scope": "browser-persistent-sdk-lifecycle",
+      "status": "pass",
+      "passed": 2,
+      "evidenceSha256": "537da4472b83c382918b47830a78515c5a1c1033fea379f6fc730c78a7a13bfd"
+    },
+    {
+      "scope": "native-local-control-rpc",
+      "status": "pass",
+      "passed": 21,
+      "failed": 0,
+      "skipped": 0,
+      "evidenceSha256": "b3b1e45c68d56f933f4a3700d0542f1a2ce5db407d735ab676cb13374059df8f"
+    },
+    {
+      "scope": "browser-owner-recovery",
+      "status": "pass",
+      "passed": 6,
+      "uncaughtErrors": 0,
+      "provider": "demo",
+      "hostStore": "memory SDK test adapter",
+      "nativeActivationExercised": false,
+      "evidenceSha256": "e4a8b736c0c2504b29fc8fc39d3622cb2df8a8b205ce03ba9a0b575629a40c34"
+    },
+    {
+      "scope": "source-electron-owner-recovery",
+      "status": "pass",
+      "passed": 6,
+      "uncaughtRendererErrors": 0,
+      "provider": "demo",
+      "hostStore": "actual OS-protected durable Electron broker",
+      "nativeActivationExercised": true,
+      "nativeDialogDecisions": "fixture",
+      "nativeDialogVisualCaptured": false,
+      "installedArtifact": false,
+      "evidenceSha256": "bb1151637cb354417aa693017c6ef6a1adaffd9556cde1cde502a3e3f385b156"
+    },
+    {
+      "scope": "existing-workspace-browser",
+      "status": "failed",
+      "passedCheckpointsBeforeFailure": 9,
+      "exitCode": 1,
+      "failure": "Ambiguous Recovery key fixture selector",
+      "fixtureCorrectionCommitted": true,
+      "rerunAfterCorrection": false,
+      "evidenceSha256": "dc0fcd1f3c2a3a269afc8a4e0f5390f21d921d7b18db100c5aa829e169f7cd23"
+    }
+  ],
+  "qualification": {
+    "latestAggregateSuite": "not run",
+    "latestRebuiltInstaller": "not run",
+    "currentWindowsExecution": "unverified",
+    "realApiAccountExecution": "unverified",
+    "specialistPrivacyControlReview": "outstanding",
+    "allIssuesAcceptanceProven": false,
+    "releaseQualified": false
+  },
+  "publicationPass": {
+    "testsRun": false,
+    "paidProviderCalls": false,
+    "githubActionsRun": false
+  }
+}

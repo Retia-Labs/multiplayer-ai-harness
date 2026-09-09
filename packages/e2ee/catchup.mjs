@@ -54,9 +54,10 @@ function freshness({ status, seq, head, hostConnected, lastEventAt, now, staleAf
     return { state: 'unknown', through: seq, age: null,
       explain: 'No events from this task have been accepted on this endpoint yet.' };
   }
-  if (hostConnected === false) {
+  if (hostConnected !== true) {
     return { state: 'unknown', through: seq, age,
-      explain: 'The execution host is not connected, so nothing here can be confirmed as current.' };
+      explain: hostConnected === false ? 'The execution host is not connected, so nothing here can be confirmed as current.'
+        : 'The execution host\'s availability is unknown, so nothing here can be confirmed as current.' };
   }
   if (status?.state === 'replaying') {
     return { state: 'replaying', through: seq, age, explain: 'Still reading the log.' };
@@ -90,6 +91,9 @@ export function catchUp(snapshot, context = {}) {
 
   const createdIndex = events.findIndex((e) => e.type === 'task.created');
   const created = createdIndex >= 0 ? events[createdIndex] : null;
+  const providerIndex = lastIndexOf(events, 'turn.started');
+  const providerEvent = providerIndex >= 0 ? events[providerIndex] : created;
+  const providerSourceIndex = providerIndex >= 0 ? providerIndex : createdIndex;
   const planIndex = lastIndexOf(events, 'plan.updated');
   const handoverIndex = lastIndexOf(events, 'responsibility.changed');
   const completedIndex = lastIndexOf(events, 'task.completed');
@@ -121,7 +125,7 @@ export function catchUp(snapshot, context = {}) {
     : unavailable('No plan has been recorded for this task.');
 
   const changes = diffIndex >= 0
-    ? recorded(events[diffIndex].payload.files.map((file) => ({ path: file.path })), events[diffIndex], diffIndex)
+    ? recorded(events[diffIndex].payload.files.map((file) => ({ ...file })), events[diffIndex], diffIndex)
     : unavailable('No file changes have been recorded for this task.');
 
   const activity = events.map((event, index) => ({ event, index }))
@@ -138,6 +142,7 @@ export function catchUp(snapshot, context = {}) {
     .filter(({ event }) => event.type === 'link.added' &&
       !events.some((other) => other.type === 'link.removed' && other.payload.id === event.payload.id))
     .map(({ event, index }) => recorded({
+      ...event.payload,
       id: event.payload.id,
       url: event.payload.url,
       title: event.payload.title ?? null,
@@ -226,11 +231,17 @@ export function catchUp(snapshot, context = {}) {
     host: host ? { value: host, provenance: 'context' } : unavailable('No execution host is recorded for this task.'),
     // The log carries the provider when the host asserted one, and that beats anything a
     // caller passes in: a recorded fact and a screen's own guess are not interchangeable.
-    provider: created && typeof created.payload.provider === 'string'
-      ? recorded(created.payload.provider, created, createdIndex)
+    provider: providerEvent && typeof providerEvent.payload.provider === 'string'
+      ? recorded(providerEvent.payload.provider, providerEvent, providerSourceIndex)
+      : providerIndex >= 0 ? unavailable('No provider is recorded for the latest turn.')
       : provider ? { value: provider, provenance: 'context' }
         : unavailable('No provider is recorded for this task.'),
     hostConnected,
+    activeTurnId: snapshot?.activeTurnId || null,
+    execution: snapshot?.recovery ? { state: 'unknown', ...snapshot.recovery }
+      : { state: snapshot?.activeTurnId ? 'running' : (snapshot?.turn || 'idle') },
+    approvers: snapshot?.approvers || [],
+    receipts: snapshot?.receipts || [],
     objective,
     decisions,
     plan,

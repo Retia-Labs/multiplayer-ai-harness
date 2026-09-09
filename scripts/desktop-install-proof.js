@@ -192,6 +192,9 @@ function runTest(script, executable) {
   const runId = process.env.GITHUB_RUN_ID;
   const report = {
     testedCommit: process.env.GITHUB_SHA || sh('git', ['rev-parse', 'HEAD']).stdout.trim() || null,
+    workingTreeDirty: !!sh('git', ['status', '--porcelain']).stdout.trim(),
+    executionProvider: process.env.PLEXUS_DESKTOP_CODEX_PROOF === '1' ? 'codex-host-tools' : 'demo',
+    reusedBuild: flag('--skip-build'),
     workflow: runId ? `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId}` : null,
     ranAt: new Date().toISOString(),
     platform: process.platform,

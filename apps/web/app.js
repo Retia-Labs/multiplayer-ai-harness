@@ -25,7 +25,7 @@
     toasts: $('#toasts')
   };
 
-  const HUB_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+  const HUB_URL = window.harnessDesktop?.hubUrl ? window.harnessDesktop.hubUrl.replace(/^http/, 'ws') : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
   // Every one of these is a distinct refusal from the hub; collapsing them into one
   // message would hide which boundary actually stopped you.
   const FRIENDLY = {
@@ -76,12 +76,15 @@
     encryptedState: null,     // what the team's enrolment says about it
     encryptedTasks: [],       // tasks this account may fetch (not necessarily read)
     catchup: null, catchupSnapshot: null, catchupTaskId: null,
-    catchupExplain: null, catchupHostPrompt: null,
+    catchupExplain: null, catchupHostPrompt: null, setupHostPrompt: null,
     inbox: [], inboxOpen: false,
     recoveryOpen: false, recoveryState: null, recoveryDrill: null,
+    ownerRecoveryDrill: null, ownerRecoveryReceipt: null, ownerRecoveryPreview: null,
     // Set from the address bar before anything is connected, acted on once an endpoint exists.
     linkedTaskId: (/^\/t\/([A-Za-z0-9_-]{1,80})$/.exec(location.pathname) || [])[1] || null,
     localRuntimeId: null,
+    encryptedTitles: new Map(), encryptedSnapshots: new Map(), encryptedReceipts: new Map(),
+    encryptedTab: 'review', encryptedProjects: [], localEncryptedSetup: null, draftTarget: null, accessOpen: false, projectAccess: null,
     prefs: loadPrefs()
   };
 
@@ -183,7 +186,7 @@
     }
     const verified = enrolment.state === 'verified';
     el.enrollment.classList.toggle('hidden', verified);
-    el.enrollment.textContent = enrolment.state === 'announced' ? 'Awaiting confirmation'
+    el.enrollment.textContent = ['announced', 'pending'].includes(enrolment.state) ? 'Awaiting confirmation'
       : enrolment.state === 'revoked' ? 'Endpoint revoked' : 'Encryption pending';
     el.enrollment.title = [
       'Device ' + enrolment.device + (enrolment.fingerprint ? ' · ' + enrolment.fingerprint : ''),
@@ -220,7 +223,10 @@
 
   async function refreshEncrypted() {
     if (!state.encrypted) return;
-    const enrolment = await state.encrypted.enrolmentState();
+    try { const authority = await state.encrypted.answerChallenges?.(); state.authorityNeeded = authority?.pending === 'authority_confirmation_required'; }
+    catch (error) { if (error.code !== 'membership_authority_required') throw error; state.authorityNeeded = true; }
+    if (state.authorityNeeded) state.authorityEndpoints = await state.encrypted.authorityEndpoints();
+    const enrolment = await state.encrypted.enrolmentState({ hosts: state.runtimes });
     state.encryptedState = { ...enrolment, fingerprint: state.encryptedIdentity && state.encryptedIdentity.fingerprint };
     try { state.encryptedTasks = await state.encrypted.list(); } catch { state.encryptedTasks = []; }
     // A private link names a task and nothing else. Everything that decides whether its
@@ -231,7 +237,7 @@
       const wanted = state.encryptedTasks.find((task) => task.id === state.linkedTaskId);
       state.activeThreadId = state.linkedTaskId;
       state.linkedTaskId = null;
-      if (wanted) openCatchup();
+      if (wanted) await selectEncryptedTask(wanted.id);
       else {
         // Whether that id exists is not something this screen should answer either way.
         state.catchupExplain = 'This link points at a task this account cannot open. '
@@ -239,12 +245,15 @@
         openCatchup();
       }
     }
-    renderEnrollment();
+    renderEnrollment(); renderMembers();
     // The inbox is only meaningful once this device can read something, so it is refreshed
     // with the enrolment rather than on a timer that would spin while it can read nothing.
     if (enrolment.state === 'verified') {
       try { state.inbox = await state.encrypted.inbox(); } catch { state.inbox = []; }
     } else state.inbox = [];
+    renderThreadList();
+    await refreshEncryptedSetup();
+    renderAccess();
     renderInbox();
     renderRecovery();
   }
@@ -274,7 +283,8 @@
       name.textContent = member.name + (state.me && member.userId === state.me.id ? ' (you)' : '');
       const role = document.createElement('span');
       role.className = 'small';
-      role.textContent = member.role + ' · ' + (member.enrollment === 'enrolled' ? 'endpoint enrolled' : 'endpoint access pending');
+      const verified = state.encryptedState?.endpoints?.filter(endpoint => endpoint.userId === member.userId && endpoint.state === 'verified').length;
+      role.textContent = member.role + ' · ' + (verified ? verified + ' verified device' + (verified === 1 ? '' : 's') : 'device verification pending');
       row.append(avatar(member, 'sm'), name, role);
       if (owner && member.role !== 'owner') {
         const remove = document.createElement('button');
@@ -299,6 +309,7 @@
     ws.addEventListener('message', (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onMessage(m); });
     ws.addEventListener('close', () => {
       state.connected = false;
+      if (activeEncryptedTask()) renderEncryptedWorkspace();
       if (state.me) {
         toast('Disconnected from hub — reconnecting…');
         setTimeout(() => connect({ token: state.me.token }), 1500);
@@ -356,6 +367,8 @@
       case 'runtimes':
         state.runtimes = m.runtimes;
         renderRuntimes();
+        refreshEncryptedSetup().catch(() => {});
+        if (activeEncryptedTask()) renderEncryptedWorkspace();
         if (window.harnessDesktop && !state.localRuntimeId) offerLocalHost();
         break;
       case 'approvers':
@@ -466,8 +479,9 @@
       el.fleetRuntime.appendChild(o);
     }
     if (!state.runtimes.length) { const o = document.createElement('option'); o.textContent = 'No runtimes online'; el.fleetRuntime.appendChild(o); }
-    const online = state.runtimes.find((r) => r.id === prev && r.online) || state.runtimes.find((r) => r.online);
-    if (online) el.fleetRuntime.value = online.id;
+    // A restart must not retarget a draft to another machine that happens to be online.
+    const selected = state.runtimes.find((r) => r.id === prev) || state.runtimes.find((r) => r.online);
+    if (selected) el.fleetRuntime.value = selected.id;
     renderProjects(); renderProviderPicker();
     updateAddProjectAvailability();
 
@@ -479,7 +493,7 @@
       head.innerHTML = '<span class="rc-dot ' + (r.online ? 'online' : '') + '"></span>' + esc(r.name) + (r.ownerName ? ' <span class="rc-sub">· ' + esc(r.ownerName) + '</span>' : '');
       const sub = document.createElement('div'); sub.className = 'rc-sub';
       const running = [...state.threads.values()].filter((t) => t.runtimeId === r.id && t.status && t.status.type === 'active').length;
-      sub.textContent = (r.projects || []).map((p) => p.name).join(', ') || 'no projects registered';
+      sub.textContent = r.taskProtocol === 'encrypted-v1' ? (r.encryptedProjects?.length || 0) + ' shared project(s)' : (r.projects || []).map((p) => p.name).join(', ') || 'no projects registered';
       sub.textContent += running ? ' · ' + running + ' running' : '';
       const tags = document.createElement('div'); tags.className = 'rc-tags';
       for (const p of r.providers || []) { const t = document.createElement('span'); t.className = 'rc-tag' + (p.configured ? ' on' : ''); t.textContent = p.id; t.title = p.configured ? 'configured' : 'no key'; tags.appendChild(t); }
@@ -492,12 +506,13 @@
   function renderProjects() {
     const r = selectedRuntime();
     el.fleetProject.innerHTML = '';
-    for (const p of (r && r.projects) || []) { const o = document.createElement('option'); o.value = p.dir; o.textContent = p.name + (p.branch ? ' · ' + p.branch : ''); el.fleetProject.appendChild(o); }
+    for (const p of (r && r.taskProtocol === 'encrypted-v1' ? (state.encryptedProjects.filter(p => p.runtimeId === r.id)) : (r && r.projects) || [])) { const o = document.createElement('option'); o.value = p.id || p.dir; o.textContent = (p.name || 'Shared project ' + (p.id || '').slice(-6)) + (p.branch ? ' · ' + p.branch : ''); el.fleetProject.appendChild(o); }
     if (!el.fleetProject.options.length) { const o = document.createElement('option'); o.value = ''; o.textContent = 'No project registered'; el.fleetProject.appendChild(o); }
   }
 
   function renderProviderPicker(thread) {
     const r = thread ? state.runtimes.find((x) => x.id === thread.runtimeId) : selectedRuntime();
+    if (!state.activeThreadId) el.send.disabled = !r?.online;
     const providers = (r && r.providers) || [{ id: 'demo', label: 'Demo agent', configured: true, models: ['demo-agent'] }];
     const want = (thread && thread.settings && thread.settings.provider) || el.providerSelect.value || 'demo';
     el.providerSelect.innerHTML = '';
@@ -612,23 +627,29 @@
 
   // ================= views =================
   function showFleet() {
+    $('#encrypted-composer-error')?.remove();
+    closeEncryptedSurfaces(); hideWorkViews(); document.body.classList.remove('navigation-open');
     if (state.subscribedId) send({ type: 'thread.unsubscribe', threadId: state.subscribedId });
     state.activeThreadId = null; state.activeThread = null; state.subscribedId = null; state.viewers = [];
     closeDiff();
     el.threadView.classList.add('hidden'); el.fleetView.classList.remove('hidden');
     el.composerHostHome.appendChild(el.composer); el.composer.classList.remove('hidden');
+    el.send.disabled = false; el.input.placeholder = 'Describe a task for the agent…'; state.draftTarget = null;
     el.navFleet.classList.add('active');
     renderProviderPicker(); updateTopbar(); renderPresence(); renderThreadList();
     el.input.focus();
   }
 
   function selectThread(id) {
+    if ((state.encryptedTasks || []).some(task => task.id === id)) return selectEncryptedTask(id);
+    closeEncryptedSurfaces();
     if (state.subscribedId && state.subscribedId !== id) send({ type: 'thread.unsubscribe', threadId: state.subscribedId });
     state.activeThreadId = id; state.subscribedId = id; state.lastSeq = 0;
     state.activeThread = state.threads.get(id) || null;
     closeDiff();
     el.fleetView.classList.add('hidden'); el.threadView.classList.remove('hidden');
     el.composerHostThread.appendChild(el.composer); el.composer.classList.remove('hidden');
+    el.send.disabled = false;
     el.navFleet.classList.remove('active');
     clearMessages();
     renderProviderPicker(state.activeThread);
@@ -694,7 +715,14 @@
     const q = el.threadSearch.value.trim().toLowerCase();
     const list = [...state.threads.values()].filter((t) => !q || (t.name || '').toLowerCase().includes(q)).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     el.threadList.innerHTML = '';
-    if (!list.length) { el.threadList.innerHTML = '<div class="thread-empty">' + (q ? 'No matching threads' : 'No threads in this team yet') + '</div>'; return; }
+    for (const task of state.encryptedTasks) {
+      const title = state.encryptedTitles.get(task.id) || 'Encrypted task · ' + task.id.slice(-6);
+      if (q && !title.toLowerCase().includes(q)) continue;
+      const row = document.createElement('button'); row.className = 'thread-item encrypted-task-row' + (task.id === state.activeThreadId ? ' active' : '');
+      row.dataset.taskId = task.id; row.setAttribute('aria-current', task.id === state.activeThreadId ? 'page' : 'false');
+      row.append(document.createTextNode(title)); row.addEventListener('click', () => selectEncryptedTask(task.id)); el.threadList.appendChild(row);
+    }
+    if (!list.length && !state.encryptedTasks.length) { el.threadList.innerHTML = '<div class="thread-empty">' + (q ? 'No matching threads' : 'No threads in this team yet') + '</div>'; return; }
     let last = null;
     for (const t of list) {
       const g = groupLabel(t.updatedAt || t.createdAt);
@@ -918,6 +946,7 @@
     const text = el.input.value.trim();
     if (!text) return;
     const settings = { provider: el.providerSelect.value, model: el.modelSelect.value, effort: el.effortSelect.value, preset: el.presetSelect.value };
+    if (activeEncryptedTask() || (!state.activeThreadId && selectedRuntime()?.taskProtocol === 'encrypted-v1')) return sendEncryptedMessage(text, settings);
     try {
       if (!state.activeThreadId) {
         const r = selectedRuntime();
@@ -1049,7 +1078,9 @@
         try {
           await state.encrypted.confirmHost(runtimeId, endpoint);
           state.catchupHostPrompt = null;
-          await loadCatchup();
+          if (state.setupHostPrompt?.runtimeId === runtimeId) state.setupHostPrompt = null;
+          if (activeEncryptedTask()) await updateEncryptedTask(); else if (state.catchupOpen) await loadCatchup(); else state.catchupExplain = null;
+          renderEncryptedSetup();
         } catch (error) {
           confirm.disabled = false;
           toast('⚠ ' + esc(error.message || String(error)));
@@ -1066,11 +1097,7 @@
   async function loadCatchup() {
     state.catchupHostPrompt = null;
     if (!state.encrypted) { state.catchupExplain = 'This browser has no encrypted endpoint, so no task log can be read here.'; return renderIfOpen(); }
-    if (state.encryptedState && state.encryptedState.state !== 'verified') {
-      state.catchupExplain = 'This device is ' + state.encryptedState.state
-        + '. A teammate whose endpoint is already verified has to confirm it before task content can be read here.';
-      return renderIfOpen();
-    }
+
     const task = catchupTask();
     if (!task) { state.catchupExplain = 'No encrypted task on this team matches this view.'; return renderIfOpen(); }
     const runtime = state.runtimes.find((r) => r.id === task.runtimeId);
@@ -1098,6 +1125,8 @@
     state.catchup = out.projection;
     state.catchupSnapshot = out.snapshot;
     state.catchupTaskId = task.id;
+    state.encryptedSnapshots.set(task.id, out.snapshot);
+    state.encryptedTitles.set(task.id, out.snapshot.title || task.id);
     state.catchupExplain = null;
     renderIfOpen();
   }
@@ -1152,8 +1181,7 @@
       open_.textContent = 'Open the task';
       open_.addEventListener('click', () => {
         closeInbox();
-        state.activeThreadId = entry.taskId;
-        openCatchup();
+        selectEncryptedTask(entry.taskId).catch(showEncryptedError);
       });
       const done = document.createElement('button');
       done.className = 'mini-btn';
@@ -1195,10 +1223,27 @@
     el.recoveryBtn.classList.toggle('hidden', !state.encrypted);
     if (!state.recoveryOpen) return;
     const view = el.recoveryView;
-    view.innerHTML = '';
+    if (state.ownerRecoveryTeam !== state.teamId) {
+      state.ownerRecoveryTeam = state.teamId; state.ownerRecoveryDrill = null;
+      state.ownerRecoveryReceipt = null; state.ownerRecoveryPreview = null; state.ownerRestoreDraft = null; state.ownerKitCiphertext = null;
+    }
+    if (state.ownerRecoveryDrill && view._ownerDrillGeneration === state.ownerRecoveryDrill.generation) return;
+    if (state.recoveryDrill && view._recoveryDrillKey === state.recoveryDrill.recoveryKey) return;
+    const restoreKey = view.querySelector('[name="restore-recovery-key"]');
+    if (restoreKey) state.recoveryRestoreDraft = { key: restoreKey.value, scope: view.querySelector('[name="restore-backup"]')?.value };
+    const ownerKey = view.querySelector('[name="owner-recovery-key"]');
+    if (ownerKey) state.ownerRestoreDraft = { key: ownerKey.value, scope: view.querySelector('[name="owner-kit-scope"]')?.value };
+    view._recoveryDrillKey = state.recoveryDrill?.recoveryKey || '';
+    view._ownerDrillGeneration = state.ownerRecoveryDrill?.generation || '';
+    const signature = JSON.stringify([state.recoveryState, state.recoveryDrill, !!state.ownerRecoveryDrill,
+      state.ownerRecoveryReceipt?.state, state.ownerRecoveryPreview, state.localEncryptedSetup, state.encryptedState?.durable]);
+    if (view.dataset.signature === signature) return;
+    view.dataset.signature = signature; view.innerHTML = '';
     const head = document.createElement('h3');
     head.textContent = 'Recovery';
     view.appendChild(head);
+    if (!state.recoveryDrill) renderOwnerRecovery(view);
+    if (state.ownerRecoveryDrill) return;
 
     const backups = (state.recoveryState && state.recoveryState.backups) || [];
     const limits = (state.recoveryState && state.recoveryState.limits) || {};
@@ -1246,6 +1291,7 @@
       return;
     }
 
+    view.append(uiNode('h3', null, 'History-only backup'));
     const status = document.createElement('p');
     status.className = 'rec-limit';
     if (backups.length) {
@@ -1253,9 +1299,10 @@
       status.textContent = 'Backed up ' + when.toLocaleString() + ' · ' + backups[0].bytes + ' bytes of ciphertext. '
         + limits.operatorView;
     } else {
-      status.textContent = 'No backup yet. Without one, losing this device means losing the history it can read.';
+      status.textContent = 'No separate history-only backup. Owner kits contain only the history selected when they were prepared.';
     }
     view.appendChild(status);
+    appendRecoveryRestore(view, backups);
 
     const start = document.createElement('button');
     start.className = 'mini-btn';
@@ -1268,9 +1315,9 @@
         if (backups.length) {
           const scope = 'account:' + state.me.id;
           const taskIds = (state.encryptedTasks || []).map((task) => task.id);
-          const rotated = await state.encrypted.replaceRecoveryKey({ scope, taskIds });
+          const rotated = await state.encrypted.beginRecoverySetup();
           state.recoveryDrill = { recoveryKey: rotated.recoveryKey, rotated: true };
-          toast(rotated.caveat);
+          toast('The existing backup remains usable until you confirm the replacement key.');
         } else {
           state.recoveryDrill = await state.encrypted.beginRecoverySetup();
         }
@@ -1283,7 +1330,7 @@
     view.appendChild(start);
 
     const limitsHead = document.createElement('h4');
-    limitsHead.textContent = 'What recovery cannot do';
+    limitsHead.textContent = 'History-only recovery limits';
     view.appendChild(limitsHead);
     for (const key of ['everythingLost', 'siteDataCleared', 'storageLocked']) {
       if (!limits[key]) continue;
@@ -1303,11 +1350,149 @@
 
   async function refreshRecovery() {
     if (!state.encrypted) return;
-    state.recoveryState = await state.encrypted.recoveryState();
+    const client = state.encrypted, result = await client.recoveryState();
+    if (client !== state.encrypted) return;
+    state.recoveryState = result;
     renderRecovery();
   }
 
+  function downloadOwnerKit(ciphertext) {
+    const url = URL.createObjectURL(new Blob([ciphertext], { type: 'application/json' }));
+    const link = document.createElement('a'); link.href = url; link.download = 'plexus-owner-recovery-kit.json'; link.click();
+    URL.revokeObjectURL(url);
+  }
+  function renderOwnerRecovery(view) {
+    const information = state.recoveryState?.ownerRecovery || {}, kits = state.recoveryState?.ownerKits || [];
+    const section = uiSection('Owner authority recovery kit',
+      'A separately prepared kit can restore the original owner account on a new device when every trusted device is lost. It contains account-level cross-signing capability and selected authenticated task history. Keep its key outside this machine.');
+    section.id = 'owner-authority-recovery'; section.dataset.state = state.ownerRecoveryDrill ? 'drill' : information.stage ? 'staged' : information.epoch ? 'membership-recovered' : information.descriptor ? 'saved' : 'not-configured';
+    section.append(uiNode('p', 'small', 'The original team fingerprint stays unchanged. Recovery resets device confirmations and project grants. It does not restore provider credentials, pending actions or delegated approvals. Every execution host needs a separate local confirmation.'));
+    if (state.ownerRecoveryDrill) {
+      const draft = state.ownerRecoveryDrill;
+      section.append(uiNode('p', 'ew-explain', 'Store this new key now. Then enter your stored copy so a clean, inactive SDK endpoint can perform a real recovery drill before this kit becomes active.'));
+      section.append(uiNode('pre', 'rec-key', draft.recoveryKey));
+      const typed = uiField('Stored owner recovery key', 'owner-recovery-drill', { type: 'password' });
+      section.append(typed.wrap, uiButton('Test stored key and save kit', 'complete-owner-recovery-kit', async () => {
+        const client = state.encrypted;
+        const receipt = await client.completeOwnerRecoverySetup(typed.input.value);
+        if (client !== state.encrypted) return;
+        typed.input.value = ''; state.ownerRecoveryDrill = null; state.ownerRecoveryReceipt = receipt;
+        await refreshEncrypted(); await refreshRecovery();
+        toast('Owner recovery kit saved after a clean endpoint drill. Download its encrypted file and keep the key separately.');
+      }, true));
+      section.append(uiButton('Cancel this kit setup', 'cancel-owner-recovery-kit', () => {
+        state.encrypted.cancelOwnerRecoverySetup(); state.ownerRecoveryDrill = null; renderRecovery();
+      }));
+      view.append(section); return;
+    }
+    if (information.descriptor) section.append(uiNode('p', 'small', 'Configured authority generation ' + information.descriptor.generation + '. The encrypted kit and its separate customer-held key are both needed.'));
+    else section.append(uiNode('p', 'cu-missing', 'Owner authority recovery is not configured. Existing history-only backups cannot restore owner membership.'));
+    if (state.ownerRecoveryReceipt?.ciphertext) section.append(uiButton('Download encrypted owner kit', 'download-owner-recovery-kit', () => downloadOwnerKit(state.ownerRecoveryReceipt.ciphertext)));
+    if (information.eligible) {
+      section.append(uiButton(information.descriptor ? 'Replace owner recovery kit' : 'Set up owner recovery kit', 'start-owner-recovery-kit', async () => {
+        const replaceAuthority = !!information.generation;
+        if (replaceAuthority && !confirm('Replace the account recovery signing root? Prior kits stop authorizing recovery only after the newer signed descriptor is applied. Previously downloaded history remains readable. Other hosts must apply the change separately.')) return;
+        const client = state.encrypted;
+        const draft = await client.beginOwnerRecoverySetup({ taskIds: state.encryptedTasks.map(task => task.id), replaceAuthority });
+        if (client !== state.encrypted) return;
+        state.ownerRecoveryDrill = draft; renderRecovery();
+      }));
+      if (information.descriptor) section.append(uiButton('Disable owner authority recovery', 'disable-owner-recovery-kit', async () => {
+        if (!confirm('Disable customer-kit owner recovery? Hosts must apply the signed change separately. Keep a verified device or another recovery method; downloaded history cannot be erased.')) return;
+        await state.encrypted.disableOwnerRecovery(); await refreshRecovery();
+      }));
+    } else section.append(uiNode('p', 'small', 'Only a currently verified device of the original owner can provision or replace this authority kit.'));
+
+    const restore = uiSection('Restore an owner kit on a new device',
+      'Your current device stays unchanged while a separate inactive endpoint verifies the kit. No membership or host authority changes during this step.');
+    const key = uiField('Owner recovery key', 'owner-recovery-key', { type: 'password', value: state.ownerRestoreDraft?.key || '' });
+    restore.append(key.wrap);
+    const choose = kits.length ? uiField('Encrypted owner kit', 'owner-kit-scope', { value: state.ownerRestoreDraft?.scope,
+      options: kits.map(kit => ({ id: kit.scope, name: kit.scope + ' · ' + new Date(kit.updatedAt).toLocaleString() })) }) : null;
+    if (choose) restore.append(choose.wrap);
+    const file = uiField('Customer-held encrypted kit file (optional)', 'owner-kit-file', { type: 'file' });
+    file.input.accept = '.json,application/json';
+    restore.append(file.wrap);
+    const stage = uiButton(information.resumeRequired ? 'Resume inactive recovery' : 'Verify kit in an inactive endpoint', 'stage-owner-recovery', async () => {
+      const client = state.encrypted;
+      const status = await client.stageOwnerRecovery({ scope: choose?.input.value, ciphertext: state.ownerKitCiphertext, recoveryKey: key.input.value });
+      if (client !== state.encrypted) return;
+      key.input.value = ''; state.ownerRestoreDraft = null; state.ownerKitCiphertext = null; state.ownerRecoveryPreview = null;
+      state.ownerRecoveryReceipt = { state: 'staged', identity: status.identity };
+      await refreshRecovery();
+    });
+    stage.disabled = !choose && !state.ownerKitCiphertext && !information.resumeRequired;
+    file.input.addEventListener('change', async () => {
+      stage.disabled = true;
+      state.ownerKitCiphertext = file.input.files[0] ? await file.input.files[0].text() : null;
+      stage.disabled = !choose && !state.ownerKitCiphertext && !information.resumeRequired;
+    });
+    restore.append(stage); section.append(restore);
+    if (information.stage) {
+      const staged = information.stage;
+      const confirmation = uiSection('History restored; membership recovery not yet applied',
+        'This is a new endpoint. Publishing recovery resets earlier device confirmations and project grants. Every execution host remains paused until its own local confirmation, and approval authority stays separate.');
+      confirmation.dataset.state = information.resumeRequired ? 'resume-required' : 'history-restored';
+      confirmation.append(uiNode('p', 'ew-fingerprint mono', window.PlexusEncrypted.fingerprint(staged.identity)));
+      for (const taskId of staged.taskIds || []) {
+        const inspect = uiButton('Inspect restored task ' + taskId.slice(-6), 'inspect-owner-recovery-history', async () => {
+          state.ownerRecoveryPreview = await state.encrypted.previewOwnerRecoveryHistory(taskId); renderRecovery();
+        });
+        inspect.disabled = !!information.resumeRequired; confirmation.append(inspect);
+      }
+      if (state.ownerRecoveryPreview) {
+        const preview = state.ownerRecoveryPreview, evidence = uiSection(preview.snapshot.title || preview.taskId,
+          'Verified restored task history through encrypted event ' + preview.snapshot.seq + '. Reading this evidence does not publish membership recovery.');
+        evidence.dataset.taskId = preview.taskId; evidence.append(uiNode('p', null, preview.snapshot.objective));
+        for (const diff of preview.snapshot.diffs || []) evidence.append(uiNode('pre', 'mono ew-code-scroll', diff.patch || JSON.stringify(diff)));
+        confirmation.append(evidence);
+      }
+      const publish = uiButton('Recover owner membership and reset access', 'recover-owner-membership', async () => {
+        if (!confirm('Recover this owner account on the new device and reset prior device confirmations and project grants? Pending actions and delegated approvals will not return. Every execution host remains paused until separately confirmed on that machine.')) return;
+        const client = state.encrypted, receipt = await client.recoverOwnerMembership();
+        if (client !== state.encrypted) return;
+        state.encryptedIdentity = receipt.identity; state.encryptedReceipts.clear(); state.ownerRecoveryReceipt = receipt;
+        state.ownerRecoveryPreview = null; await refreshEncrypted(); await refreshRecovery();
+      }, true);
+      publish.disabled = !!information.resumeRequired; confirmation.append(publish); section.append(confirmation);
+    }
+    if (information.epoch) {
+      const local = state.localEncryptedSetup, selected = selectedRuntime();
+      const localHost = local?.runtimeId === selected?.id && local.teamId === state.teamId;
+      const confirmationSaved = localHost && local.freshnessAuthority?.recoveryEpoch === information.epoch &&
+        ['user', 'device', 'curve25519', 'ed25519'].every(key => local.freshnessAuthority.signer?.[key] === state.encryptedIdentity?.[key]) &&
+        local.freshnessAuthority.state === 'active';
+      const active = localHost && local?.freshnessAuthority?.recoveryEpoch === information.epoch &&
+        local.freshnessAuthority.state === 'active' && local.state === 'ready';
+      const status = uiSection(active ? 'Recovery active on this execution host' : confirmationSaved ? 'Local recovery confirmation saved' : 'Owner membership recovered; hosts need local confirmation',
+        active ? 'Grant this account explicit project access before creating new work. Configure action approval separately. Other hosts need their own local confirmation.'
+          : confirmationSaved ? 'Waiting for membership verification and task key rotation on this host. Reconciliation retries automatically; controls remain unavailable until it finishes. Other hosts still need their own local confirmation.'
+          : 'A membership recovery record alone cannot restart an execution host. Open the installed app on each reachable machine and confirm its new membership signer. Offline hosts remain pending.');
+      status.dataset.state = active ? 'active' : confirmationSaved ? 'rotation-pending' : 'pending-host';
+      for (const runtime of state.runtimes) {
+        const appliedHere = active && runtime.id === local?.runtimeId;
+        const row = uiNode('p', appliedHere ? 'small' : 'cu-missing', (runtime.name || runtime.id) + ': ' +
+          (appliedHere ? 'this host has locally applied this recovery epoch.'
+            : runtime.online ? 'local recovery confirmation is pending or cannot be verified from this client.'
+              : 'offline; local recovery confirmation remains pending.'));
+        row.dataset.recoveryRuntime = runtime.id; row.dataset.recoveryState = appliedHere ? 'active' : 'pending'; status.append(row);
+      }
+      if (!active && !confirmationSaved && window.harnessDesktop?.confirmFreshnessAuthority) {
+        const activate = uiButton('Confirm recovery on this host', 'activate-owner-recovery-host', async () => {
+          await activateMembershipRecovery(selectedRuntime()); await refreshRecovery();
+        });
+        activate.disabled = !localHost || !selected?.online;
+        status.append(activate);
+        if (activate.disabled) status.append(uiNode('p', 'cu-missing', 'Select this machine’s online execution host before confirming recovery locally.'));
+      }
+      section.append(status);
+    }
+    section.append(uiNode('p', 'rec-limit rec-warn', 'If every trusted device and every usable customer recovery key or encrypted kit is lost, the operator cannot recover your history or owner authority. Rewrapping a key does not erase old downloaded history or revoke a copied signing secret.'));
+    view.append(section);
+  }
+
   function openRecovery() {
+    closeEncryptedSurfaces(); document.body.classList.remove('navigation-open');
     state.recoveryOpen = true;
     el.threadView.classList.add('hidden'); el.diffView.classList.add('hidden');
     el.catchupView.classList.add('hidden'); el.inboxView.classList.add('hidden'); el.fleetView.classList.add('hidden');
@@ -1324,6 +1509,7 @@
   }
 
   function openInbox() {
+    closeEncryptedSurfaces(); document.body.classList.remove('navigation-open');
     state.inboxOpen = true;
     el.threadView.classList.add('hidden'); el.diffView.classList.add('hidden');
     el.catchupView.classList.add('hidden'); el.fleetView.classList.add('hidden');
@@ -1392,6 +1578,700 @@
     if (want && [...el.assignUser.options].some((o) => o.value === want)) el.assignUser.value = want;
   }
 
+  // Shared encrypted workspace presentation. Operational results come only from the
+  // verified log or host receipts; local state contains selection and unsent drafts.
+  function uiNode(tag, cls, text) {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+  function uiButton(label, action, handler, primary = false) {
+    const button = uiNode('button', 'mini-btn' + (primary ? ' primary' : ''), label);
+    button.type = 'button'; button.dataset.action = action;
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try { await handler(); } catch (error) {
+        showEncryptedError(error);
+        const scope = button.closest('section');
+        if (scope) { let detail = scope.querySelector('.ew-inline-error'); if (!detail) { detail = uiNode('p', 'ew-error ew-inline-error'); detail.setAttribute('role', 'alert'); scope.append(detail); } const code = error.code || error.message || 'Action unavailable'; detail.textContent = hostToolsFailureMessage(code) || code; }
+      }
+      finally { if (button.isConnected) button.disabled = false; }
+    });
+    return button;
+  }
+  function uiField(label, name, { multiline = false, options = null, value = '', type = 'text' } = {}) {
+    const wrap = uiNode('label', 'ew-field'); wrap.append(uiNode('span', 'small', label));
+    const input = uiNode(options ? 'select' : multiline ? 'textarea' : 'input');
+    if (!multiline && !options) input.type = type;
+    input.name = name; input.setAttribute('aria-label', label); input.autocomplete = 'off';
+    if (options) for (const option of options) { const o = uiNode('option', null, option.name || option.label || option.id); o.value = option.id; input.append(o); }
+    input.value = value || (options && options[0]?.id) || ''; wrap.append(input); return { wrap, input };
+  }
+  function uiSection(title, description) {
+    const section = uiNode('section', 'ew-section'); section.append(uiNode('h3', null, title));
+    if (description) section.append(uiNode('p', 'ew-explain', description));
+    return section;
+  }
+  function hostToolsFailureMessage(code) {
+    if (['codex_host_tools_version_unsupported', 'codex_host_tools_model_unsupported', 'codex_host_tools_platform_unproven'].includes(code)) {
+      return 'Use the supported Codex 0.153.4 setup on macOS with Apple silicon (darwin/arm64) and model gpt-5.4-mini, then start a new turn.';
+    }
+    if (code === 'codex_host_tools_login_required') {
+      return 'Sign in with ChatGPT on the execution host using Codex’s local file credential storage, then configure the supported isolated host setup. Provider credentials stay on that machine.';
+    }
+    if (typeof code === 'string' && code.startsWith('codex_host_tools_')) {
+      return 'Reconfigure the supported isolated host setup on the execution machine. Its configuration, instructions, tools or credential profile could not be verified. Keep the isolation checks enabled before retrying.';
+    }
+    return null;
+  }
+  function showEncryptedError(error) {
+    const code = error.code || error.message || 'Action unavailable';
+    const explanation = code === 'endpoint_key_mismatch'
+      ? 'The execution host keys do not match the verified fingerprint. Confirm the host identity through a trusted channel before sending more work.'
+      : FRIENDLY[code] || hostToolsFailureMessage(code) || code;
+    toast(esc(explanation));
+    const message = $('#ew-error'); if (message) message.textContent = explanation;
+    if (!activeEncryptedTask() && !el.fleetView.classList.contains('hidden')) {
+      let detail = $('#encrypted-composer-error');
+      if (!detail) { detail = uiNode('p', 'ew-error'); detail.id = 'encrypted-composer-error'; detail.setAttribute('role', 'alert'); el.composer.append(detail); }
+      detail.textContent = explanation;
+    }
+  }
+  function activeEncryptedTask() { return state.encryptedTasks.find(task => task.id === state.activeThreadId) || null; }
+  function encryptedSnapshot() { return state.encryptedSnapshots.get(state.activeThreadId) || null; }
+  function encryptedTurnId() {
+    const snap = encryptedSnapshot();
+    return snap && (snap.activeTurnId || snap.turnId || snap.execution?.turnId) || null;
+  }
+  function hostOnline(task = activeEncryptedTask()) { return !!(task && state.connected && state.runtimes.find(r => r.id === task.runtimeId)?.online); }
+  function canControlTask() { return !!(state.encryptedState?.state === 'verified' && hostOnline() && !encryptedSnapshot()?.outcome); }
+  function closeEncryptedSurfaces() {
+    $('#encrypted-workspace').classList.add('hidden'); $('#access-view').classList.add('hidden');
+    state.accessOpen = false; $('#app').classList.remove('encrypted-selected');
+  }
+  function hideWorkViews() {
+    for (const id of ['fleet-view', 'thread-view', 'diff-view', 'catchup-view', 'inbox-view', 'recovery-view', 'access-view']) $('#' + id).classList.add('hidden');
+    state.catchupOpen = false; state.inboxOpen = false; state.recoveryOpen = false; state.accessOpen = false;
+  }
+  async function refreshEncryptedSetup() {
+    if (!state.encrypted) return;
+    const desktop = window.harnessDesktop;
+    if (desktop?.encryptedSetup) state.localEncryptedSetup = await desktop.encryptedSetup();
+    if (desktop?.codexStatus && !state.localCodexStatus) state.localCodexStatus = await desktop.codexStatus();
+    const local = state.localEncryptedSetup;
+    const projects = [];
+    for (const runtime of state.runtimes) {
+      const localProjects = local?.runtimeId === runtime.id ? local.projects || [] : [];
+      for (const project of runtime.encryptedProjects || []) {
+        const named = localProjects.find(p => p.id === project.id);
+        projects.push({ ...project, runtimeId: runtime.id, name: named?.name || project.name || 'Shared project ' + project.id.slice(-6) });
+      }
+    }
+    const old = el.fleetProject.value;
+    state.encryptedProjects = projects; renderProjects();
+    if ([...el.fleetProject.options].some(o => o.value === old)) el.fleetProject.value = old;
+    renderEncryptedSetup();
+  }
+  function renderEncryptedSetup() {
+    const root = $('#encrypted-setup'); if (!root) return;
+    if (!state.encrypted) return;
+    const runtime = selectedRuntime();
+    if (state.setupHostPrompt && (state.setupHostPrompt.runtimeId !== runtime?.id || state.setupHostPrompt.teamId !== state.teamId)) state.setupHostPrompt = null;
+    const signature = JSON.stringify([state.encryptedState?.state, state.encryptedIdentity?.fingerprint, state.localEncryptedSetup, state.localCodexStatus, runtime?.id, runtime?.encryptedEndpoint, state.encrypted.confirmedHost(runtime?.id), state.setupHostPrompt, state.encryptedState?.membershipIdentity]);
+    if (root.dataset.signature === signature) return;
+    root.dataset.signature = signature; root.replaceChildren();
+    const panel = uiSection('Encrypted execution', 'Choose the machine and project that will run this task. Provider usage belongs to the account configured on that machine.');
+    panel.append(uiNode('p', 'small', 'This endpoint: ' + (state.encryptedState?.state || 'starting')));
+    if (state.encryptedIdentity) panel.append(uiNode('p', 'ew-fingerprint mono', state.encryptedIdentity.fingerprint));
+    const desktop = window.harnessDesktop;
+    if (desktop?.confirmEncryptionAuthority && state.membership?.role === 'owner' && state.encryptedState?.membershipIdentity?.owner &&
+        !(state.localEncryptedSetup?.runtimeId === runtime?.id && state.localEncryptedSetup.authority)) {
+      panel.append(uiButton('Authorize this execution host', 'authorize-encrypted-host', async () => {
+        const teamId = state.teamId;
+        await refreshEncrypted();
+        const identity = state.encryptedState?.membershipIdentity?.owner;
+        if (state.teamId !== teamId || !identity) throw new Error('Verify the original team owner fingerprint before authorizing this execution host.');
+        await desktop.confirmEncryptionAuthority({ teamId, identity });
+        await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
+      }));
+    }
+    if (desktop?.confirmApprovalAuthority && state.encryptedState?.state === 'verified') {
+      panel.append(uiButton('Set this device as host approver', 'authorize-host-approver', async () => {
+        await desktop.confirmApprovalAuthority({ teamId: state.teamId, identity: state.encrypted.endpoint.identity(),
+          recoveryEpoch: state.encryptedState?.membershipIdentity?.recoveryEpoch || null });
+        await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
+      }));
+    }
+    renderFreshnessAuthority(panel, runtime);
+    if (desktop?.configureCodex) {
+      const status = state.localCodexStatus;
+      panel.append(uiNode('p', 'small', status?.available
+        ? 'Codex ' + (status.version || '') + ' · ' + ({ chatgpt: 'ChatGPT account connected', apikey: 'API account connected',
+          none: 'Run codex login on this execution host before starting a task.',
+          config_error: 'The CLI cannot load its configuration. Use a compatible Codex version and check its local settings.',
+          unavailable: 'Account status could not be checked. Run codex login status on this execution host.' }[status.authMode]
+          || 'Account mode is unknown. Check codex login status on this execution host.')
+        : 'Install Codex and sign in on this execution host to use its local provider account.'));
+      panel.append(uiButton('Configure Codex on this machine', 'configure-local-codex', async () => {
+        await desktop.configureCodex(); state.localCodexStatus = await desktop.codexStatus(); await refreshEncryptedSetup();
+      }));
+    }
+    if (runtime?.taskProtocol === 'encrypted-v1' && !state.encrypted.confirmedHost(runtime.id)) {
+      panel.append(uiButton('Verify execution host', 'show-host-fingerprint', async () => {
+        const teamId = state.teamId;
+        const endpoints = await state.encrypted.hostEndpoints(runtime.id);
+        if (selectedRuntime()?.id !== runtime.id || state.teamId !== teamId) return;
+        state.setupHostPrompt = { teamId, runtimeId: runtime.id, endpoints };
+        renderEncryptedSetup();
+      }));
+      if (state.setupHostPrompt) panel.append(hostConfirmation(state.setupHostPrompt));
+    }
+    root.append(panel);
+  }
+  function renderFreshnessAuthority(panel, runtime) {
+    const local = state.localEncryptedSetup;
+    const desktop = window.harnessDesktop;
+    if (!runtime?.id) return;
+    if (local?.runtimeId !== runtime.id || local?.teamId !== state.teamId) {
+      panel.append(uiSection('Membership recovery on the execution host',
+        'Open the installed app on this execution machine to appoint a verified replacement owner device. A remote browser cannot change the host’s selected membership signer.'));
+      return;
+    }
+    if (!local.authority) return;
+    const identity = state.encrypted.endpoint.identity();
+    const original = local.authority;
+    const selected = local.freshnessAuthority;
+    const signer = selected?.signer || original;
+    const sameDevice = ['user', 'device', 'curve25519', 'ed25519'].every(key => signer[key] === identity[key]);
+    const membership = state.encryptedState?.membershipIdentity;
+    const originalAuthorityMatches = ['user', 'device', 'curve25519', 'ed25519'].every(key => membership?.owner?.[key] === original[key]);
+    const owner = original.user === identity.user && originalAuthorityMatches;
+    const verified = membership?.state === 'verified';
+    const currentEpoch = (selected?.recoveryEpoch || null) === (membership?.recoveryEpoch || null);
+    const section = uiSection('Membership recovery on this host',
+      'A verified replacement device for the original owner can confirm current membership for this execution host. The original team identity stays unchanged.');
+    section.dataset.state = selected?.state || 'original';
+    section.append(uiNode('p', 'small', 'Current membership signer: ' + signer.device +
+      (selected?.state === 'revoked' ? ' · revoked; current membership cannot be confirmed' : sameDevice ? ' · this device' : ' · another device')));
+    section.append(uiNode('p', 'ew-fingerprint mono', window.PlexusEncrypted.fingerprint(signer)));
+    section.append(uiNode('p', 'small', 'This restores membership confirmation on this host only. It does not restore approval rights or provider credentials. Other hosts need separate local confirmation.'));
+    if (!desktop?.confirmFreshnessAuthority) {
+      section.append(uiNode('p', 'cu-missing', 'Open the installed app on the execution machine to appoint a replacement device.'));
+    } else if (membership?.state === 'revoked' || selected?.state === 'revoked' && sameDevice) {
+      section.append(uiNode('p', 'cu-missing', 'This device is revoked. Use a different owner device verified by a surviving teammate, or restore a separately prepared owner authority kit on a new device before local confirmation.'));
+    } else if (!owner || !verified) {
+      section.append(uiNode('p', 'cu-missing', !membership?.owner
+        ? 'Compare the original team owner fingerprint in Team & access. A surviving verified teammate must then verify this replacement device.'
+        : !originalAuthorityMatches ? 'The verified team identity does not match this host’s original authority. Compare the original fingerprint with a trusted teammate before continuing.'
+        : original.user !== identity.user ? 'Only a verified replacement device of the original team owner can be appointed here.'
+          : 'A surviving teammate must verify this device, or you can restore a separately prepared owner authority kit. History-only backups do not authorize membership.'));
+    } else if (!sameDevice || !currentEpoch) {
+      section.append(uiButton('Use this verified device for membership recovery', 'authorize-freshness-authority', () => activateMembershipRecovery(runtime)));
+    } else section.append(uiNode('p', 'small', 'This device is already the selected membership signer for this host.'));
+    panel.append(section);
+  }
+  async function activateMembershipRecovery(runtime) {
+    const local = state.localEncryptedSetup, desktop = window.harnessDesktop;
+    if (!runtime || !desktop?.confirmFreshnessAuthority || local?.runtimeId !== runtime.id || local.teamId !== state.teamId) {
+      throw new Error('Open the installed app on the selected execution host to confirm recovery locally.');
+    }
+    const teamId = state.teamId, runtimeId = runtime.id, identity = state.encrypted.endpoint.identity();
+    try {
+      const result = await desktop.confirmFreshnessAuthority({ teamId, identity });
+      if (!result?.confirmed || state.teamId !== teamId || selectedRuntime()?.id !== runtimeId) return;
+      await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
+      toast('This host now uses the replacement membership signer. Other hosts, approval rights and provider credentials are unchanged.');
+    } catch (error) {
+      const code = error.code || error.message || '';
+      throw new Error(code.includes('freshness_host_busy')
+        ? 'Finish or interrupt the active agent turn, then retry membership recovery on this host.'
+        : code.includes('local_runtime_restart_failed')
+          ? 'The signer was saved, but the host did not restart. Retry local startup and check the selected signer before continuing.'
+          : 'Membership recovery could not be verified. Refresh local setup and verify this device through a trusted teammate or a valid owner authority kit before retrying.');
+    }
+  }
+  async function selectEncryptedTask(id) {
+    $('#encrypted-composer-error')?.remove();
+    if (state.subscribedId) send({ type: 'thread.unsubscribe', threadId: state.subscribedId });
+    state.subscribedId = null; state.activeThreadId = id; state.activeThread = null; state.setupHostPrompt = null;
+    state.draftTarget = null; el.input.value = ''; state.catchupSnapshot = state.encryptedSnapshots.get(id) || null;
+    hideWorkViews(); $('#encrypted-workspace').classList.remove('hidden'); $('#app').classList.add('encrypted-selected');
+    $('#ew-composer').append(el.composer); el.composer.classList.remove('hidden');
+    el.navFleet.classList.remove('active');
+    for (const node of [el.assignBtn, el.auditBtn, el.catchupBtn, el.changesBtn, el.topbarBranch, el.topbarWorktree]) node.classList.add('hidden');
+    const task = activeEncryptedTask();
+    const runtime = state.runtimes.find(r => r.id === task.runtimeId);
+    renderProviderPicker({ runtimeId: task.runtimeId });
+    el.topbarRuntime.textContent = runtime?.name || task.runtimeId; el.topbarRuntime.classList.remove('hidden');
+    renderEncryptedWorkspace(); renderThreadList();
+    document.body.classList.remove('navigation-open');
+    await updateEncryptedTask();
+  }
+  async function updateEncryptedTask() {
+    const task = activeEncryptedTask(); if (!task || !state.encrypted) return;
+    const id = task.id;
+    const runtime = state.runtimes.find(r => r.id === task.runtimeId);
+    const result = await state.encrypted.catchUp(task, {
+      host: runtime?.name || task.runtimeId, hostConnected: hostOnline(task),
+      responsible: nameFor(task.creatorUserId) || task.creatorUserId
+    });
+    if (id !== state.activeThreadId) return;
+    if (result.error) {
+      state.catchupExplain = result.error === 'host_unconfirmed' ? 'Verify the execution host before opening this history.'
+        : 'History unavailable: ' + result.error + '. Previously verified records remain available.';
+      if (result.historyRecovery?.state === 'host_offline') state.catchupExplain += ' Reconnect the execution host to request another authenticated history transfer.';
+      else if (result.historyRecovery?.state === 'requested') state.catchupExplain += ' A fresh history transfer has been requested; the task remains unavailable until verification succeeds.';
+      else if (result.historyRecovery?.state === 'throttled') state.catchupExplain += ' History delivery retries are briefly paused; the task remains unavailable until verification succeeds.';
+      else if (result.historyRecovery?.state === 'unavailable') state.catchupExplain += ' History transfer could not be requested: ' + result.historyRecovery.code + '.';
+    } else {
+      state.encryptedSnapshots.set(id, result.snapshot); state.encryptedTitles.set(id, result.snapshot.title || id);
+      state.catchupSnapshot = result.snapshot; state.catchup = result.projection; state.catchupExplain = null;
+    }
+    if (state.encrypted.projectAccess) {
+      try { state.projectAccess = await state.encrypted.projectAccess(task.projectId); } catch { state.projectAccess = null; }
+    }
+    renderEncryptedWorkspace(); renderThreadList();
+  }
+  async function submitEncrypted(label, operation) {
+    const task = activeEncryptedTask();
+    const submitted = await operation();
+    if (submitted?.commandId) state.encryptedReceipts.set(submitted.commandId, { label, taskId: task?.id, submitted });
+    renderEncryptedReceipts();
+    return submitted;
+  }
+  async function sendEncryptedMessage(text, settings) {
+    el.send.disabled = true;
+    $('#encrypted-composer-error')?.remove();
+    try {
+      if (!state.encrypted || state.encryptedState?.state !== 'verified') throw new Error('Verify this endpoint in Team & access before starting or steering work.');
+      let task = activeEncryptedTask();
+      if (!task) {
+        const runtime = selectedRuntime(); const projectId = el.fleetProject.value;
+        if (!runtime?.online || !projectId) throw new Error('Choose an online execution host and an explicitly shared project.');
+        if (!state.encrypted.confirmedHost(runtime.id)) { renderEncryptedSetup(); throw new Error('Verify the execution host in setup before sending the objective.'); }
+        task = await state.encrypted.createTask(runtime.id, projectId, { title: text.split('\n')[0].slice(0, 120), objective: text, settings });
+        state.encryptedTasks.push(task); state.encryptedTitles.set(task.id, text.split('\n')[0].slice(0, 120));
+        await selectEncryptedTask(task.id);
+      } else {
+        if (!canControlTask()) throw new Error('Task controls are unavailable until the host is connected and your endpoint is verified.');
+        const target = state.draftTarget || { taskId: task.id, turnId: encryptedTurnId() };
+        if (target.taskId !== task.id) throw new Error('This draft belongs to another task.');
+        const input = [{ type: 'text', text }];
+        if (target.turnId) await submitEncrypted('Direction from ' + state.me.name + ' · turn ' + target.turnId,
+          () => state.encrypted.steer(task, { input, expectedTurnId: target.turnId }));
+        else await submitEncrypted('Start follow-up from ' + state.me.name, () => state.encrypted.startTurn(task, { input, settings }));
+      }
+      el.input.value = ''; state.draftTarget = null; autosize();
+      await updateEncryptedTask();
+    } catch (error) { showEncryptedError(error); }
+    finally { el.send.disabled = false; }
+  }
+  function renderEncryptedReceipts() {
+    const root = $('#ew-receipts'); root.replaceChildren();
+    for (const recorded of encryptedSnapshot()?.receipts || []) if (!state.encryptedReceipts.has(recorded.commandId)) {
+      state.encryptedReceipts.set(recorded.commandId, { taskId: state.activeThreadId, label: 'Command from ' + (nameFor(recorded.actor) || recorded.actor || 'teammate'), submitted: recorded });
+    }
+    for (const [id, held] of [...state.encryptedReceipts].reverse()) {
+      if (held.taskId && held.taskId !== state.activeThreadId) continue;
+      const receipt = state.encrypted?.receipt?.(id) || held.submitted;
+      const entry = uiNode('div', 'ew-receipt');
+      const status = receipt?.state || receipt?.outcome || 'submitted';
+      entry.dataset.commandId = id; entry.dataset.state = status;
+      entry.append(uiNode('p', null, held.label), uiNode('p', 'small', status === 'submitted' ? 'Submitted · awaiting the host' : String(status)));
+      if (receipt?.error || receipt?.code) {
+        const code = receipt.error?.code || receipt.error || receipt.code;
+        entry.append(uiNode('p', 'ew-error', hostToolsFailureMessage(code) || code));
+      }
+      const settled = receipt?.result?.settled || receipt?.settled;
+      if (settled) entry.append(uiNode('p', 'small', 'Settled by ' + (settled.by?.name || settled.by?.userId || settled.by || 'another approver') + ' · ' + settled.decision));
+      root.append(entry);
+    }
+  }
+  function openEncryptedSource(source) {
+    const pane = uiNode('aside', 'cu-source-pane'); pane.setAttribute('aria-label', 'Source record');
+    window.PlexusCatchup.renderSource(window.PlexusCatchup.resolveSource(encryptedSnapshot(), source), pane);
+    pane.prepend(uiButton('Close source', 'close-source', () => pane.remove()));
+    $('#ew-content').append(pane); pane.scrollIntoView({ block: 'nearest' });
+  }
+  function renderEncryptedWorkspace() {
+    const task = activeEncryptedTask(); if (!task || $('#encrypted-workspace').classList.contains('hidden')) return;
+    const snapshot = encryptedSnapshot(); const runtime = state.runtimes.find(r => r.id === task.runtimeId);
+    const title = snapshot?.title || state.encryptedTitles.get(task.id) || 'Opening encrypted task';
+    el.topbarTitle.textContent = title;
+    const head = $('#ew-heading'); head.replaceChildren(uiNode('h1', null, title));
+    head.append(uiNode('p', 'ew-ownership', 'Responsible: ' + (nameFor(snapshot?.responsible || task.creatorUserId) || snapshot?.responsible || 'You') +
+      ' · Host: ' + (runtime?.name || task.runtimeId) + ' · ' + (hostOnline(task) ? 'Connected' : 'Disconnected · execution may be unknown')));
+    head.append(uiNode('p', 'small', 'Provider: ' + (snapshot?.provider || 'Awaiting host record') + ' · Account: execution host’s provider account · Task outcome: ' + (snapshot?.outcome || 'open')));
+    const nav = $('#ew-tabs'); nav.replaceChildren();
+    for (const [id, label] of [['review', 'Changes'], ['catchup', 'Catch up'], ['access', 'Access']]) {
+      const button = uiButton(label, 'view-' + id, () => { state.encryptedTab = id; renderEncryptedWorkspace(); });
+      button.setAttribute('aria-current', state.encryptedTab === id ? 'page' : 'false'); nav.append(button);
+    }
+    nav.append(uiButton('Discussion', 'toggle-discussion', () => $('#encrypted-workspace').classList.toggle('inspector-open')));
+    const content = $('#ew-content');
+    // Keep a person’s partially completed access/action form stable while replay updates.
+    const editing = content.contains(document.activeElement) && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+    const now = Date.now();
+    const deadlines = JSON.stringify([(snapshot?.approvals || []).map(request => !!request.expiresAt && request.expiresAt <= now),
+      (snapshot?.approvers || []).map(grant => grant.expiresAt <= now)]);
+    const contentSignature = JSON.stringify([task.id, state.encryptedTab, snapshot?.events?.length, state.catchup?.freshness?.state, hostOnline(task), state.encryptedState?.state, state.catchupExplain, state.projectAccess, state.encryptedState?.endpoints, state.encryptedState?.revocations, deadlines]);
+    // Deadlines can change eligibility without another host event. Preserve drafts,
+    // but never retain an enabled expired decision just because a field has focus.
+    if ((!editing || content.dataset.approvalDeadlines !== deadlines) && content.dataset.signature !== contentSignature) {
+      const openSections = new Set([...content.querySelectorAll('details[open]')].map(node => node.querySelector('summary')?.textContent));
+      const drafts = new Map([...content.querySelectorAll('input[name],textarea[name],select[name]')].map(node => [node.name, { value: node.value, checked: node.checked }]));
+      content.dataset.signature = contentSignature; content.dataset.approvalDeadlines = deadlines; content.replaceChildren();
+      const error = uiNode('p', 'ew-error', state.catchupExplain || ''); error.id = 'ew-error'; error.setAttribute('role', 'status'); content.append(error);
+      if (!state.encrypted.confirmedHost(task.runtimeId)) {
+        content.append(uiButton('Verify execution host', 'verify-task-host', async () => content.append(hostConfirmation({ runtimeId: task.runtimeId, endpoints: await state.encrypted.hostEndpoints(task.runtimeId) }))));
+      }
+      if (state.encryptedTab === 'catchup' && state.catchup) {
+        const projection = uiNode('div'); content.append(projection);
+        window.PlexusCatchup.renderCatchup(state.catchup, projection, { onOpenSource: openEncryptedSource, onOpenTranscript: () => $('#encrypted-workspace').classList.add('inspector-open') });
+      } else if (state.encryptedTab === 'access') renderAccessContent(content, task.projectId);
+      else renderEncryptedReview(content, task, snapshot);
+      for (const node of content.querySelectorAll('details')) node.open = openSections.has(node.querySelector('summary')?.textContent);
+      for (const node of content.querySelectorAll('input[name],textarea[name],select[name]')) { const held = drafts.get(node.name); if (held) { node.value = held.value; node.checked = held.checked; } }
+    }
+    renderEncryptedDiscussion(snapshot);
+    const targetTurn = state.draftTarget ? state.draftTarget.turnId : encryptedTurnId();
+    $('#ew-target').textContent = targetTurn
+      ? 'To ' + (snapshot?.provider || 'agent') + ' · turn ' + targetTurn
+      : 'Start a follow-up on this task';
+    el.send.disabled = !canControlTask();
+    el.input.placeholder = canControlTask() ? 'Describe the correction for the agent…' : 'Host connection and verified access are required to send';
+    renderEncryptedReceipts();
+  }
+  function renderEncryptedReview(content, task, snapshot) {
+    const lastTurn = snapshot?.events?.findLast(event => event.type === 'turn.completed');
+    if (snapshot?.turn === 'failed' && lastTurn) {
+      const failure = uiSection('The provider turn failed'); failure.dataset.providerFailure = lastTurn.payload.error || 'provider_failed';
+      const messages = {
+        codex_auth_required: 'Sign in to Codex on the execution host, then start a new turn. Provider credentials stay on that machine.',
+        codex_usage_limit: 'Check the provider account’s usage limits on the execution host. Start a new turn when that account can run again.',
+        codex_model_unavailable: 'Choose a model available to the provider account on the execution host, then start a new turn.',
+        codex_protocol_unsupported: 'Update or pin a supported Codex CLI version on the execution host, then retry.',
+        codex_effort_unsupported: 'Choose a supported reasoning level on this execution host, then retry.',
+        codex_unavailable: 'Install Codex on the execution host and verify that the app can find it.',
+        codex_completion_missing: 'Codex exited without confirming completion. Review the recorded changes before starting another turn.',
+        codex_disconnected: 'The provider connection ended. Review the recorded changes and reconnect the execution host before continuing.',
+        codex_turn_timeout: 'The provider did not finish in time. Review the recorded changes before starting another turn.'
+      };
+      failure.append(uiNode('p', 'ew-error', messages[lastTurn.payload.error] || hostToolsFailureMessage(lastTurn.payload.error) || 'Check Codex on the execution host. Review the recorded changes before starting another turn.'));
+      content.append(failure);
+    }
+    const objective = uiSection('The objective'); objective.append(uiNode('p', null, snapshot?.objective || 'Waiting for the host to record the encrypted objective.')); content.append(objective);
+    const changes = uiSection('Review the changes', 'Read-only changes recorded by the execution host. Open a source to inspect its original record.');
+    const files = snapshot?.diffs || [];
+    if (!files.length) changes.append(uiNode('p', 'cu-missing', 'No successful file change has been recorded.'));
+    for (const file of files) {
+      const panel = uiNode('article', 'ew-file'); panel.append(uiNode('h4', 'mono', file.path));
+      if (Array.isArray(file.lines) && file.lines.length) {
+        const table = uiNode('table', 'diff-table');
+        for (const line of file.lines) {
+          const row = uiNode('tr', line.kind);
+          for (const value of [line.oldLine || '', line.newLine || '', line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : '', line.text]) row.append(uiNode('td', null, String(value ?? '')));
+          table.append(row);
+        }
+        const scroll = uiNode('div', 'ew-code-scroll'); scroll.append(table); panel.append(scroll);
+      } else panel.append(uiNode('pre', 'ew-code-scroll', file.patch || 'Detailed diff unavailable in this event.'));
+      const seq = (snapshot.events || []).findLastIndex(event => event.type === 'diff.updated' && event.payload.files?.some(f => f.path === file.path)) + 1;
+      if (seq) panel.append(uiButton('View source · event ' + seq, 'open-diff-source', () => openEncryptedSource({ seq, type: 'diff.updated' })));
+      changes.append(panel);
+    }
+    content.append(changes);
+    renderEncryptedApprovals(content, task, snapshot);
+    renderTaskActions(content, task, snapshot);
+  }
+  function renderEncryptedDiscussion(snapshot) {
+    const root = $('#ew-discussion'); const oldScroll = root.scrollTop;
+    root.replaceChildren(uiNode('h3', null, 'Review together'));
+    const close = uiButton('Close discussion', 'close-discussion', () => $('#encrypted-workspace').classList.remove('inspector-open')); close.classList.add('ew-close-discussion'); root.append(close);
+    root.append(uiNode('p', 'small', state.catchup?.freshness?.explain || 'Waiting for a verified event range.'));
+    for (const message of snapshot?.messages || []) {
+      const row = uiNode('article', 'ew-message');
+      const actor = message.actor?.name || nameFor(message.by?.userId || message.actor) || message.by?.name || (message.role === 'user' ? 'Teammate' : 'Agent');
+      row.append(uiNode('h4', null, actor), uiNode('p', null, message.text)); root.append(row);
+    }
+    for (const request of snapshot?.help || []) {
+      const row = uiNode('article', 'ew-message');
+      row.append(uiNode('h4', null, (nameFor(request.from) || request.from) + ' asked ' + (nameFor(request.recipient) || request.recipient)),
+        uiNode('p', null, request.question), uiNode('p', 'small', 'Human help · ' + (request.outcome || 'open')));
+      if (!request.outcome && (request.from === state.me.id || request.recipient === state.me.id)) {
+        const outcome = request.recipient === state.me.id ? 'resolved' : 'cancelled';
+        row.append(uiButton(outcome === 'resolved' ? 'Resolve request' : 'Cancel request', outcome + '-help', () => submitEncrypted('Human help ' + outcome, () => state.encrypted.settleHelp(activeEncryptedTask(), request.id, outcome))));
+      }
+      root.append(row);
+    }
+    root.scrollTop = oldScroll;
+  }
+  function projectPeople() {
+    const holders = state.projectAccess?.participants;
+    const ids = Array.isArray(holders) ? new Set(holders.map(p => p.userId)) : null;
+    return state.users.filter(user => !ids || ids.has(user.userId)).map(user => ({ id: user.userId, name: user.name }));
+  }
+  function isRequestApprovalOwner(snapshot, request) {
+    if (!request) return false;
+    // An explicit null on a newer request removes the creation-time authority.
+    const owner = Object.hasOwn(request, 'approvalOwner') ? request.approvalOwner : snapshot?.details?.approvalOwner;
+    return !!owner && ['user', 'device', 'curve25519', 'ed25519'].every(field =>
+      typeof owner[field] === 'string' && owner[field] && owner[field] === state.encryptedIdentity?.[field]);
+  }
+  function isPendingApproval(snapshot, request, now = Date.now()) {
+    return !!request && request.turnId === snapshot.activeTurnId &&
+      !(request.expiresAt && request.expiresAt <= now) && !snapshot.decisions?.some(decision => decision.basis === request.id);
+  }
+  function renderEncryptedApprovals(root, task, snapshot) {
+    const decisions = snapshot?.decisions || [];
+    const approvals = snapshot?.approvals || [];
+    for (const request of approvals) {
+      const resolved = decisions.find(d => d.basis === request.id);
+      const section = uiSection('A decision before the next step', request.reason);
+      section.dataset.approvalId = request.id;
+      section.append(uiNode('pre', 'ew-action mono', request.action));
+      section.append(uiNode('p', 'small', 'Requested by: ' + (request.actor?.name || request.requester?.name || request.actor || 'Host agent') +
+        ' · Host: ' + task.runtimeId + ' · Turn: ' + (request.turnId || 'unavailable') + ' · Scope: this action, once'));
+      const seq = snapshot.events.findIndex(event => event.type === 'approval.requested' && event.payload.id === request.id) + 1;
+      if (seq) section.append(uiButton('Inspect request', 'approval-source', () => openEncryptedSource({ seq, type: 'approval.requested' })));
+      if (resolved) section.append(uiNode('p', 'ew-receipt', (nameFor(resolved.actor) || resolved.actor) + ' · ' + resolved.text));
+      else if (request.turnId !== snapshot.activeTurnId) section.append(uiNode('p', 'ew-error', 'This request belongs to a finished or interrupted turn. It cannot authorize a new action.'));
+      else if (request.expiresAt && Date.now() >= request.expiresAt) section.append(uiNode('p', 'ew-error', 'Expired. This request can no longer authorize an action.'));
+      else {
+        const isOwner = isRequestApprovalOwner(snapshot, request);
+        const grant = snapshot.approvers?.find(entry => entry.userId === state.me.id && entry.turnId === request.turnId &&
+          entry.requestId === request.id && entry.expiresAt > Date.now());
+        const mayApprove = isOwner || !!grant;
+        const actions = uiNode('div', 'cu-actions');
+        for (const [decision, label] of [['accept', 'Approve once'], ['decline', 'Decline']]) {
+          const button = uiButton(label + ' as ' + state.me.name, 'encrypted-approval-' + decision,
+            () => submitEncrypted(label, () => state.encrypted.resolveApproval(task, {
+              requestId: request.id, turnId: request.turnId, fingerprint: request.fingerprint, decision
+            })), decision === 'accept');
+          button.disabled = !canControlTask() || !request.turnId || !request.fingerprint || !mayApprove;
+          if (!mayApprove) button.title = 'The host approver must delegate this exact action to you before you can respond.';
+          actions.append(button);
+        }
+        section.append(actions, uiNode('p', 'small', mayApprove
+          ? 'The execution host checks the current grant and exact action; the first valid decision wins.'
+          : 'Approval rights are missing. The host’s configured approver must delegate this exact action to you.'));
+        if (isOwner) {
+          const person = uiField('Delegate this action to', 'approval-recipient', { options: projectPeople() });
+          section.append(person.wrap, uiButton('Delegate this action', 'grant-action-approval', () => submitEncrypted('Delegate approval', () => state.encrypted.grantApproval(task, {
+            userId: person.input.value, requestId: request.id, turnId: request.turnId,
+            expiresAt: Math.min(request.expiresAt || Date.now() + 15 * 60000, Date.now() + 60 * 60000)
+          }))));
+        }
+      }
+      root.append(section);
+    }
+  }
+  function renderTaskActions(root, task, snapshot) {
+    const controls = uiSection('Work together');
+    if (snapshot?.recovery) {
+      controls.append(uiNode('p', 'ew-error', 'The host restarted during execution. The earlier process may have acted. Inspect the recorded changes before explicitly starting a new turn.'));
+      controls.append(uiButton('Acknowledge unknown execution and start follow-up', 'acknowledge-recovery', async () => {
+        const text = el.input.value.trim(); if (!text) throw new Error('Write the new objective in the composer first.');
+        await submitEncrypted('Follow-up after unknown execution', () => state.encrypted.startTurn(task, { input: [{ type: 'text', text }], acknowledgeUnknown: true }));
+        el.input.value = ''; state.draftTarget = null; await updateEncryptedTask();
+      }));
+    }
+    for (const grant of snapshot?.approvers || []) {
+      const request = snapshot.approvals?.find(entry => entry.id === grant.requestId && entry.turnId === grant.turnId);
+      const active = isPendingApproval(snapshot, request) && grant.expiresAt > Date.now();
+      const row = uiNode('p', 'ew-link-row', (active ? 'Approval delegated to ' : 'Previous approval grant for ') + (nameFor(grant.userId) || grant.userId) + ' · request ' + (grant.requestId || grant.scope?.requestId || 'unknown') + (active ? ' · expires ' + new Date(grant.expiresAt).toLocaleTimeString() : ' · no longer active'));
+      if (active && isRequestApprovalOwner(snapshot, request)) row.append(uiButton('Remove approval grant', 'revoke-approval-grant', () => submitEncrypted('Approval grant revoked', () => state.encrypted.revokeApproval(task, { userId: grant.userId, turnId: grant.turnId }))));
+      controls.append(row);
+    }
+    const stop = uiButton('Interrupt active turn', 'encrypted-interrupt', () => submitEncrypted('Interruption requested', () => state.encrypted.interrupt(task, { turnId: encryptedTurnId() })));
+    stop.disabled = !canControlTask() || !encryptedTurnId(); controls.append(stop);
+    controls.append(uiButton('Copy private task link', 'copy-private-task', async () => {
+      const link = state.encrypted.privateLink(task); await navigator.clipboard.writeText(link);
+      toast('Private link copied. Membership and verified key access are still required.');
+    }));
+    const help = uiNode('details', 'ew-details'); help.append(uiNode('summary', null, 'Ask a teammate'));
+    const recipient = uiField('Help recipient', 'help-recipient', { options: projectPeople().filter(p => p.id !== state.me.id) });
+    const question = uiField('Question for your teammate', 'help-question', { multiline: true });
+    help.append(recipient.wrap, question.wrap, uiNode('p', 'small', 'This is a human request. It does not send an instruction to the agent.'),
+      uiButton('Send help request', 'ask-for-help', async () => {
+        await submitEncrypted('Help request', () => state.encrypted.askForHelp(task, { question: question.input.value, recipient: recipient.input.value })); question.input.value = '';
+      })); controls.append(help);
+    const handoff = uiNode('details', 'ew-details'); handoff.append(uiNode('summary', null, 'Hand off responsibility'));
+    const next = uiField('New responsible teammate', 'handoff-recipient', { options: projectPeople() });
+    const note = uiField('Handoff note', 'handoff-note', { multiline: true });
+    handoff.append(next.wrap, note.wrap, uiNode('p', 'small', 'Execution stays on ' + task.runtimeId + '. Provider credentials and approval grants stay unchanged.'),
+      uiButton('Hand off responsibility', 'encrypted-handoff', () => submitEncrypted('Responsibility handoff', () => state.encrypted.handOverResponsibility(task, { to: next.input.value, note: note.input.value })))); controls.append(handoff);
+    const related = uiNode('details', 'ew-details'); related.append(uiNode('summary', null, 'Related work'));
+    const link = uiField('Issue or pull request URL', 'related-url', { type: 'url' });
+    const label = uiField('Link title (optional)', 'related-title');
+    related.append(link.wrap, label.wrap, uiNode('p', 'small', 'The association is encrypted. Adding it does not read or post to the tracker.'),
+      uiButton('Add link', 'add-related-link', async () => { await submitEncrypted('Related work', () => state.encrypted.addLink(task, { url: link.input.value, title: label.input.value })); link.input.value = ''; }));
+    for (const entry of snapshot?.links || []) {
+      if (entry.removedBy) continue;
+      const row = uiNode('p', 'ew-link-row'); const anchor = uiNode('a', 'cu-link', entry.title || entry.url);
+      if (/^https?:\/\//i.test(entry.url)) { anchor.href = entry.url; anchor.target = '_blank'; anchor.rel = 'noopener noreferrer'; }
+      row.append(anchor, uiButton('Remove', 'remove-related-link', () => submitEncrypted('Remove related link', () => state.encrypted.removeLink(task, entry.id)))); related.append(row);
+    }
+    controls.append(related);
+    const outcome = uiNode('details', 'ew-details'); outcome.append(uiNode('summary', null, 'Record the task outcome'));
+    outcome.append(uiNode('p', 'small', snapshot?.outcome ? 'Recorded outcome: ' + snapshot.outcome : 'An agent turn ending does not complete the task. Record your decision after review.'));
+    if (!snapshot?.outcome) for (const [value, label_] of [['completed', 'Mark completed'], ['cancelled', 'Mark cancelled']]) outcome.append(uiButton(label_, 'outcome-' + value,
+      () => submitEncrypted('Task ' + value, () => state.encrypted.recordOutcome(task, value))));
+    controls.append(outcome);
+    if (!canControlTask()) for (const button of controls.querySelectorAll('button')) if (button.dataset.action !== 'copy-private-task') button.disabled = true;
+    root.append(controls);
+  }
+  function originalRemovalAvailability() {
+    const membership = state.encryptedState?.membershipIdentity;
+    const identity = state.encryptedIdentity;
+    const same = (left, right) => !!left && !!right && ['user', 'device', 'curve25519', 'ed25519'].every(key => left[key] === right[key]);
+    if (membership?.state !== 'verified' || identity?.user !== membership.owner?.user || same(identity, membership.owner)) {
+      return { allowed: false, reason: 'Use a different verified device of the original owner. A surviving verified teammate can verify a replacement.' };
+    }
+    const desktop = window.harnessDesktop;
+    if (!desktop?.encryptedSetup || !desktop?.confirmFreshnessAuthority) {
+      return { allowed: false, reason: 'Open the installed app on an execution host and complete its local appointment before removing the original device.' };
+    }
+    const local = state.localEncryptedSetup, selected = local?.freshnessAuthority;
+    const runtimeId = activeEncryptedTask()?.runtimeId || selectedRuntime()?.id;
+    if (local?.teamId !== state.teamId || local.runtimeId !== runtimeId || !same(local.authority, membership.owner) ||
+        selected?.state !== 'active' || !/^[a-f0-9]{32}$/.test(selected.activationId || '') ||
+        !same(selected.genesis, membership.owner) || !same(selected.signer, identity)) {
+      return { allowed: false, reason: 'First appoint this exact verified replacement in Membership recovery on this host. Each execution host requires its own local confirmation.' };
+    }
+    return { allowed: true, runtimeId, activationId: selected.activationId };
+  }
+  function renderOriginalDeviceRemoval(card, endpoint) {
+    card.append(uiNode('p', 'small', 'Original team device. Its historical fingerprint remains the verifier of the first membership record after device removal. Previously received history cannot be erased.'));
+    if (endpoint.state === 'revoked') {
+      card.append(uiNode('p', 'small', 'Original device removed. Other hosts apply removal separately; any host still using this device needs its own local membership recovery. Approval rights and provider accounts are unchanged.'));
+      return;
+    }
+    const availability = originalRemovalAvailability();
+    const remove = uiButton('Remove original device', 'revoke-original-device', async () => {
+      const teamId = state.teamId, runtimeId = availability.runtimeId, activationId = availability.activationId;
+      const requireCurrent = () => {
+        const current = originalRemovalAvailability();
+        const target = state.encryptedState?.endpoints.find(value => value.userId === endpoint.userId && value.device === endpoint.device);
+        if (state.teamId !== teamId || !current.allowed || current.runtimeId !== runtimeId || current.activationId !== activationId || !target?.isOriginal) {
+          throw new Error(current.reason || 'The selected local appointment changed. Review the current host and original device before retrying.');
+        }
+        return target;
+      };
+      await refreshEncrypted(); requireCurrent();
+      if (!confirm('Remove original device ' + endpoint.device + '? Its historical public fingerprint stays the team’s original verifier. Previously received history cannot be erased. Each host applies removal separately; hosts still using this device need local membership recovery. Approval rights and provider accounts do not transfer.')) return;
+      await refreshEncrypted();
+      await state.encrypted.revokeDevice(requireCurrent()); await refreshEncrypted();
+      toast('Original device removal recorded. Check each host’s authenticated application status.');
+    });
+    remove.disabled = !availability.allowed; card.append(remove);
+    card.append(uiNode('p', availability.allowed ? 'small' : 'cu-missing', availability.reason ||
+      'This host has appointed your current replacement. Other hosts apply removal independently and may need their own local appointment. No approval rights or provider credentials transfer.'));
+  }
+  function renderAccessContent(root, projectId) {
+    const section = uiSection('Shared work. Clear boundaries.', 'Team membership, verified devices, project history and approval rights are separate. Project access includes existing shared history and future tasks.');
+    if (state.authorityNeeded) for (const authority of state.authorityEndpoints || []) {
+      const owner = uiSection('Verify the team authority', 'Compare this complete fingerprint with the team owner before confirming the membership history.');
+      owner.append(uiNode('p', 'ew-fingerprint mono', authority.fingerprint), uiButton('Confirm team owner fingerprint', 'confirm-team-authority', async () => {
+        await state.encrypted.confirmAuthority(authority); await refreshEncrypted();
+      })); section.append(owner);
+    }
+    section.append(uiNode('p', 'small', 'Your device: ' + (state.encryptedState?.device || 'starting') + ' · ' + (state.encryptedState?.state || 'unknown')));
+    section.append(uiNode('p', 'ew-fingerprint mono', state.encryptedIdentity?.fingerprint || 'Fingerprint unavailable'));
+    const membership = state.encryptedState?.membershipIdentity;
+    if (membership?.recoveryEpoch && projectId && membership.state === 'verified' && membership.owner?.user === state.encryptedIdentity?.user &&
+        !membership.grants.some(grant => grant.projectId === projectId && grant.userId === state.me.id && !grant.revoked)) {
+      section.append(uiSection('Project access reset by owner recovery', 'History remains readable. Grant this account new project access before issuing any new task controls.'));
+      section.append(uiButton('Grant this account project access', 'reclaim-recovery-project', async () => {
+        await state.encrypted.reclaimProjectAccess(projectId); await refreshEncrypted();
+      }, true));
+    }
+    for (const endpoint of state.encryptedState?.endpoints || []) {
+      const card = uiNode('article', 'ew-device'); card.dataset.device = endpoint.device;
+      card.append(uiNode('h4', null, (nameFor(endpoint.userId) || endpoint.userId) + ' · ' + endpoint.device), uiNode('p', 'small', endpoint.state), uiNode('p', 'ew-fingerprint mono', endpoint.fingerprint));
+      if (['announced', 'pending'].includes(endpoint.state)) {
+        card.append(uiNode('p', 'small', 'This device cannot control tasks or approve actions until it is verified. It has no verified device access to revoke.'));
+      }
+      if (['announced', 'pending'].includes(endpoint.state) && state.encryptedState.state === 'verified') {
+        const agree = uiField('I compared this fingerprint with its owner', 'confirmed-fingerprint', { type: 'checkbox' });
+        card.append(agree.wrap, uiButton('Verify device', 'verify-teammate', async () => {
+          if (!agree.input.checked) throw new Error('Compare the complete fingerprint with this person before confirming.');
+          await state.encrypted.confirmTeammate(endpoint); await refreshEncrypted();
+        }));
+      }
+      if (endpoint.state === 'verified' && projectId && state.encryptedState.state === 'verified' && state.membership?.role === 'owner') {
+        card.append(uiButton('Share project history and future tasks', 'grant-project', async () => {
+          await state.encrypted.grantProject(projectId, { userId: endpoint.userId });
+          toast('Project grant submitted. Key delivery requires the host to apply the grant.'); await refreshEncrypted();
+        }));
+      }
+      if (endpoint.isOriginal) renderOriginalDeviceRemoval(card, endpoint);
+      else if (endpoint.state === 'verified' && state.membership?.role === 'owner' && state.encryptedState?.membershipIdentity?.state === 'verified') card.append(uiButton('Remove device', 'revoke-device', async () => {
+        if (!confirm('Remove ' + endpoint.device + '? Previously received history cannot be erased. Offline hosts remain pending until they acknowledge removal.')) return;
+        await state.encrypted.revokeDevice(endpoint); await refreshEncrypted();
+      }));
+      section.append(card);
+    }
+    // Only this collection verifies signed receipts against confirmed host keys and
+    // the persisted host roster. projectAccess contains untrusted relay summaries.
+    const revocations = state.encryptedState?.revocations || [];
+    for (const revocation of revocations) {
+      const pending = revocation.pendingHosts || revocation.pending || [];
+      section.append(uiNode('p', revocation.applied ? 'small' : 'ew-error', 'Removal of ' + revocation.device + ': ' +
+        (revocation.applied === true ? 'applied by acknowledged hosts' : pending.length ? 'pending hosts ' + pending.join(', ') : 'pending authenticated host acknowledgements')));
+      for (const [status, hosts] of [['applied', revocation.appliedBy || []], ['pending', pending]]) for (const runtimeId of hosts) {
+        const local = state.localEncryptedSetup;
+        const recoveryRequired = local?.runtimeId === runtimeId && local.teamId === state.teamId &&
+          local.freshnessAuthority?.state === 'revoked' && local.freshnessAuthority.signer?.device === revocation.device;
+        const name = state.runtimes.find(runtime => runtime.id === runtimeId)?.name || runtimeId;
+        const row = uiNode('p', status === 'pending' || recoveryRequired ? 'ew-error' : 'small', name + ': ' +
+          (status === 'pending' ? 'removal pending. Reconnect or update this host; it may need local membership recovery.'
+            : recoveryRequired ? 'removal applied; local membership recovery required.' : 'removal applied.'));
+        row.dataset.runtimeId = runtimeId; row.dataset.revocationDevice = revocation.device; row.dataset.hostState = status;
+        section.append(row);
+      }
+    }
+    section.append(uiNode('p', 'ew-explain', 'Removing a device excludes future content after the affected hosts apply the new state. It cannot erase plaintext or keys the device already received.'));
+    root.append(section);
+  }
+  function renderAccess() {
+    if (!state.accessOpen) return;
+    const root = $('#access-view');
+    if (root.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
+    const signature = JSON.stringify([state.encryptedState, state.authorityNeeded, state.projectAccess, state.localEncryptedSetup,
+      activeEncryptedTask()?.projectId, el.fleetProject.value, selectedRuntime()?.id]);
+    if (root.dataset.signature === signature) return;
+    root.dataset.signature = signature; root.replaceChildren(); renderAccessContent(root, activeEncryptedTask()?.projectId || el.fleetProject.value || null);
+  }
+  async function openAccess() {
+    hideWorkViews(); $('#encrypted-workspace').classList.add('hidden'); state.accessOpen = true;
+    $('#access-view').classList.remove('hidden'); document.body.classList.remove('navigation-open'); renderAccess(); await refreshEncrypted();
+  }
+  function appendRecoveryRestore(view, backups) {
+    const section = uiSection('Restore on this device', 'Use your customer-held key. Restored history does not restore execution approval rights. A new endpoint needs verification before it can control a task.');
+    const key = uiField('Recovery key', 'restore-recovery-key', { type: 'password', value: state.recoveryRestoreDraft?.key || '' });
+    section.append(key.wrap);
+    if (backups.length) {
+      const choose = uiField('Backup to restore', 'restore-backup', { value: state.recoveryRestoreDraft?.scope || '', options: backups.map(b => ({ id: b.scope || b.id, name: (b.scope || b.id) + ' · ' + new Date(b.updatedAt).toLocaleString() })) });
+      section.append(choose.wrap, uiButton('Restore history', 'restore-history', async () => {
+        const backup = backups.find(b => (b.scope || b.id) === choose.input.value);
+        await state.encrypted.restoreFromRecovery({ scope: backup.scope || backup.id, ...(backup.taskIds ? { taskIds: backup.taskIds } : {}), recoveryKey: key.input.value });
+        key.input.value = ''; await refreshEncrypted(); toast('History restored. Device verification and action approvals remain separate.');
+      }));
+    } else section.append(uiNode('p', 'cu-missing', 'No encrypted backup is available to this signed-in account.'));
+    view.append(section);
+  }
+  let encryptedPoll = null, encryptedPolling = false;
+  async function pollEncryptedWorkspace() {
+    if (!state.encrypted || !state.connected || encryptedPolling) return;
+    encryptedPolling = true;
+    try {
+      await refreshEncrypted();
+      if (activeEncryptedTask()) await updateEncryptedTask();
+    } catch (error) { state.catchupExplain = 'Connection unavailable. Last verified history is retained.'; renderEncryptedWorkspace(); }
+    finally { encryptedPolling = false; }
+  }
+
   // ================= events =================
   function bind() {
     el.loginForm.addEventListener('submit', (e) => {
@@ -1402,11 +2282,11 @@
     el.newThread.addEventListener('click', showFleet);
     el.navFleet.addEventListener('click', showFleet);
     el.threadSearch.addEventListener('input', renderThreadList);
-    el.fleetRuntime.addEventListener('change', () => { renderProjects(); renderProviderPicker(); updateAddProjectAvailability(); });
+    el.fleetRuntime.addEventListener('change', () => { renderProjects(); renderProviderPicker(); updateAddProjectAvailability(); renderEncryptedSetup(); });
     el.providerSelect.addEventListener('change', () => {
       const r = state.activeThread ? state.runtimes.find((x) => x.id === state.activeThread.runtimeId) : selectedRuntime();
       renderModelPicker((r && r.providers) || []);
-      if (r && el.providerSelect.value !== 'demo') command(null, { method: 'model/list', provider: el.providerSelect.value }, r.id).then((res) => { if (res.models && res.models.length) { const cur = el.modelSelect.value; el.modelSelect.innerHTML = ''; for (const m of res.models) { const o = document.createElement('option'); o.value = m; o.textContent = m; el.modelSelect.appendChild(o); } if (res.models.includes(cur)) el.modelSelect.value = cur; } }).catch(() => {});
+      if (r && r.taskProtocol !== 'encrypted-v1' && el.providerSelect.value !== 'demo') command(null, { method: 'model/list', provider: el.providerSelect.value }, r.id).then((res) => { if (res.models && res.models.length) { const cur = el.modelSelect.value; el.modelSelect.innerHTML = ''; for (const m of res.models) { const o = document.createElement('option'); o.value = m; o.textContent = m; el.modelSelect.appendChild(o); } if (res.models.includes(cur)) el.modelSelect.value = cur; } }).catch(() => {});
     });
     el.addProject.addEventListener('click', async () => {
       const r = selectedRuntime(); if (!r) return;
@@ -1422,7 +2302,7 @@
     });
     document.querySelectorAll('.suggestion').forEach((b) => b.addEventListener('click', () => { el.input.value = b.dataset.prompt; autosize(); sendMessage(); }));
     el.send.addEventListener('click', sendMessage);
-    el.input.addEventListener('input', autosize);
+    el.input.addEventListener('input', () => { autosize(); if (el.input.value && !state.draftTarget && activeEncryptedTask()) state.draftTarget = { taskId: state.activeThreadId, turnId: encryptedTurnId() }; if (!el.input.value) state.draftTarget = null; });
     el.input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
     el.stop.addEventListener('click', () => { const t = state.activeThread; if (t && t.activeTurnId) command(t.id, { method: 'turn/interrupt', turnId: t.activeTurnId }).catch(() => {}); });
     el.assignBtn.addEventListener('click', () => {
@@ -1517,6 +2397,10 @@
   // ================= boot =================
   applyTheme();
   bind();
+  $('#btn-access').addEventListener('click', () => openAccess().catch(showEncryptedError));
+  $('#btn-navigation').addEventListener('click', () => document.body.classList.toggle('navigation-open'));
+  encryptedPoll = setInterval(pollEncryptedWorkspace, 1800);
+  window.addEventListener('beforeunload', () => clearInterval(encryptedPoll));
   el.loginHub.textContent = 'hub: ' + HUB_URL;
   const params = new URLSearchParams(location.search);
   // A handle on this page's own state, so automated checks can drive the real app instead of

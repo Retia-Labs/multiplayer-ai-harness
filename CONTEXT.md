@@ -26,6 +26,16 @@ _Avoid_: Execution migration
 **Bring your own provider**:
 A customer supplying their own supported agent-provider authentication and paying that provider for usage, through an eligible subscription or API arrangement. This does not imply shared credentials or transferable subscription entitlements.
 
+**Owner recovery kit**:
+Customer-encrypted account recovery authority and selected authenticated history,
+provisioned before trusted devices are lost. It creates a new owner endpoint;
+each execution host still requires local activation. History-only backups do not
+confer this authority. See [ADR 0006](docs/adr/0006-customer-held-owner-recovery-and-host-activation.md).
+
+**Recovery epoch**:
+The signed authorization generation created by owner recovery. Fresh endpoint and
+project confirmations do not revive commands or approvals from an older epoch.
+
 **Activated user**:
 A person who participates in a real collaborative agent task involving at least two humans and a teammate intervention delivered to the agent. A signup alone does not qualify.
 

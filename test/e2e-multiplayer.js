@@ -48,8 +48,10 @@ function ownerOp(url, token, makeMessage, expectedType) {
   });
 }
 
+const resources = {};
 (async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-e2e-'));
+  resources.tmp = tmp;
   const project = path.join(tmp, 'webapp');
   fs.mkdirSync(path.join(project, 'build'), { recursive: true });
   fs.writeFileSync(path.join(project, 'build', 'bundle.js'), '// built\n');
@@ -57,13 +59,16 @@ function ownerOp(url, token, makeMessage, expectedType) {
   execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: localShell().bin });
 
   const hub = new Hub({ dbFile: ':memory:', staticDir: path.join(__dirname, '..', 'apps', 'web'), log: () => {} });
+  resources.hub = hub;
   const addr = await hub.listen(0);
   const http = `http://127.0.0.1:${addr.port}`;
   const rt = new Runtime({ hubUrl: http.replace('http', 'ws'), userName: 'alice', dataDir: path.join(tmp, 'rt'), projects: [project], name: 'alice@laptop', log: () => {} });
+  resources.rt = rt;
   await rt.start();
 
   const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium', args: ['--no-sandbox'] });
-  const shots = path.join(__dirname, '..', 'docs', 'harness');
+  resources.browser = browser;
+  const shots = path.join(__dirname, '..', '.artifacts', 'legacy-multiplayer');
   fs.mkdirSync(shots, { recursive: true });
   const ctxA = await browser.newContext({ viewport: { width: 1360, height: 860 } });
   const ctxB = await browser.newContext({ viewport: { width: 1360, height: 860 } });
@@ -121,8 +126,10 @@ function ownerOp(url, token, makeMessage, expectedType) {
   await disposable.waitForSelector('#app:not(.hidden)', { timeout: 10000 });
   await alice.waitForSelector('#team-members [data-member-id="' + disposableAccountId + '"]', { timeout: 10000 });
   await bob.waitForSelector('#team-members [data-member-id="' + disposableAccountId + '"]', { timeout: 10000 });
+  await alice.waitForFunction(() => [...document.querySelectorAll('#team-members [data-member-id]')]
+    .some(row => row.textContent.includes('owner · 1 verified device')), null, { timeout: 10000 });
   const memberStates = await alice.$$eval('#team-members [data-member-id]', (rows) => rows.map((row) => row.textContent));
-  assert(memberStates.some((text) => text.includes('owner · endpoint access pending')) && memberStates.some((text) => text.includes('disposable') && text.includes('member · endpoint access pending')),
+  assert(memberStates.some((text) => text.includes('owner · 1 verified device')) && memberStates.some((text) => text.includes('disposable') && text.includes('member · device verification pending')),
     'team member rows distinguish administration roles from endpoint access state');
   assert((await alice.$$eval('#team-members [data-action="remove-member"]', (buttons) => buttons.map((button) => button.dataset.userId))).includes(disposableAccountId),
     'team owner sees a Remove control for a teammate');
@@ -257,8 +264,10 @@ function ownerOp(url, token, makeMessage, expectedType) {
   assert((await alice.textContent('.handoff-note')).includes('please review the wording'), 'handoff recorded as an attributed event with the note');
   assert(await alice.isVisible('#btn-audit'), 'audit export available on the thread');
 
-  await browser.close();
-  rt.stop(); await hub.close();
   console.log('\nmultiplayer e2e passed ✅');
-  process.exit(0);
-})().catch((e) => { console.error('\nE2E FAILED:', e); process.exit(1); });
+})().catch((e) => { console.error('\nE2E FAILED:', e); process.exitCode = 1; }).finally(async () => {
+  await resources.browser?.close();
+  await resources.rt?.stop();
+  await resources.hub?.close();
+  if (resources.tmp) fs.rmSync(resources.tmp, { recursive: true, force: true });
+});

@@ -72,6 +72,7 @@ let hub, runtime, encrypted, socket;
   // ---- the host brings up its encrypted side through the real hub ----
   const projectId = newId('ep');
   encrypted = new EncryptedHost({
+    endpointFactory: (options) => Endpoint.create(options),
     runtime, url, statePath: path.join(tmp, 'host-outbox.sqlite'),
     projects: new Map([[projectId, project]]), log: () => {}
   });
@@ -85,8 +86,12 @@ let hub, runtime, encrypted, socket;
     user: matrixUser(account.id), device: 'ALICEDEV',
     transport: new HubKeyTransport({ url, token: account.token, device: 'ALICEDEV' })
   });
-  const enroll = new EnrollmentTransport({ url, token: account.token });
+  const enroll = new EnrollmentTransport({ url, token: account.token, endpoint: client });
   await enroll.bootstrap(team.id, announcement(client));
+  await enroll.ownProject(team.id, projectId);
+  encrypted.authority = client.identity();
+  await encrypted.beginReconcile();
+  await enroll.answerChallenges(team.id);
   for (const [a, b] of [[client, encrypted.endpoint], [encrypted.endpoint, client]]) await a.confirmEndpoint(b.identity(), { confirmed: true });
 
   const tasks = new EncryptedTaskTransport({ url, token: account.token });
@@ -143,7 +148,7 @@ let hub, runtime, encrypted, socket;
   assert.equal(view.objective.provenance, 'recorded');
   assert.equal(view.provider.provenance, 'recorded');
   assert.equal(view.provider.value, 'demo', 'the log names the provider the host actually ran');
-  assert.deepEqual(view.provider.source, { seq: 1, type: 'task.created' });
+  assert.deepEqual(view.provider.source, { seq: 2, type: 'turn.started' });
   pass('the catch-up projection reads the real task, provider included', 'provider recorded by the host, not by the caller');
 
   // ---- criterion 1: a blocker a teammate can actually see, and answer ----
@@ -216,7 +221,7 @@ let hub, runtime, encrypted, socket;
   const answered = catchUp(blockedReader.snapshot(), { responsible: 'alice', host: runtime.id, provider: 'demo', hostConnected: true, taskId: blocked.id, projectId });
   assert.deepEqual(answered.pending.approvals, [], 'the answered request is no longer outstanding');
   assert.equal(answered.decisions.length, 1);
-  assert.equal(answered.decisions[0].actor, 'alice');
+  assert.equal(answered.decisions[0].actor, account.id);
   assert.equal(answered.decisions[0].value, 'Approval accept');
   assert.equal(answered.decisions[0].basis, requested.requestId);
   pass('the recorded decision clears the request it names and is attributed to who made it',
@@ -251,8 +256,10 @@ let hub, runtime, encrypted, socket;
 
   // ---- what the host is honest about ----
   const durability = EncryptedHost.identityDurability();
-  assert.equal(durability.persistent, false);
-  pass('the host records that its identity does not survive a restart', durability.reason);
+  assert.equal(durability.persistent, true);
+  assert.equal(durability.backend, 'desktop-os-sealed-indexeddb');
+  pass('production host persistence names the supported desktop store',
+    'actual process restart is exercised separately in test/durable-host.js');
 
   fs.mkdirSync(path.join(__dirname, '..', '.artifacts', 'encrypted-real-task'), { recursive: true });
   fs.writeFileSync(path.join(__dirname, '..', '.artifacts', 'encrypted-real-task', 'results.json'),

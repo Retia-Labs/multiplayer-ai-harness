@@ -23,7 +23,7 @@ const TOOLS = [
 ];
 
 class TurnSession {
-  constructor({ thread, turnId, by, input, provider, model, settings, executor, emit, history, teammates, settledApprovals, onApprovalSettled, onApprovalRequested, approvalTtlMs, log = () => {} }) {
+  constructor({ thread, turnId, by, input, provider, model, settings, executor, emit, history, teammates, settledApprovals, onApprovalSettled, onApprovalRequested, onProviderStateChanged, approvalTtlMs, log = () => {} }) {
     this.teammates = teammates || (() => []);
     this.thread = thread;
     this.turnId = turnId || uid('turn');
@@ -45,6 +45,7 @@ class TurnSession {
     this.settledApprovals = new Map(settledApprovals || []);
     this.onApprovalSettled = onApprovalSettled || (() => {});
     this.onApprovalRequested = onApprovalRequested || (() => {});
+    this.onProviderStateChanged = onProviderStateChanged || (() => {});
     this.approvalTtlMs = approvalTtlMs || 10 * 60 * 1000;
     this.steerQueue = [];
     // Every accepted instruction gets a number from the host, in the order the host accepted
@@ -63,10 +64,10 @@ class TurnSession {
   emit(method, payload) { this._emit({ method, turnId: this.turnId, ...payload }); }
 
   // ---------- public control surface ----------
-  // How this provider takes a steer, so a client can tell "the agent has it" from "it is
-  // queued": model/demo backends fold it into the round in flight, the Codex CLI cannot be
-  // interrupted mid-process and gets it as a resumed turn on the same session.
+  // The public provider name can select either adapter. Its capability decides whether
+  // a correction can enter the current turn or must wait for a resumed exec process.
   deliveryMode() {
+    if (this.provider.capabilities?.().steer === 'inline') return 'inline';
     return this.provider.id === 'codex-cli' ? 'nextProviderTurn' : 'inline';
   }
 
@@ -75,8 +76,10 @@ class TurnSession {
   // message appearing in the transcript is neither of those, and saying so is the point.
   steer(input, by) {
     const seq = ++this.acceptedSteers;
-    this.steerQueue.push({ input, by, seq });
+    const entry = { input, by, seq };
+    this.steerQueue.push(entry);
     this.emitUserMessage(input, by, 'steer');
+    this.providerControl?.steer(entry);
     const mode = this.deliveryMode();
     return { outcome: mode === 'inline' ? 'queued' : 'queuedForNextProviderTurn', delivery: mode, seq, turnId: this.turnId };
   }
@@ -97,9 +100,50 @@ class TurnSession {
   interrupt() {
     this.cancelled = true;
     this.abort.abort();
-    for (const pending of this.pendingApprovals.values()) pending.resolve(ApprovalDecision.CANCEL);
-    this.pendingApprovals.clear();
-    if (this.child) { try { this.child.kill('SIGKILL'); } catch {} }
+    try { this.cancelPendingApprovals('turn_interrupted', this.interruptState?.by); }
+    finally { if (this.child && !this.providerControl) { try { this.child.kill('SIGKILL'); } catch {} } }
+  }
+
+  cancelPendingApprovals(reason, by = { userId: 'execution-host', name: 'Execution host' }) {
+    let failure;
+    for (const [requestId, pending] of this.pendingApprovals) {
+      try { this.settleApproval(requestId, pending, ApprovalDecision.CANCEL, by, reason); }
+      catch (error) { failure ||= error; }
+    }
+    if (failure) throw failure;
+  }
+
+  settleApproval(requestId, pending, decision, by, reason, at = Date.now()) {
+    clearTimeout(pending.timer);
+    const record = { requestId, decision, by, ...(reason ? { reason } : {}), at,
+      turnId: pending.turnId, fingerprint: pending.fingerprint };
+    this.pendingApprovals.delete(requestId);
+    this.settledApprovals.set(requestId, record);
+    // Cancellation must release the provider even if persisting its receipt fails.
+    // An accepted action, however, cannot proceed without that durable settlement.
+    try { this.onApprovalSettled(record); }
+    catch (error) {
+      // The callback may already reference this record in its in-memory state.
+      // Never let a later successful flush turn the failed ACCEPT into a receipt.
+      record.decision = ApprovalDecision.CANCEL;
+      record.reason = 'approval_settlement_failed';
+      record.by = { userId: 'execution-host', name: 'Execution host' };
+      try { this.emit(Events.SERVER_REQUEST_RESOLVED, { requestId, decision: record.decision, by: record.by, reason: record.reason }); }
+      finally { pending.resolve(ApprovalDecision.CANCEL); }
+      throw error;
+    }
+    this.emit(Events.SERVER_REQUEST_RESOLVED, { requestId, decision, by, ...(reason ? { reason } : {}) });
+    pending.resolve(decision);
+    return record;
+  }
+
+  // The host polls this after waking/reconnecting; the per-request timer also covers
+  // callers without a host polling loop. Both paths settle exactly once.
+  expirePendingApprovals(now = Date.now()) {
+    for (const [requestId, pending] of this.pendingApprovals) {
+      if (pending.expiresAt <= now) this.settleApproval(requestId, pending, ApprovalDecision.DECLINE,
+        { userId: 'execution-host', name: 'Execution host' }, 'approval_expired', now);
+    }
   }
 
   // One answer settles an action, and everyone else is told who settled it. Each way of
@@ -107,29 +151,19 @@ class TurnSession {
   // mutated action would hide exactly the differences that matter.
   resolveApproval(requestId, decision, by, { turnId, fingerprint } = {}) {
     const refuse = (code, extra = {}) => { throw Object.assign(new Error(code), { code, ...extra }); };
+    this.expirePendingApprovals();
     if (decision === ApprovalDecision.ACCEPT_FOR_SESSION) refuse(Errors.APPROVAL_SCOPE_UNSUPPORTED);
     if (![ApprovalDecision.ACCEPT, ApprovalDecision.DECLINE, ApprovalDecision.CANCEL].includes(decision)) refuse(Errors.APPROVAL_UNKNOWN);
     const settled = this.settledApprovals.get(requestId);
     // The loser is told the outcome rather than that nothing was there. Two people answering
     // at once is ordinary; being unable to see who won is not.
-    if (settled) refuse(Errors.APPROVAL_SETTLED, { settled });
+    if (settled) refuse(settled.reason === 'approval_expired' ? Errors.APPROVAL_EXPIRED : Errors.APPROVAL_SETTLED, { settled });
     const pending = this.pendingApprovals.get(requestId);
     if (!pending) refuse(Errors.APPROVAL_UNKNOWN);
     if (!turnId || !fingerprint) refuse(Errors.APPROVAL_BINDING_REQUIRED);
     if (turnId !== pending.turnId) refuse(Errors.STALE_TURN);
     if (fingerprint !== pending.fingerprint) refuse(Errors.APPROVAL_ACTION_CHANGED);
-    if (Date.now() > pending.expiresAt) {
-      this.pendingApprovals.delete(requestId);
-      pending.resolve(ApprovalDecision.DECLINE);
-      refuse(Errors.APPROVAL_EXPIRED);
-    }
-    this.pendingApprovals.delete(requestId);
-    const record = { requestId, decision, by, at: Date.now(), turnId: pending.turnId, fingerprint: pending.fingerprint };
-    this.settledApprovals.set(requestId, record);
-    this.onApprovalSettled(record);
-    this.emit(Events.SERVER_REQUEST_RESOLVED, { requestId, decision, by });
-    pending.resolve(decision);
-    return record;
+    return this.settleApproval(requestId, pending, decision, by);
   }
 
   // ---------- turn lifecycle ----------
@@ -216,7 +250,10 @@ class TurnSession {
     // way to tell "your answer arrived too late" from "that request never existed".
     this.onApprovalRequested({ requestId, turnId: this.turnId, fingerprint, expiresAt });
     return await new Promise((resolve) => {
-      this.pendingApprovals.set(requestId, { resolve, fingerprint, expiresAt, turnId: this.turnId, method });
+      const pending = { resolve, fingerprint, expiresAt, turnId: this.turnId, method };
+      this.pendingApprovals.set(requestId, pending);
+      pending.timer = setTimeout(() => this.expirePendingApprovals(), Math.max(0, expiresAt - Date.now()));
+      pending.timer.unref?.();
     });
   }
 
@@ -274,6 +311,11 @@ class TurnSession {
   async removePath(relPath, command = null) {
     const label = command || `remove_path ${relPath}`;
     const item = { id: uid('cmd'), type: ItemTypes.COMMAND_EXECUTION, command: label, cwd: this.cwd, executor: 'workspace', status: ItemStatus.IN_PROGRESS, aggregatedOutput: '' };
+    if (this.cancelled || this.abort.signal.aborted) {
+      item.status = ItemStatus.DECLINED; item.aggregatedOutput = 'Cancelled before workspace mutation.';
+      this.emit(Events.ITEM_STARTED, { item }); this.emit(Events.ITEM_COMPLETED, { item });
+      return { item, result: item.aggregatedOutput };
+    }
     let target;
     try { target = this.workspace.inspect(relPath); }
     catch (err) {
@@ -300,6 +342,11 @@ class TurnSession {
       }
     }
     const t0 = Date.now();
+    if (this.cancelled || this.abort.signal.aborted) {
+      item.status = ItemStatus.DECLINED; item.aggregatedOutput = 'Cancelled before workspace mutation.';
+      this.emit(Events.ITEM_COMPLETED, { item });
+      return { item, result: item.aggregatedOutput };
+    }
     try {
       this.workspace.remove(target.relative);
       item.exitCode = 0;
@@ -315,6 +362,12 @@ class TurnSession {
   }
 
   async writeFile(relPath, content) {
+    if (this.cancelled || this.abort.signal.aborted) {
+      const item = { id: uid('chg'), type: ItemTypes.FILE_CHANGE, status: ItemStatus.DECLINED,
+        changes: [{ path: String(relPath), kind: 'update', additions: 0, deletions: 0, lines: [] }] };
+      this.emit(Events.ITEM_STARTED, { item }); this.emit(Events.ITEM_COMPLETED, { item });
+      return { item, result: 'Cancelled before workspace mutation.' };
+    }
     let target;
     let oldText = null;
     try {
@@ -351,6 +404,10 @@ class TurnSession {
         if (dec === ApprovalDecision.CANCEL) this.interrupt();
         return { item, result: 'Declined by user.' };
       }
+    }
+    if (this.cancelled || this.abort.signal.aborted) {
+      item.status = ItemStatus.DECLINED; this.emit(Events.ITEM_COMPLETED, { item });
+      return { item, result: 'Cancelled before workspace mutation.' };
     }
     try {
       this.workspace.writeFile(relPath, content);
@@ -426,7 +483,7 @@ class TurnSession {
         messages.push({ role: 'user', content: s.input.filter((i) => i.type === 'text').map((i) => i.text).join('\n') });
         // The instruction is in the request now, so this is where queued becomes delivered.
         // Anything earlier would be the host reporting its own intentions as the agent's.
-        this.emit(Events.TURN_STEER_DELIVERED, { seq: s.seq, by: s.by });
+        this.emit(Events.TURN_STEER_DELIVERED, { steerSeq: s.seq, by: s.by });
       }
       let msgItem = null, rsnItem = null;
       const calls = [];
@@ -471,7 +528,9 @@ class TurnSession {
     await this.streamText(ItemTypes.REASONING, 'Reading the request, checking team activity on this project, and deciding on the safest sequence of steps before touching anything.', 16, 70);
     await this.runDemoScenario();
     if (this.steerQueue.length && !this.cancelled) {
-      const extra = this.steerQueue.splice(0).map((s) => s.input.filter((i) => i.type === 'text').map((i) => i.text).join(' ')).join('; ');
+      const steers = this.steerQueue.splice(0);
+      const extra = steers.map((s) => s.input.filter((i) => i.type === 'text').map((i) => i.text).join(' ')).join('; ');
+      for (const steer of steers) this.emit(Events.TURN_STEER_DELIVERED, { steerSeq: steer.seq, by: steer.by });
       await this.streamText(ItemTypes.AGENT_MESSAGE, `Noted the steer from a teammate: _${extra}_ — a live model would fold that into this turn (crabs included).`);
     }
   }

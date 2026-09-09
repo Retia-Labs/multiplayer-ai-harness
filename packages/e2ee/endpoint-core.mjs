@@ -1,4 +1,5 @@
 'use strict';
+import { assertPublishedStore, createOwnerRecoveryKitAPI } from './owner-recovery-kit.mjs';
 // One cryptographic endpoint - a desktop app, a browser profile, or an execution host.
 //
 // Spike for issue #3. This is a thin seam over @matrix-org/matrix-sdk-crypto-wasm: the
@@ -30,33 +31,45 @@ function init() {
 // cannot be passed into the next. Every use builds a fresh one, deliberately.
 const userId = (id) => new sdk.UserId(id);
 const deviceId = (id) => new sdk.DeviceId(id);
+const bytes64 = bytes => {
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 32768) binary += String.fromCharCode(...bytes.subarray(index, index + 32768));
+  return btoa(binary);
+};
+const from64 = value => Uint8Array.from(atob(value), character => character.charCodeAt(0));
+const recoveryContext = new TextEncoder().encode('plexus.verified-history.v1');
+async function recoveryEnvelopeKey(recoveryKey, salt) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(recoveryKey), 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: recoveryContext }, material,
+    { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
 
 class Endpoint {
-  constructor({ user, device, transport, log = () => {} }) {
+  constructor({ user, device, transport, recoveredHistory = [], log = () => {} }) {
     this.user = user;           // '@alice:plexus.local'
     this.device = device;       // 'ALICEDEV'
     this.transport = transport; // the hub binding; see KeyTransport below
     this.log = log;
     this.machine = null;
+    this.verifiedHistory = new Map();
+    // Application-local durable trust metadata. Only authenticated recovery imports may
+    // populate it; callers must never fill it from a relay response or a raw key export.
+    this.recoveredHistory = new Map(recoveredHistory.map(entry => [entry.roomId + '/' + entry.sessionId, entry]));
   }
 
   // `storeName` gives a persistent store, which this library backs with IndexedDB - so it
   // works in a browser or an Electron renderer and NOT in Node, where it throws. Omitting
   // it yields a memory store whose keys die with the process. See the threat model.
   static async create(opts) {
-    await init();
-    const ep = new Endpoint(opts);
-    if (opts.storeName) {
-      if (!opts.storeKey && !opts.storePassphrase) throw new Error('encrypted_store_key_required');
-      const handle = opts.storeKey
-        ? await sdk.StoreHandle.openWithKey(opts.storeName, Uint8Array.from(opts.storeKey))
-        : await sdk.StoreHandle.open(opts.storeName, opts.storePassphrase);
-      ep.machine = await sdk.OlmMachine.initFromStore(userId(ep.user), deviceId(ep.device), handle);
-    } else {
-      ep.machine = await sdk.OlmMachine.initialize(userId(ep.user), deviceId(ep.device));
+    const marker = await assertPublishedStore(opts);
+    const ep = await openInactive(opts);
+    try {
+      if (marker?.identity && !['user', 'device', 'curve25519', 'ed25519'].every(key => marker.identity[key] === ep.identity()[key])) {
+        throw Object.assign(new Error('owner_recovery_store_mismatch'), { code: 'owner_recovery_store_mismatch' });
+      }
+      await ep.sync(); return ep;
     }
-    await ep.sync();
-    return ep;
+    catch (error) { ep.close(); throw error; }
   }
 
   static async storageSupport() {
@@ -72,19 +85,15 @@ class Endpoint {
   // Publish our public keys and pick up everyone else's. The hub only ever handles public
   // material here; the private half never leaves this process.
   async sync() {
-    for (const req of await this.machine.outgoingRequests()) {
-      const kind = req.constructor.name;
-      const type = REQUEST_TYPES[kind];
-      if (!type) { this.log('unhandled request ' + kind); continue; }
-      const response = await this.transport.send(type, { user: this.user, device: this.device, body: req.body, id: req.id });
-      await this.machine.markRequestAsSent(req.id, sdk.RequestType[type], response);
-    }
+    ownerRecovery.assertActive(this);
+    return syncRequests(this);
   }
 
   // `updateTrackedUsers` only marks users as interesting; the key query is issued lazily
   // off a sync we do not have. `queryKeysForUsers` forces it, which is what makes another
   // endpoint visible right now rather than eventually.
   async track(users) {
+    ownerRecovery.assertActive(this);
     await this.machine.updateTrackedUsers(users.map(userId));
     const req = this.machine.queryKeysForUsers(users.map(userId));
     if (req) {
@@ -118,6 +127,7 @@ class Endpoint {
 
   // Establish sessions with any of `users`' devices we have not talked to yet.
   async ensureSessions(users) {
+    ownerRecovery.assertActive(this);
     const missing = await this.machine.getMissingSessions(users.map(userId));
     if (!missing) return;
     const response = await this.transport.send('KeysClaim', { user: this.user, device: this.device, body: missing.body, id: missing.id });
@@ -149,6 +159,7 @@ class Endpoint {
   // actually protected in transit; a `PlainText` or `UnableToDecrypt` event must never be
   // treated as authentic, which is why that distinction is surfaced rather than flattened.
   async open(envelopes) {
+    ownerRecovery.assertActive(this);
     const processed = await this.machine.receiveSyncChanges(
       JSON.stringify(envelopes), new sdk.DeviceLists(), new Map(), undefined,
       new sdk.DecryptionSettings(sdk.TrustRequirement.Untrusted)
@@ -181,6 +192,7 @@ class Endpoint {
 
   // Hand the current group session to everyone who should be able to read what follows.
   async shareTaskKey(roomId, users, { members } = {}) {
+    ownerRecovery.assertActive(this);
     // The group key itself travels sealed to each device, so the Olm sessions have to
     // exist before it can be handed out at all.
     await this.ensureSessions(users);
@@ -261,8 +273,12 @@ class Endpoint {
     const decrypted = await this.machine.decryptRoomEvent(JSON.stringify(event), new sdk.RoomId(roomId),
       new sdk.DecryptionSettings(sdk.TrustRequirement.Untrusted));
     const shield = decrypted.shieldState(true);
+    const historyKey = roomId + '/' + event.content?.session_id;
+    const recovered = this.recoveredHistory.get(historyKey);
+    const recoveredWriter = recovered && ['user', 'device', 'curve25519', 'ed25519']
+      .every(key => recovered.writer[key] === expected[key]);
     const admitted = shield.code === sdk.ShieldStateCode.AuthenticityNotGuaranteed &&
-      !!admittedSessions && admittedSessions.has(event.content?.session_id);
+      (recoveredWriter || (!!admittedSessions && admittedSessions.has(event.content?.session_id)));
     const allowedShield = shield.color === sdk.ShieldColor.None || admitted ||
       shield.code === sdk.ShieldStateCode.UnverifiedIdentity || shield.code === sdk.ShieldStateCode.UnsignedDevice;
     // An exported session carries the writer's keys but not its device id - the format has
@@ -273,9 +289,11 @@ class Endpoint {
     const deviceAttributed = admitted || decrypted.senderDevice?.toString() === expected.device;
     if (!allowedShield || !deviceAttributed || decrypted.sender.toString() !== expected.user ||
         decrypted.senderCurve25519Key !== expected.curve25519 ||
-        decrypted.senderClaimedEd25519Key !== expected.ed25519 || !await this.isEndpointVerified(expected.user, expected.device)) {
+        decrypted.senderClaimedEd25519Key !== expected.ed25519 ||
+        (!recoveredWriter && !await this.isEndpointVerified(expected.user, expected.device))) {
       throw new Error('task_sender_unverified');
     }
+    this.verifiedHistory.set(historyKey, { roomId, sessionId: event.content.session_id, writer: { ...expected } });
     return JSON.parse(decrypted.event);
   }
 
@@ -288,27 +306,18 @@ class Endpoint {
 
   // ---- endpoint identity and verification ----
 
-  // Establish this account's cross-signing identity. The keys it publishes are public;
-  // the private halves stay in this machine's store.
+  // Establish or republish this account's cross-signing identity. Repeating setup must
+  // retain the existing root and signatures; a reset needs a separate rotation ceremony.
+  // The keys it publishes are public; the private halves stay in this machine's store.
   async bootstrapCrossSigning() {
-    const reqs = await this.machine.bootstrapCrossSigning(true);
-    for (const req of [reqs.uploadKeysRequest, reqs.uploadSigningKeysRequest, reqs.uploadSignatureRequest]) {
-      if (!req) continue;
-      const kind = req.constructor.name;
-      const type = REQUEST_TYPES[kind] || (kind.includes('SigningKeys') ? 'SigningKeysUpload' : null);
-      if (!type) continue;
-      await this.transport.send(type, { user: this.user, device: this.device, body: req.body, id: req.id });
-      if (sdk.RequestType[type] !== undefined && req.id) {
-        try { await this.machine.markRequestAsSent(req.id, sdk.RequestType[type], '{}'); } catch {}
-      }
-    }
-    await this.sync();
-    return this.machine.crossSigningStatus();
+    ownerRecovery.assertActive(this);
+    return publishCrossSigning(this, false);
   }
 
   // An already-trusted endpoint vouching for another one. This is the step that stops a
   // relay-supplied key from being accepted just because the relay served it.
   async verifyEndpoint(user, device) {
+    ownerRecovery.assertActive(this);
     const target = await this.getDevice(user, device);
     if (!target) throw new Error('unknown endpoint ' + user + '/' + device);
     const req = await target.verify();
@@ -325,6 +334,18 @@ class Endpoint {
     const target = await this.getDevice(user, device);
     return !!(target && target.isVerified());
   }
+
+  // Owner authority recovery creates a different inactive store. The ordinary create
+  // path cannot reopen it until the explicit publication ceremony has completed.
+  static stageOwnerRecovery(options) { return ownerRecovery.stage(options); }
+  static resumeOwnerRecovery(options) { return ownerRecovery.stage(options, true); }
+  static drillOwnerRecoveryKit(options) { return ownerRecovery.drillKit(options); }
+  ownerRecoveryIdentity(options) { return ownerRecovery.identity(this, options); }
+  provisionOwnerRecoveryKit(options) { return ownerRecovery.provision(this, options); }
+  ownerRecoveryStatus() { return ownerRecovery.status(this); }
+  drillOwnerRecovery() { return ownerRecovery.drill(this); }
+  publishOwnerRecovery(options) { return ownerRecovery.publish(this, options); }
+  signOwnerRecovery(body, options) { return ownerRecovery.signRecovery(this, body, options); }
 
   // ---- customer-held recovery ----
 
@@ -360,6 +381,15 @@ class Endpoint {
         target.ed25519Key?.toBase64() !== expected.ed25519) throw new Error('endpoint_key_mismatch');
     await target.setLocalTrust(sdk.LocalTrust.Verified);
     return true;
+  }
+
+  async sign(message) {
+    ownerRecovery.assertActive(this);
+    if (typeof message !== 'string') throw new Error('invalid_signed_message');
+    const signatures = await this.machine.sign(message);
+    const signature = signatures.getSignature(userId(this.user), new sdk.DeviceKeyId('ed25519:' + this.device));
+    if (!signature) throw new Error('device_signature_unavailable');
+    return signature.toBase64();
   }
 
   async sealControl(user, device, payload) {
@@ -400,6 +430,66 @@ class Endpoint {
     return { imported: Number(imported.importedCount), total: keys.length, sessions: keys.map((key) => key.session_id) };
   }
 
+  // Unlike a bare room-key export, a customer backup carries the host fingerprints whose
+  // events this endpoint actually verified. Imported key metadata is not provenance.
+  async exportRecoveryHistory(roomIds, recoveryKey) {
+    const allowed = new Set(roomIds);
+    const history = [...this.verifiedHistory.values(), ...this.recoveredHistory.values()]
+      .filter(entry => allowed.has(entry.roomId));
+    const unique = new Map(history.map(entry => [entry.roomId + '/' + entry.sessionId, entry]));
+    if (roomIds.some(room => !history.some(entry => entry.roomId === room))) throw new Error('recovery_verified_history_required');
+    const exported = JSON.parse(await this.machine.exportRoomKeys(session => allowed.has(session.roomId.toString())));
+    const keys = exported.filter(key => {
+      const entry = unique.get(key.room_id + '/' + key.session_id);
+      return entry && key.sender_key === entry.writer.curve25519 && key.sender_claimed_keys?.ed25519 === entry.writer.ed25519;
+    });
+    if (!keys.length || roomIds.some(room => !keys.some(key => key.room_id === room))) throw new Error('recovery_verified_history_required');
+    const present = new Set(keys.map(key => key.room_id + '/' + key.session_id));
+    const manifest = [...unique].filter(([key]) => present.has(key)).map(([, entry]) => entry);
+    const exportedKeys = sdk.OlmMachine.encryptExportedRoomKeys(JSON.stringify(keys), recoveryKey, 500000);
+    const salt = crypto.getRandomValues(new Uint8Array(32));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await recoveryEnvelopeKey(recoveryKey, salt);
+    const plaintext = new TextEncoder().encode(JSON.stringify({ history: manifest, exportedKeys }));
+    const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: recoveryContext }, key, plaintext);
+    return JSON.stringify({ format: 'plexus.verified-history.v1', salt: bytes64(salt), iv: bytes64(iv), ciphertext: bytes64(new Uint8Array(encrypted)) });
+  }
+
+  async importRecoveryHistory(encrypted, recoveryKey, roomIds) {
+    const envelope = JSON.parse(encrypted);
+    if (envelope?.format !== 'plexus.verified-history.v1') throw new Error('recovery_verified_history_required');
+    const salt = from64(envelope.salt), iv = from64(envelope.iv);
+    if (salt.length !== 32 || iv.length !== 12) throw new Error('recovery_material_rejected');
+    const key = await recoveryEnvelopeKey(recoveryKey, salt);
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: recoveryContext }, key, from64(envelope.ciphertext));
+    const decoded = JSON.parse(new TextDecoder().decode(plaintext));
+    decoded.keys = JSON.parse(sdk.OlmMachine.decryptExportedRoomKeys(decoded.exportedKeys, recoveryKey));
+    if (!Array.isArray(decoded.history) || !Array.isArray(decoded.keys)) {
+      throw new Error('recovery_verified_history_required');
+    }
+    const history = decoded.history;
+    roomIds = roomIds || [...new Set(history.map(entry => entry.roomId))];
+    const allowed = new Set(roomIds);
+    if (!history.length || history.some(entry => !allowed.has(entry.roomId)) ||
+        roomIds.some(room => !history.some(entry => entry.roomId === room))) throw new Error('recovery_scope_mismatch');
+    const manifest = new Map();
+    for (const entry of history) {
+      if (typeof entry.sessionId !== 'string' || !entry.writer ||
+          !['user', 'device', 'curve25519', 'ed25519'].every(key => typeof entry.writer[key] === 'string' && entry.writer[key])) {
+        throw new Error('recovery_material_rejected');
+      }
+      manifest.set(entry.roomId + '/' + entry.sessionId, entry);
+    }
+    if (!decoded.keys.length || decoded.keys.some(key => {
+      const entry = manifest.get(key.room_id + '/' + key.session_id);
+      return !entry || key.sender_key !== entry.writer.curve25519 || key.sender_claimed_keys?.ed25519 !== entry.writer.ed25519;
+    })) throw new Error('recovery_material_rejected');
+    const imported = await this.machine.importExportedRoomKeys(JSON.stringify(decoded.keys), () => {});
+    for (const [key, entry] of manifest) this.recoveredHistory.set(key, structuredClone(entry));
+    return { imported: Number(imported.importedCount), total: decoded.keys.length,
+      sessions: decoded.keys.map(key => key.session_id), history: structuredClone(history) };
+  }
+
   close() { this.machine?.close(); this.machine = null; }
 
   identity() {
@@ -407,6 +497,52 @@ class Endpoint {
     return { user: this.user, device: this.device, curve25519: keys.curve25519.toBase64(), ed25519: keys.ed25519.toBase64() };
   }
 }
+
+// Internal construction deliberately makes no outgoing SDK request. Only normal
+// creation and explicit validated recovery publication may call the transport helpers.
+async function openInactive(opts) {
+  await init();
+  const endpoint = new Endpoint(opts);
+  if (opts.storeName) {
+    if (!opts.storeKey && !opts.storePassphrase) throw new Error('encrypted_store_key_required');
+    const handle = opts.storeKey
+      ? await sdk.StoreHandle.openWithKey(opts.storeName, Uint8Array.from(opts.storeKey))
+      : await sdk.StoreHandle.open(opts.storeName, opts.storePassphrase);
+    endpoint.machine = await sdk.OlmMachine.initFromStore(userId(endpoint.user), deviceId(endpoint.device), handle);
+  } else endpoint.machine = await sdk.OlmMachine.initialize(userId(endpoint.user), deviceId(endpoint.device));
+  // initFromStore may return the identity already in the database. Caller labels
+  // cannot rename it, including when resuming an inactive recovery store.
+  if (endpoint.machine.userId.toString() !== opts.user || endpoint.machine.deviceId.toString() !== opts.device) {
+    endpoint.close();
+    throw Object.assign(new Error('owner_recovery_store_mismatch'), { code: 'owner_recovery_store_mismatch' });
+  }
+  return endpoint;
+}
+async function syncRequests(endpoint) {
+  for (const req of await endpoint.machine.outgoingRequests()) {
+    const type = REQUEST_TYPES[req.constructor.name];
+    if (!type) { endpoint.log('unhandled request ' + req.constructor.name); continue; }
+    const response = await endpoint.transport.send(type, { user: endpoint.user, device: endpoint.device, body: req.body, id: req.id });
+    await endpoint.machine.markRequestAsSent(req.id, sdk.RequestType[type], response);
+  }
+}
+async function publishCrossSigning(endpoint, replaceAuthority, transport = endpoint.transport) {
+  endpoint.transport = transport;
+  const reqs = await endpoint.machine.bootstrapCrossSigning(replaceAuthority);
+  for (const req of [reqs.uploadKeysRequest, reqs.uploadSigningKeysRequest, reqs.uploadSignaturesRequest]) {
+    if (!req) continue;
+    const kind = req.constructor.name;
+    const type = REQUEST_TYPES[kind] || (kind.includes('SigningKeys') ? 'SigningKeysUpload' : null);
+    if (!type) continue;
+    await transport.send(type, { user: endpoint.user, device: endpoint.device, body: req.body, id: req.id });
+    if (sdk.RequestType[type] !== undefined && req.id) {
+      try { await endpoint.machine.markRequestAsSent(req.id, sdk.RequestType[type], '{}'); } catch {}
+    }
+  }
+  await syncRequests(endpoint);
+  return endpoint.machine.crossSigningStatus();
+}
+const ownerRecovery = createOwnerRecoveryKitAPI({ sdk, openInactive, publishCrossSigning });
 
 return { Endpoint, REQUEST_TYPES, init, sdk };
 }

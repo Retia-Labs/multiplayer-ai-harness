@@ -32,7 +32,7 @@ const checks = [];
 const pass = (name, detail) => { checks.push({ name, status: 'pass' }); console.log('PASS ' + name + (detail ? ' - ' + detail : '')); };
 
 (async () => {
-  for (const name of ['packages/e2ee/endpoint-core.mjs', 'packages/e2ee/http-transport.mjs', 'packages/e2ee/task-log.mjs', 'packages/e2ee/enrollment.mjs', 'packages/protocol/encrypted-task.mjs']) {
+  for (const name of ['packages/e2ee/endpoint-core.mjs', 'packages/e2ee/http-transport.mjs', 'packages/e2ee/task-log.mjs', 'packages/e2ee/enrollment.mjs', 'packages/e2ee/membership.mjs', 'packages/protocol/encrypted-task.mjs']) {
     fs.mkdirSync(path.dirname(path.join(web, name)), { recursive: true });
     fs.copyFileSync(path.join(root, name), path.join(web, name));
   }
@@ -70,7 +70,7 @@ const pass = (name, detail) => { checks.push({ name, status: 'pass' }); console.
   owner = await Endpoint.create({ user: matrixUser(ownerAccount.id), device: 'OWNERDEV', transport: new HttpKeyTransport(ownerKeys) });
   await owner.confirmEndpoint(host.identity(), { confirmed: true });
   await host.confirmEndpoint(owner.identity(), { confirmed: true });
-  const ownerEnroll = new EnrollmentTransport({ url, token: ownerAccount.token });
+  const ownerEnroll = new EnrollmentTransport({ url, token: ownerAccount.token, endpoint: owner });
   await ownerEnroll.bootstrap(team.id, announcement(owner));
 
   // The owner creates the task and the host writes the whole log before the teammate exists
@@ -79,6 +79,7 @@ const pass = (name, detail) => { checks.push({ name, status: 'pass' }); console.
   const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId: newId('ep'), creatorUserId: ownerAccount.id };
   const payload = { title: secret + ' title', objective: secret + ' objective', fixture: { plan: secret + ' plan', path: secret + '/file', result: secret + ' result', diff: secret + ' diff', activity: secret + ' activity', answer: secret + ' answer' } };
   const ownerTasks = new EncryptedTaskTransport({ url, token: ownerAccount.token });
+  await ownerEnroll.ownProject(team.id, task.projectId);
   const created = await createEncryptedTask(owner, ownerTasks, { task, writer: host.identity(), payload });
   state = new EncryptedTaskState(path.join(tmp, 'outbox.sqlite'));
   const hostTasks = new EncryptedTaskTransport({ url, token: runtime.runtimeToken, runtimeId: runtime.id });

@@ -6,7 +6,10 @@ on:
       - 'test/encrypted-task*.js'
       - 'test/teammate-enrollment*.js'
       - 'test/catchup*.js'
-      - 'apps/web/catchup.js'
+      - 'apps/web/**'
+      - 'test/enrollment-authority.js'
+      - 'test/recovery-trust.js'
+      - 'test/task-control-receipts.js'
       - 'test/e2ee-import-forgery.js'
       - 'test/hub-key-exchange.js'
       - 'test/shared-steering.js'
@@ -20,6 +23,21 @@ on:
 permissions:
   contents: read
 jobs:
+  codex-tool-inventory:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Install the pinned CLI in a disposable location
+        run: npm install --prefix "$RUNNER_TEMP/plexus-codex" --no-save --ignore-scripts --no-audit --no-fund @openai/codex@0.153.4
+      # Loopback-only synthetic Responses server: no account or model service used.
+      - name: Verify actual exposed tools and configuration preflight
+        run: PLEXUS_CODEX_INVENTORY_BIN="$RUNNER_TEMP/plexus-codex/node_modules/.bin/codex" npm run test:codex:inventory
   encrypted-task:
     strategy:
       fail-fast: false
@@ -62,6 +80,12 @@ jobs:
       - run: npm run test:encrypted-codex-task
       - run: npm run test:codex-confinement
       - run: npm run test:codex
+      - run: npm run test:enrollment-authority
+      - run: npm run test:encrypted-controls
+      - run: npm run test:runtime-lifecycle
+      - run: npm run test:recovery-trust
+      - run: npm run test:client-storage
+      - run: npm run test:encrypted-workspace
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -70,4 +94,7 @@ jobs:
             .artifacts/encrypted-task/*.json
             .artifacts/teammate-enrollment/*.json
             .artifacts/catchup/*.json
+            .artifacts/encrypted-workspace/*.json
+            .artifacts/encrypted-workspace/*.png
+            .artifacts/encrypted-workspace/README.md
           if-no-files-found: warn

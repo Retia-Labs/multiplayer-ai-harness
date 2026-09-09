@@ -117,6 +117,9 @@ let hub, runtime, socketsToClose = [];
 
   // ================= criterion 1: login and a link are not trust =================
 
+  enroll.alice.bindEndpoint(aliceEp); enroll.bob.bindEndpoint(bobEp); enroll.mallory.bindEndpoint(malloryEp);
+  await enroll.bob.pinAuthority(team.id, aliceEp.identity());
+  await enroll.mallory.pinAuthority(team.id, aliceEp.identity());
   await enroll.alice.bootstrap(team.id, announcement(aliceEp));
   const announced = await announceEndpoint(bobEp, enroll.bob, team.id);
   assert.equal(announced.endpoint.state, 'pending');
@@ -138,6 +141,7 @@ let hub, runtime, socketsToClose = [];
 
   const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId: newId('ep'), creatorUserId: alice.me.id };
   const payload = { title: canary + ' title', objective: canary + ' objective', fixture: { plan: canary + ' plan', path: canary + '/file.txt', result: canary + ' output', diff: canary + ' diff', activity: canary + ' activity', answer: canary + ' answer' } };
+  await enroll.alice.ownProject(team.id, task.projectId);
   const created = await createEncryptedTask(aliceEp, tasks.alice, { task, writer: hostEp.identity(), payload });
   const state = new EncryptedTaskState(path.join(tmp, 'outbox.sqlite'));
   const host = new EncryptedFixtureHost({ runtime, endpoint: hostEp, transport: hostTasks, state, projects: new Map([[task.projectId, project]]), creators: new Map([[alice.me.id, aliceEp.identity()]]) });
@@ -310,7 +314,7 @@ let hub, runtime, socketsToClose = [];
       teamId: team.id, projectId: task.projectId, member: { userId: mallory.me.id, device: 'MALLORYDEV' }, taskIds: [task.id]
     }));
 
-  await refused('the team cannot be bootstrapped a second time', 'team_already_bootstrapped',
+  await refused('the team cannot be bootstrapped a second time', 'membership_bootstrap_refused',
     () => enroll.alice.bootstrap(team.id, announcement(aliceEp)));
 
   await refused('a participant cannot revoke the project owner', 'project_owner_grant_retained',
@@ -330,18 +334,16 @@ let hub, runtime, socketsToClose = [];
     }));
 
   await enroll.alice.revokeEndpoint(team.id, { userId: bob.me.id, device: 'BOBDEV' });
-  await refused('a participant with no confirmed endpoint left cannot grant to anyone', 'granting_endpoint_unverified',
+  await refused('a participant with no confirmed endpoint left cannot grant to anyone', 'confirming_endpoint_unverified',
     () => enroll.bob.grant(team.id, task.projectId, mallory.me.id, 'participant'));
 
-  // The recovery authority, in the situation it exists for: the owner has lost every
-  // endpoint she had, so there is nobody left who could vouch for her replacement.
-  await enroll.alice.revokeEndpoint(team.id, { userId: alice.me.id, device: 'ALICEDEV' });
-  const aliceFresh = await Endpoint.create({ user: matrixUser(alice.me.id), device: 'ALICEDEV2', transport: keys });
-  await announceEndpoint(aliceFresh, enroll.alice, team.id);
-  const byRecovery = await enroll.alice.confirm(team.id, 'ALICEDEV2', { userId: alice.me.id, ...announcement(aliceFresh) });
-  assert.equal(byRecovery.authority, 'recovery');
-  assert.equal(byRecovery.endpoint.state, 'verified');
-  pass('the owner who has lost every endpoint confirms a replacement as the recovery authority', 'alice/ALICEDEV2');
+  // An account token is not recovery signing authority. The former success assertion
+  // here accepted an unsigned account-only takeover. Replacement of the pinned root
+  // needs an authenticated rotation; history-only recovery's remaining limitation is
+  // exercised separately in enrollment-authority.js rather than reported as success.
+  await refused('the pinned membership authority cannot be removed without a supported rotation',
+    'membership_authority_rotation_required',
+    () => enroll.alice.revokeEndpoint(team.id, { userId: alice.me.id, device: 'ALICEDEV' }));
 
   // ================= the relay never saw any of it =================
 

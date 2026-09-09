@@ -133,7 +133,7 @@ class Client {
   // the queue is drained at the top of an agent loop that may not run again. That is the
   // whole reason the host reports `queued` rather than claiming delivery, so the test
   // asserts the distinction instead of assuming the happy case.
-  const deliveredSeqs = () => events().filter((e) => e.method === Events.TURN_STEER_DELIVERED).map((e) => e.seq);
+  const deliveredSeqs = () => events().filter((e) => e.method === Events.TURN_STEER_DELIVERED).map((e) => e.steerSeq);
   const settled = await waitFor(() => {
     const seen = deliveredSeqs();
     if (seen.includes(1) && seen.includes(2)) return { delivered: seen };
@@ -146,7 +146,7 @@ class Client {
     assert.equal(settled.delivered.includes(1) && settled.delivered.includes(2), false);
     pass('an accepted instruction is not delivered when the turn ends first', 'queued, never delivered - which is why they are separate words');
   } else {
-    const one = events().find((e) => e.method === Events.TURN_STEER_DELIVERED && e.seq === 1);
+    const one = events().find((e) => e.method === Events.TURN_STEER_DELIVERED && e.steerSeq === 1);
     assert.ok(one.by && one.by.name, 'delivery keeps the actor');
     pass('queued becomes delivered when the instruction reaches the agent, not before', 'seq 1 and 2 delivered');
   }

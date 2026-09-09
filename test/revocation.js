@@ -118,6 +118,8 @@ let hub, runtime, encrypted, clients = [];
     user: matrixUser(maya.me.id), device: 'MAYADEV',
     transport: new HubKeyTransport({ url, token: token(maya), device: 'MAYADEV' })
   });
+  enrol.alex.bindEndpoint(alexEp);
+  enrol.maya.bindEndpoint(mayaEp);
   await enrol.alex.bootstrap(team.id, announcement(alexEp));
   await enrol.maya.announce(team.id, announcement(mayaEp));
   await confirmTeammateEndpoint(alexEp, enrol.alex, team.id, { userId: maya.me.id, ...announcement(mayaEp) }, { confirmed: true });
@@ -141,17 +143,21 @@ let hub, runtime, encrypted, clients = [];
   const projectId = newId('ep');
   encrypted = new EncryptedHost({
     runtime, url, statePath: path.join(tmp, 'outbox.sqlite'),
-    projects: new Map([[projectId, project]]), log: () => {}
+    projects: new Map([[projectId, project]]), authority: alexEp.identity(), endpointFactory: (options) => Endpoint.create(options), log: () => {}
   });
   const hostIdentity = await encrypted.start();
   await alexEp.confirmEndpoint(hostIdentity, { confirmed: true });
   await mayaEp.confirmEndpoint(hostIdentity, { confirmed: true });
+  await encrypted.beginReconcile();
+  await enrol.alex.answerChallenges(team.id);
+  await encrypted.reconcileMembership();
 
   const tasks = {
     alex: new EncryptedTaskTransport({ url, token: token(alex) }),
     maya: new EncryptedTaskTransport({ url, token: token(maya) })
   };
   const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId, creatorUserId: alex.me.id };
+  await enrol.alex.ownProject(team.id, projectId);
   await createEncryptedTask(alexEp, tasks.alex, {
     task, writer: hostIdentity, payload: { title: 'Retries', objective: 'create NOTES.md describing ' + before }
   });
@@ -170,7 +176,7 @@ let hub, runtime, encrypted, clients = [];
 
   // Maya is granted, admitted, and can read what exists so far.
   await enrol.alex.grant(team.id, projectId, maya.me.id, 'participant');
-  await encrypted.admitParticipants(task);
+  await encrypted.admitParticipants((await tasks.alex.list(team.id)).tasks[0]);
   let admitted = [];
   for (const event of await mayaEp.open(await mayaEp.transport.drain())) {
     const handover = readTaskHistory(event, task);
@@ -182,6 +188,8 @@ let hub, runtime, encrypted, clients = [];
   await mayaReader.reconnect(tasks.maya);
   assert.ok(mayaReader.state.objective.includes(before));
   const seenBefore = mayaReader.seq;
+  const backupKey = randomBytes(32).toString('base64url');
+  const backup = await mayaEp.exportHistory(['!' + task.id + ':plexus.local'], backupKey);
   pass('a participating device can read the task before it is removed', seenBefore + ' events');
 
   // ---- criterion 2: revoked here, pending until the host applies it ----
@@ -256,7 +264,8 @@ let hub, runtime, encrypted, clients = [];
     transport: new HubKeyTransport({ url, token: token(maya), device: 'MAYARESTORED' })
   });
   await restored.confirmEndpoint(hostIdentity, { confirmed: true });
-  const restoredReader = new EncryptedTaskReader({ endpoint: restored, task, writer: hostIdentity, admittedSessions: admitted });
+  const imported = await restored.importHistory(backup, backupKey, ['!' + task.id + ':plexus.local']);
+  const restoredReader = new EncryptedTaskReader({ endpoint: restored, task, writer: hostIdentity, admittedSessions: imported.sessions });
   await refused('history restored from a backup does not restore access to what came after',
     'task_integrity_failed', () => restoredReader.reconnect(tasks.maya));
   restored.close();

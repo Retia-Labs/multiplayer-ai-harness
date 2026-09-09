@@ -295,7 +295,7 @@ class HubStore {
   }
 
   eventsFrom(threadId, afterSeq = 0, limit = 5000) {
-    return this._stmts.eventsFrom.all(threadId, afterSeq, limit).map((r) => ({ seq: r.seq, ts: r.ts, ...JSON.parse(r.json) }));
+    return this._stmts.eventsFrom.all(threadId, afterSeq, limit).map((r) => ({ ...JSON.parse(r.json), seq: r.seq, ts: r.ts }));
   }
 
   close() {
