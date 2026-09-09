@@ -96,6 +96,16 @@ module.exports = async function desktopCollaboration({ app, win, project, realCo
       return current.value.approvers.some(grant => grant.userId === bobId && grant.turnId === request.turnId && grant.requestId === request.id);
     }, 'exact action grant reaches Bob', 45000);
     check(await bob.locator('[data-action="encrypted-approval-accept"]').isEnabled(), 'the scoped host grant enables Bob’s one decision');
+    // Issue #18: the person at the desktop delegated the decision and walked away, so the
+    // window goes now - before Bob answers, not after. Everything below this line happens on a
+    // machine whose window is closed, which is the only way to show that the execution host is
+    // what the teammate is working through rather than somebody else's open app.
+    const desktopState = () => app.evaluate(() => global.__plexusDesktop.lifecycle());
+    const hostPid = (await desktopState()).runtimePid;
+    await app.evaluate(() => global.__plexusDesktop.closeWindow());
+    await until(async () => !(await desktopState()).windowVisible, 'the desktop window to close');
+    check((await desktopState()).runtimeRunning && (await desktopState()).runtimePid === hostPid,
+      'closing the desktop window leaves the same execution host running');
     await bob.locator('[data-approval-id="' + request.id + '"]').evaluate(node => node.scrollIntoView({ block: 'start' }));
     await capture(bob, 'scoped-approval-desktop');
     await bob.locator('[data-action="encrypted-approval-accept"]').click();
@@ -105,6 +115,13 @@ module.exports = async function desktopCollaboration({ app, win, project, realCo
     const settled = await snapshot(bob);
     check(settled.value.turn === 'completed' && settled.value.decisions.some(decision => decision.basis === request.id && decision.actor === bobId),
       'the approved provider turn completes with Bob as the recorded decision maker');
+    check(!(await desktopState()).windowVisible,
+      'and all of it happened with the desktop window closed: the teammate worked through the host, not the app');
+    // Back from the tray, the way a person returns to it. The same host, and the same window.
+    await app.evaluate(() => global.__plexusDesktop.clickTrayItem('Open Plexus'));
+    await until(async () => (await desktopState()).windowVisible, 'the desktop window to reopen');
+    check((await desktopState()).runtimePid === hostPid, 'reopening from the tray produced no second execution host');
+    check((await snapshot(win)).value.turn === 'completed', 'and the reopened window shows the work its teammate finished');
     const delivery = settled.value.events.find(event => event.type === 'command.receipt' && event.payload.commandId === directionCommandId && event.payload.state === 'delivered');
     check(delivery?.payload.actor === bobId && delivery.payload.turnId === request.turnId &&
       settled.value.messages.some(message => message.actor === bobId && message.text === correctionPrompt),

@@ -198,6 +198,7 @@ class Runtime {
       else if (msg.type === 'workspace.activity') this.activity = { threads: msg.threads || [], overlaps: msg.overlaps || [] };
       else if (msg.type === 'paired') this.onPaired(msg);
       else if (msg.type === 'unpaired') this.onUnpaired();
+      else if (msg.type === 'runtime.offline.ack' && this.offlineAck) this.offlineAck();
     });
     this.hub.on('disconnect', () => {
       this.encryptedHost?.disconnect();
@@ -381,6 +382,59 @@ class Runtime {
   describeSettled(record) {
     const who = (record.by && record.by.name) || 'someone else';
     return Errors.APPROVAL_SETTLED + ': ' + who + ' already answered ' + record.decision;
+  }
+
+  // What this host is running right now, in the terms a person needs before deciding to end
+  // it: whose task it is, and whether somebody is already blocked waiting on it.
+  //
+  // Asked for over the IPC channel the desktop shell spawned this process with. The shell
+  // cannot ask over the websocket - it may be quitting, and that connection is the thing about
+  // to go away - but its own channel to this child is open for exactly as long as the decision
+  // takes, and it can carry names rather than a count.
+  activeWork() {
+    const out = [];
+    for (const [threadId, session] of this.sessions) {
+      if (!session || !session.running) continue;
+      const thread = this.store.getThread(threadId);
+      out.push({
+        threadId,
+        // On the encrypted path the host cannot read what a task is called - that is the
+        // point of it - so there is no name to give, and inventing one would be worse than
+        // saying how much work there is and who is blocked on it.
+        name: (thread && thread.name) || null,
+        by: (session.by && session.by.name) || (thread && thread.createdBy && thread.createdBy.name) || null,
+        turnId: session.turnId,
+        waitingOnApproval: session.pendingApprovals ? session.pendingApprovals.size > 0 : false
+      });
+    }
+    return out;
+  }
+
+  // A deliberate quit, as distinct from a host that simply stopped answering.
+  //
+  // #17 made the relay say `unknown` when a host vanishes, because connectivity is not an
+  // outcome. A quit is not that situation: this host is still here, it knows exactly what it
+  // is stopping, and it can say so. Each running turn is interrupted and given the chance to
+  // write its own `turn/completed: interrupted` before the socket goes, and the team is told
+  // the host left on purpose instead of being left to infer it from a silence.
+  async shutdown({ reason = 'quit', timeoutMs = 6000 } = {}) {
+    if (this.shuttingDown) return this.shuttingDown;
+    this.shuttingDown = (async () => {
+      const running = [...this.sessions.values()].filter((s) => s && s.running);
+      for (const s of running) s.interrupt();
+      await Promise.race([
+        Promise.all(running.map((s) => s.done || Promise.resolve())),
+        new Promise((r) => setTimeout(r, timeoutMs))
+      ]);
+      if (this.hub) {
+        const acked = new Promise((r) => { this.offlineAck = r; });
+        this.hub.send({ type: 'runtime.offline', reason });
+        await Promise.race([acked, new Promise((r) => setTimeout(r, 2000))]);
+      }
+      await this.stop();
+      this.log(`shut down (${reason})`);
+    })();
+    return this.shuttingDown;
   }
 
   stop() {
@@ -713,7 +767,9 @@ class Runtime {
         this.appendEvent(thread.id, { method: Events.THREAD_NAME_UPDATED, name: thread.name });
       }
     }
-    session.run().then(() => {
+    // Kept so a shutdown can wait for the interrupted turn to write its own outcome rather
+    // than closing the socket out from under it.
+    session.done = session.run().then(() => {
       if (this.stopped) return;
       thread.updatedAt = Date.now(); this.store.upsertThread(thread);
       if (this.sessions.get(thread.id) === session) this.sessions.delete(thread.id);
@@ -818,6 +874,30 @@ if (require.main === module) {
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+
+  // The desktop shell owns this channel too, and asks over it. A signal would not do: Windows
+  // cannot deliver SIGTERM to a child in a form the child can act on, so on that platform
+  // `child.kill()` is a termination, not a request - and a host that is terminated cannot tell
+  // its team it left on purpose or say what happened to the turn it was running.
+  let quitting = false;
+  process.on('message', (msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'shutdown') {
+      if (quitting) return;
+      quitting = true;
+      detachLocalControl();
+      const deadline = setTimeout(() => process.exit(1), 8000);
+      rt.shutdown({ reason: msg.reason || 'quit' }).then(
+        () => { clearTimeout(deadline); process.exit(0); },
+        () => { clearTimeout(deadline); process.exit(1); }
+      );
+    } else if (msg.type === 'runtime.status' && process.send) {
+      process.send({ type: 'runtime.status', runtimeId: rt.id, name: rt.name, active: rt.activeWork() });
+    }
+  });
+  // The channel closing means the shell died without asking. Nothing here can usefully outlive
+  // it, and an orphaned host still holding a workspace is worse than no host.
+  process.on('disconnect', stop);
 }
 
 module.exports = { Runtime, parseArgs, localCodexOptIn, providersFromEnv, commandFingerprint };

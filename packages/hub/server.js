@@ -373,6 +373,20 @@ class Hub {
           });
         }
         return this.broadcastRuntimes(ctx.teamId);
+      // A host leaving on purpose says so before it goes, so the fleet can show that its
+      // owner quit rather than leaving people to read a silence. It changes nothing about
+      // #17's rule: anything still running when the socket closes is still `unknown`, because
+      // a reason for an absence is not an outcome for a turn.
+      case 'runtime.offline': {
+        if (ctx.role !== 'runtime') throw fail(Errors.UNAUTHENTICATED, 'runtime only');
+        if (this.runtimes.get(ctx.runtimeId) !== ws) throw fail(Errors.RUNTIME_AUTHENTICATION);
+        const stored = ctx.teamId ? this.store.getRuntime(ctx.runtimeId) : null;
+        if (stored) {
+          this.store.upsertRuntime(ctx.teamId, { ...stored, lastOffline: { reason: msg.reason || 'quit', at: Date.now() } });
+          this.broadcastRuntimes(ctx.teamId);
+        }
+        return this.send(ws, { type: 'runtime.offline.ack' });
+      }
       case 'ping': return this.send(ws, { type: 'pong' });
       default: throw new Error('unknown message type: ' + msg.type);
     }
@@ -831,6 +845,11 @@ if (require.main === module) {
     staticDir: path.join(__dirname, '..', '..', 'apps', 'web'),
     log: (m) => console.log('[hub]', m)
   });
+  // Spawned by the desktop shell with an IPC channel, and asked to stop over it for the same
+  // reason the host is: a signal is not something a Windows child can be asked with.
+  const closeHub = () => hub.close().then(() => process.exit(0), () => process.exit(0));
+  process.on('message', (msg) => { if (msg && msg.type === 'shutdown') closeHub(); });
+  process.on('disconnect', closeHub);
   hub.listen(port, process.env.HUB_HOST || '127.0.0.1').then((addr) => {
     console.log(`[hub] listening on http://${addr.address}:${addr.port}`);
   });

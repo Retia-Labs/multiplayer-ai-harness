@@ -13,6 +13,14 @@ if (collaborationMode === '1' && (!realCodex || !process.env.DESKTOP_EXECUTABLE)
   throw new Error('The collaboration proof requires PLEXUS_DESKTOP_CODEX_PROOF=1 and DESKTOP_EXECUTABLE for the installed app.');
 }
 if (collaborationMode === 'demo' && realCodex) throw new Error('The demo collaboration check must not enable real Codex calls.');
+
+// A tray app does not exit when its window closes - that is what #18 changed - so a test that
+// wants it gone has to say so, exactly as a person does by choosing Quit from the tray.
+async function quitApp(app) {
+  if (!app) return;
+  try { await app.evaluate(() => { if (global.__plexusDesktop) global.__plexusDesktop.forceQuit(); }); } catch {}
+  try { await app.close(); } catch {}
+}
 function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.log('  ✓ ' + m); }
 let desktopApp;
 let testWindow;
@@ -139,9 +147,16 @@ const pageErrors = [];
   const providerStatus = realCodex ? await win.evaluate(() => window.harnessDesktop.codexStatus()) : null;
   assert(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length > 1),
     'durable crypto broker is active before testing close');
+  // Closing the product window is no longer quitting (#18): the execution host stays up for
+  // the teammates still in the task. What still has to be true is that the hidden broker never
+  // becomes the reason the app cannot leave, so the exit is tested on the explicit quit.
+  await app.evaluate(() => global.__plexusDesktop.closeWindow());
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert((await app.evaluate(() => global.__plexusDesktop.lifecycle())).runtimeRunning,
+    'closing the product window leaves the execution host running for teammates');
   const exited = app.waitForEvent('close', { timeout: 10000 });
-  await win.close(); await exited;
-  assert(true, 'closing the product window exits even while the hidden crypto broker is active');
+  await app.evaluate(() => global.__plexusDesktop.forceQuit()); await exited;
+  assert(true, 'an explicit quit exits even while the hidden crypto broker is active');
   fs.writeFileSync(path.join(evidenceDir, realCodex ? 'codex-results.json' : 'latest-results.json'), JSON.stringify({
     status: 'pass', ranAt: new Date().toISOString(), packaged: !!process.env.DESKTOP_EXECUTABLE,
     provider: realCodex ? 'codex-cli' : 'demo', providerStatus, rendererErrors: pageErrors,

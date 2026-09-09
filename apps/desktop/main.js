@@ -2,12 +2,19 @@
 // Desktop shell: starts the local hub + execution host, shows what is happening while they
 // come up, then loads the shared web UI.
 //
+// Closing the window does not stop the work. The window is one client of an execution host
+// that keeps running in the tray, so a teammate who is still in the task can carry on while
+// the person who started it is away. Quitting is a separate, explicit act: it says what it
+// will end, takes the managed processes down with their children, and leaves the team told.
+//
 // The services run on Electron's own bundled Node (`process.execPath` with
 // ELECTRON_RUN_AS_NODE), never on a `node` that happens to be on PATH. An installed copy
 // has no terminal, no developer checkout, and no guarantee that Node exists at all - and
 // the hub needs `node:sqlite`, which arrived in Node 22.5, so "whatever node is on PATH"
 // was never a safe answer either.
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage } = require('electron');
+const lifecycle = require('./lifecycle');
+const { shouldQuitOnWindowClose, quitPlan, shouldLaunchRuntime, trayState } = lifecycle;
 const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
@@ -33,7 +40,18 @@ let win = null;
 const children = [];
 const serviceLogs = { hub: [], runtime: [] };
 let runtimeChild = null;
+let hubChild = null;
 let runtimeLaunch = null;
+let tray = null;
+let trayMenu = null;
+let trayTimer = null;
+let stateFile = null;
+let setup = {};
+// Where the workspace was loaded from, so reopening a window does not re-run boot.
+let bootedUrl = null;
+// What the host says it is running, kept here so the tray and the quit warning are built from
+// one snapshot and cannot disagree with each other.
+let active = { count: 0, names: [], blocked: 0 };
 let connectedHubUrl = null;
 let profile = null;
 let quitting = false;
@@ -72,7 +90,13 @@ function spawnService(label, script, args, env) {
     // cwd has to be somewhere the OS can actually chdir to.
     cwd: SERVICE_CWD,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...env },
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    // Its own process group, so the sweep in killTreeCommand has a group to reach. A child
+    // that is not a group leader gives `kill -TERM -pid` nothing to take. Windows has no
+    // groups and uses `taskkill /T` instead, where detaching would only outlive the parent it
+    // is supposed to follow.
+    detached: process.platform !== 'win32',
+    windowsHide: true
   });
   // Without this, a spawn that fails outright throws an unhandled error event and the app
   // dies with nothing on screen - the exact failure mode this slice is meant to remove.
@@ -106,23 +130,146 @@ function spawnService(label, script, args, env) {
 
 function launchRuntime() {
   if (!runtimeLaunch) return null;
+  // Reopening a window must not start a second host. Two hosts on one machine means two
+  // runtime ids, two pairing codes, and a fleet list implying a machine nobody has.
+  if (!shouldLaunchRuntime(runtimeChild)) return runtimeChild;
   runtimeChild = spawnService('runtime', runtimeLaunch.script, runtimeLaunch.args, runtimeLaunch.env);
   // The broker serves bundled crypto code and keeps the host's SDK store persistent.
   attachCryptoBroker(runtimeChild, { dataDir: runtimeLaunch.dataDir });
+  refreshTray();
   return runtimeChild;
 }
 
-function stopService(child) {
-  if (!child || !child.pid || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise((resolve) => {
-    let forceTimer;
-    const done = () => { clearTimeout(forceTimer); resolve(); };
-    child.once('exit', done);
-    child.kill();
-    forceTimer = setTimeout(() => {
-      if (child.exitCode === null) child.kill('SIGKILL');
-    }, 2000);
+function runtimeRunning() {
+  return !!(runtimeChild && runtimeChild.exitCode === null && runtimeChild.signalCode === null);
+}
+
+// The host is the only process that knows what it is running, so it is the one asked - by the
+// tray, and by the quit warning that has to name the work it would end.
+async function refreshActive() {
+  const status = await lifecycle.askService(runtimeChild, { type: 'runtime.status' });
+  const running = (status && status.active) || [];
+  active = {
+    count: running.length,
+    names: running.map((a) => a.name).filter(Boolean),
+    blocked: running.filter((a) => a.waitingOnApproval).length
+  };
+  return active;
+}
+
+function activeTaskCount() { return runtimeRunning() ? active.count : 0; }
+
+// A task that started or ended while nobody was looking still has to show up in the tray, so
+// the snapshot is refreshed on a timer rather than only when something asks.
+function watchActive() {
+  if (trayTimer) return;
+  trayTimer = setInterval(() => { refreshActive().then(refreshTray, () => {}); }, 5000);
+}
+
+// ---- tray ----
+//
+// The tray is what makes closing a window different from quitting. Without one there is no way
+// back to a running host, so closing would have to end it - which is exactly the behaviour
+// issue #18 exists to remove.
+function createTray() {
+  if (tray) return tray;
+  try {
+    const icon = nativeImage.createFromPath(path.join(ROOT, 'apps', 'web', 'brand', 'plexus-app-icon-256.png'));
+    // A tray icon that fails to load would silently take the app back to quitting on close,
+    // so an empty image is used rather than no tray at all.
+    tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon.resize({ width: 18, height: 18 }));
+  } catch (error) {
+    // A desktop with no system tray still has to be quittable, and the window still has to be
+    // closable. Losing the icon must not lose either.
+    log('[tray] unavailable: ' + ((error && error.message) || error));
+    return null;
+  }
+  tray.on('click', () => showWindow());
+  refreshTray();
+  return tray;
+}
+
+function refreshTray() {
+  if (!tray || tray.isDestroyed() || quitting) return;
+  const state = trayState({
+    runtimeRunning: runtimeRunning(),
+    activeTasks: activeTaskCount(),
+    windowOpen: !!(win && !win.isDestroyed() && win.isVisible())
   });
+  tray.setToolTip(state.tooltip);
+  trayMenu = Menu.buildFromTemplate([
+    { label: state.tooltip, enabled: false },
+    ...(state.detail ? [{ label: state.detail, enabled: false }] : []),
+    { type: 'separator' },
+    { label: 'Open Plexus', click: () => showWindow() },
+    { label: 'Quit Plexus', click: () => requestQuit() }
+  ]);
+  tray.setContextMenu(trayMenu);
+}
+
+async function showWindow() {
+  if (quitting) return;
+  if (win && !win.isDestroyed()) { win.show(); win.focus(); refreshTray(); return; }
+  // Only reached when there was no tray to hide into, or after a failed boot.
+  await createWindow();
+  // Reopening is not restarting. The services this app manages are already up - booting again
+  // tried to bind the hub's port a second time and failed with EADDRINUSE, which is the same
+  // mistake as launching a second runtime, wearing different clothes.
+  if (bootedUrl && runtimeRunning()) await win.loadURL(bootedUrl);
+  else await runBoot();
+  refreshTray();
+}
+
+// ---- quitting ----
+// Replaced in tests, which cannot answer a native modal. The warning is still built and its
+// content still asserted; only the click is stood in for.
+let askToQuit = async (options) => {
+  const parent = win && !win.isDestroyed() ? win : undefined;
+  return (await dialog.showMessageBox(parent, options)).response;
+};
+
+// What the person is about to be shown, built from what the host reports right now.
+async function currentQuitPlan() {
+  if (runtimeRunning()) await refreshActive();
+  return quitPlan({ activeTasks: activeTaskCount(), activeTaskNames: active.names, blocked: active.blocked });
+}
+
+// Quitting is allowed to stop work. It is not allowed to stop it quietly.
+async function requestQuit() {
+  if (quitting) return true;
+  const plan = await currentQuitPlan();
+  if (plan.confirm) {
+    const choice = await askToQuit({
+      type: 'warning', title: plan.title, message: plan.message, detail: plan.detail,
+      buttons: plan.buttons, defaultId: 1, cancelId: 1
+    });
+    if (choice !== 0) { refreshTray(); return false; }
+  }
+  await shutdown();
+  return true;
+}
+
+// Stop the managed processes for real. The host goes first and is asked rather than killed, so
+// it can interrupt its turns, let each one write its own outcome, and tell the relay it left on
+// purpose - #17's `unknown` is for a host that vanished, and this one has not.
+async function shutdown() {
+  if (quitting) return;
+  quitting = true;
+  if (trayTimer) clearInterval(trayTimer);
+  if (stateFile) lifecycle.saveState(stateFile, { lastQuitAt: Date.now() });
+  const ordered = [runtimeChild, hubChild, ...children.filter((c) => c !== runtimeChild && c !== hubChild)];
+  children.length = 0;
+  for (const child of ordered) if (child) await stopService(child);
+  if (tray && !tray.isDestroyed()) tray.destroy();
+  app.exit(0);
+}
+
+// Ask over the IPC channel the service was spawned with, then take its whole tree if asking
+// does not work. `child.kill()` alone is not enough on either count: Windows cannot deliver a
+// signal a child can act on, so there is no polite stop there at all, and killing the parent
+// leaves a provider CLI still running and a workspace still being written to.
+function stopService(child, options = {}) {
+  return lifecycle.stopService(child, { timeoutMs: 6000, ...options });
 }
 
 function addProjectToRuntimeConfig(dataDir, dir) {
@@ -230,7 +377,7 @@ async function boot() {
   status('hub', 'working', remote ? 'Connecting to ' + remote : 'Starting the local team service…');
   if (!remote) {
     const port = parseInt(process.env.HUB_PORT || '7777', 10);
-    spawnService('hub', path.join(ROOT, 'packages', 'hub', 'server.js'), [String(port)], { HUB_DB: profile.localHubDatabase });
+    hubChild = spawnService('hub', path.join(ROOT, 'packages', 'hub', 'server.js'), [String(port)], { HUB_DB: profile.localHubDatabase });
   }
   const hub = await waitForHub(httpUrl);
   if (!hub.ok) {
@@ -264,20 +411,30 @@ async function boot() {
   if (!registered) throw new Error('The execution host did not connect. Try again or inspect the data folder logs.');
 
   status('ui', 'working', 'Opening the workspace…');
-  await win.loadURL(ORIGIN + '/?name=' + encodeURIComponent(userName));
+  bootedUrl = ORIGIN + '/?name=' + encodeURIComponent(userName);
+  await win.loadURL(bootedUrl);
+  // Where to connect, who this is, and how the window sat. Deliberately nothing about a task,
+  // a turn or a command: a launch restores the workspace, and never re-issues work.
+  if (stateFile) lifecycle.saveState(stateFile, { hubUrl: connectedHubUrl || ORIGIN, userName });
+  await refreshActive();
+  watchActive();
+  refreshTray();
 }
 
 async function createWindow() {
+  const saved = (setup.bounds && setup.bounds.width) ? setup.bounds : {};
   win = new BrowserWindow({
-    width: 1360, height: 860, minWidth: 960, minHeight: 620,
+    width: saved.width || 1360, height: saved.height || 860, x: saved.x, y: saved.y,
+    minWidth: 960, minHeight: 620,
     title: 'Plexus', backgroundColor: '#080a09', autoHideMenuBar: true,
     icon: path.join(ROOT, 'apps', 'web', 'brand', 'plexus-app-icon-256.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false,
       ...(profile ? { partition: profile.partition } : {}) }
   });
-  // The crypto broker is deliberately hidden, so it must not keep this bootstrap
-  // app alive after its only product window closes.
-  win.on('closed', () => { win = null; app.quit(); });
+  // The crypto broker is deliberately hidden, so it must not keep this app alive by itself.
+  // With a tray there is a reason to stay alive that has nothing to do with the broker: the
+  // execution host is still serving teammates, and the tray is how somebody gets back to it.
+  // Without a tray there is no way back, so a closed window is still the end of the session.
   // The window exists before the services do, so startup is visible instead of being a
   // blank frame or - worse - no window at all when something fails.
   await win.loadFile(path.join(__dirname, 'boot.html'));
@@ -285,6 +442,23 @@ async function createWindow() {
   win.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith(ORIGIN + '/')) event.preventDefault();
   });
+  const remember = () => { if (stateFile && win && !win.isDestroyed() && !win.isMinimized()) lifecycle.saveState(stateFile, { bounds: win.getBounds() }); };
+  win.on('resize', remember);
+  win.on('move', remember);
+  win.on('close', remember);
+  // With a tray, closing puts the window away and keeps the renderer - which holds this
+  // endpoint's keys and its verified state - alive behind it, so reopening is a window coming
+  // back rather than an identity being derived again. Without a tray there is no way back, so
+  // a closed window is still the end of the session.
+  win.on('close', (event) => {
+    if (quitting || shouldQuitOnWindowClose({ hasTray: !!tray })) return;
+    event.preventDefault();
+    remember();
+    win.hide();
+    refreshTray();
+  });
+  // The crypto broker is deliberately hidden, so it must not keep this app alive by itself.
+  win.on('closed', () => { win = null; if (!quitting) app.quit(); });
 }
 
 async function runBoot() {
@@ -413,6 +587,7 @@ ipcMain.handle('desktop:retryBoot', () => {
   retryPromise = (async () => {
     await Promise.all(children.splice(0).map(stopService));
     runtimeChild = null;
+    hubChild = null;
     serviceLogs.hub.length = 0;
     serviceLogs.runtime.length = 0;
     await win.loadFile(path.join(__dirname, 'boot.html'));
@@ -422,8 +597,50 @@ ipcMain.handle('desktop:retryBoot', () => {
 });
 ipcMain.handle('desktop:openDataFolder', async () => shell.openPath(app.getPath('userData')));
 
+// The seam the tests drive. A tray icon and a native modal cannot be clicked by a test, so the
+// entries in the menu the app installed are invoked through their own handlers, and the answer
+// a person would give the dialog is chosen for it.
+global.__plexusDesktop = {
+  lifecycle: () => ({
+    runtimeRunning: runtimeRunning(),
+    runtimePid: runtimeChild ? runtimeChild.pid : null,
+    hasTray: !!tray,
+    windows: BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).length,
+    productWindow: !!(win && !win.isDestroyed()),
+    windowVisible: !!(win && !win.isDestroyed() && win.isVisible()),
+    quitsOnWindowClose: shouldQuitOnWindowClose({ hasTray: !!tray }),
+    tray: trayState({ runtimeRunning: runtimeRunning(), activeTasks: activeTaskCount(), windowOpen: !!(win && !win.isDestroyed() && win.isVisible()) })
+  }),
+  closeWindow: () => { if (win && !win.isDestroyed()) win.close(); },
+  showWindow: () => showWindow(),
+  quitPlanNow: () => currentQuitPlan(),
+  servicePids: () => ({ hub: hubChild ? hubChild.pid : null, runtime: runtimeChild ? runtimeChild.pid : null }),
+  activeWork: () => refreshActive(),
+  setup: () => (stateFile ? lifecycle.loadState(stateFile) : {}),
+  pairingCode: () => localPairingCode(),
+  trayMenuLabels: () => (trayMenu ? trayMenu.items.map((i) => i.label || '---') : []),
+  // A test cannot make the OS open a tray menu, but it can invoke the entry a person would
+  // choose from it - which is a smaller gap than calling the function that entry is wired to.
+  clickTrayItem: (label) => {
+    const item = trayMenu && trayMenu.items.find((i) => i.label === label);
+    if (!item) throw new Error('no tray item labelled ' + JSON.stringify(label));
+    if (!item.enabled) throw new Error('tray item is disabled: ' + label);
+    item.click();
+    return true;
+  },
+  onQuitPrompt: (fn) => { askToQuit = fn; },
+  requestQuit: () => requestQuit(),
+  // Quitting without the question. A tray app does not exit when its window closes - that is
+  // the whole point of #18 - so an automated close has to say what it means, the same way a
+  // person does by choosing Quit.
+  forceQuit: () => shutdown()
+};
+
 app.whenReady().then(async () => {
   openLog();
+  stateFile = path.join(app.getPath('userData'), 'desktop-state.json');
+  setup = lifecycle.loadState(stateFile);
+  createTray();
   try {
     profile = desktopProfile({ userData: app.getPath('userData'), dataRoot: process.env.HARNESS_DATA,
       hubUrl: process.env.HUB_HTTP_URL || 'http://127.0.0.1:' + (process.env.HUB_PORT || '7777') });
@@ -434,13 +651,15 @@ app.whenReady().then(async () => {
   }
   await createWindow(); return runBoot();
 });
-app.on('activate', async () => { if (!quitting && (!win || win.isDestroyed())) { await createWindow(); runBoot(); } });
+app.on('activate', () => { if (!quitting) showWindow(); });
+// Cmd-Q, the dock menu and a taskbar close all reach the same warning the tray does. The
+// shutdown behind it keeps the broker alive while the host flushes, as before.
 app.on('before-quit', (event) => {
   if (quitting) return;
-  event.preventDefault(); quitting = true;
-  // Keep the broker alive while the runtime flushes its shutdown state. stopService
-  // bounds each wait and kills a child that fails to acknowledge shutdown.
-  Promise.allSettled(children.splice(0).map(stopService)).finally(() => app.quit());
+  event.preventDefault();
+  requestQuit();
 });
-app.on('window-all-closed', () => app.quit());
+// Every window can be closed without ending the session: the host is still serving the team.
+// Unless there is no tray to bring it back, in which case a closed window is the end of it.
+app.on('window-all-closed', () => { if (shouldQuitOnWindowClose({ hasTray: !!tray })) app.quit(); });
 app.on('quit', () => { for (const c of children) { try { c.kill(); } catch {} } });
