@@ -491,7 +491,11 @@
       const ctx = context || {};
       const writer = ctx.writer || this.confirmedHost(task.runtimeId);
       if (!writer) return { error: 'host_unconfirmed', runtimeId: task.runtimeId };
-      try { await this.receiveKeys(); }
+      // What the mailbox managed to take delivery of, kept because it explains a replay that
+      // then fails. An endpoint with no signed membership covering it cannot accept a key at
+      // all, and a replay attempted without one fails for that reason and no other.
+      let delivery = null;
+      try { delivery = await this.receiveKeys(); }
       catch (error) { return { error: error.code || 'mailbox_unavailable' }; }
       const reader = new this.m.EncryptedTaskReader({
         endpoint: this.endpoint, task, writer,
@@ -504,6 +508,15 @@
         snapshot = await reader.reconnect(this.tasks);
       } catch (error) {
         const code = error.code || 'task_integrity_failed';
+        // `task_integrity_failed` says somebody vouched for this writer and the log still did
+        // not verify. When the mailbox is waiting on membership authority, nothing was ever
+        // delivered to verify against: the keys are sitting undeliverable, not wrong. Saying
+        // "integrity" there sends a reader looking for tampering instead of for the enrolment
+        // step they are missing, and a fresh handoff cannot help - it would land in the same
+        // mailbox that cannot open it.
+        if (code === 'task_integrity_failed' && delivery?.waiting) {
+          return { error: delivery.waiting, seq: reader.seq, pending: delivery.pending };
+        }
         let historyRecovery;
         if (code === 'task_integrity_failed') {
           if (ctx.hostConnected === false) historyRecovery = { state: 'host_offline' };
