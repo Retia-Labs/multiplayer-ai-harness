@@ -2,7 +2,7 @@
 // Signatures use the Matrix device Ed25519 key; verification uses WebCrypto.
 // Customer owner recovery additionally requires its configured, purpose-limited master.
 // The relay stores these records but cannot author them or choose the host's trust root.
-import { canonical, digest, matrixUser, PROJECT_ID } from '../protocol/encrypted-task.mjs';
+import { canonical, digest, matrixUser, PROJECT_ID, TASK_ID, exact } from '../protocol/encrypted-task.mjs';
 import { validateRecoveryDescriptor, ownerRecoverySigningBody } from './owner-recovery.mjs';
 export const GENESIS = '0'.repeat(64);
 export const identityKey = (id) => id.user + '/' + id.device;
@@ -21,7 +21,7 @@ export const operationBody = (record) => {
   return body;
 };
 export const initialMembership = (teamId) => ({ teamId, seq: 0, hash: GENESIS, owner: null, endpoints: [], grants: [], revocations: [],
-  recoveryDescriptor: null, recoveryGeneration: 0, recoveryEpoch: null, recoveryKeys: [], recoveryEpochs: [] });
+  recoveryDescriptor: null, recoveryGeneration: 0, recoveryEpoch: null, recoveryKeys: [], recoveryEpochs: [], deletions: [] });
 const endpointFor = (state, signer) => state.endpoints.find((e) => sameIdentity(e, signer) && e.state === 'verified');
 export function applyOperation(current, body) {
   const { teamId, seq, previous, signer, action, payload } = body || {};
@@ -55,7 +55,19 @@ export function applyOperation(current, body) {
     next.recoveryEpochs.push(payload.epoch);
   } else {
     if (!verified) fail('confirming_endpoint_unverified');
-    if (action === 'recovery.configure') {
+    if (action === 'task.delete' || action === 'project.delete') {
+      if (!isOwner) fail('deletion_owner_required');
+      if (!PROJECT_ID.test(payload.projectId) ||
+          !(action === 'task.delete' ? exact(payload, ['projectId', 'taskId', 'runtimeId']) && TASK_ID.test(payload.taskId) && typeof payload.runtimeId === 'string'
+            : exact(payload, ['projectId', 'tasks']) && Array.isArray(payload.tasks) && payload.tasks.length <= 10000 &&
+              payload.tasks.every(task => exact(task, ['id', 'runtimeId']) && TASK_ID.test(task.id) && typeof task.runtimeId === 'string'))) fail('invalid_deletion');
+      if (next.deletions.some(entry => entry.projectId === payload.projectId &&
+          (entry.action === 'project.delete' || entry.taskId === payload.taskId))) fail('already_deleted');
+      next.deletions.push({ action, ...payload, seq });
+      if (action === 'project.delete') for (const grant of next.grants) {
+        if (grant.projectId === payload.projectId) grant.revoked = true;
+      }
+    } else if (action === 'recovery.configure') {
       if (!isOwner) fail('recovery_owner_required');
       const descriptor = validateRecoveryDescriptor(payload.descriptor, { teamId, owner: current.owner.user, genesis: current.owner });
       if (Object.keys(payload).length !== 1 || descriptor.generation !== current.recoveryGeneration + 1) fail('recovery_generation_conflict');
@@ -95,6 +107,7 @@ export function applyOperation(current, body) {
       next.revocations.push({ userId: target.userId, device: target.device, seq });
     } else if (action === 'own-project') {
       if (!PROJECT_ID.test(payload.projectId || '')) fail('invalid_project');
+      if (next.deletions.some(entry => entry.action === 'project.delete' && entry.projectId === payload.projectId)) fail('project_deleted');
       if (next.grants.some((g) => g.projectId === payload.projectId)) {
         if (!liveGrant(payload.projectId, actor)) {
           const reset = next.grants.filter(g => g.projectId === payload.projectId);
@@ -105,6 +118,7 @@ export function applyOperation(current, body) {
         }
       } else next.grants.push({ projectId: payload.projectId, userId: actor, role: 'owner', grantedBy: actor, revoked: false });
     } else if (action === 'grant') {
+      if (next.deletions.some(entry => entry.action === 'project.delete' && entry.projectId === payload.projectId)) fail('project_deleted');
       if (!liveGrant(payload.projectId, actor)) fail('not_a_project_participant');
       if (!['owner', 'participant'].includes(payload.role || 'participant')) fail('invalid_project_role');
       const prior = next.grants.find((g) => g.projectId === payload.projectId && g.userId === payload.userId);
@@ -135,6 +149,7 @@ export async function replayMembership(records, { teamId, authority, checkpoint,
     state = applyOperation(state, body);
     if (state.recoveryDescriptor) validateRecoveryDescriptor(state.recoveryDescriptor, { service });
     state.hash = await digest(record);
+    if (['task.delete', 'project.delete'].includes(record.action)) state.deletions.find(entry => entry.seq === record.seq).hash = state.hash;
     if (checkpoint && state.seq === checkpoint.seq) {
       if (state.hash !== checkpoint.hash) fail('membership_rollback');
       checkedFloor = true;

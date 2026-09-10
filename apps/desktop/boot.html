@@ -14,7 +14,9 @@
       background: #080a09; color: #eef1e9;
       font-family: Outfit, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 13.5px;
     }
-    .card { width: 460px; padding: 28px; }
+    .card { width: min(600px, 100%); padding: 28px; max-height: 100vh; overflow: auto; }
+    #diagnostic-report { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; padding: 16px 0; }
+    .actions { flex-wrap: wrap; }
     h1 { font-size: 17px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 4px; }
     .sub { color: #969d94; margin-bottom: 22px; }
     .step { display: flex; gap: 10px; align-items: flex-start; padding: 9px 0; border-top: 1px solid rgba(225,239,217,.12); }
@@ -49,7 +51,13 @@
     <div class="actions hidden" id="actions">
       <button class="primary" id="retry">Try again</button>
       <button id="open-data">Open data folder</button>
+      <button id="inspect-diagnostics">Inspect diagnostic report</button>
     </div>
+    <section id="diagnostic-preview" class="hidden" aria-label="Diagnostic preview">
+      <p class="detail">Review these fields before sharing the downloaded report yourself. No logs, task content, paths or credentials are included. Nothing is sent automatically.</p>
+      <pre id="diagnostic-report"></pre>
+      <button id="download-diagnostics">Download reviewed report</button>
+    </section>
   </div>
 
   <script>
@@ -68,6 +76,17 @@
     }
     document.getElementById('retry').addEventListener('click', () => api.retryBoot && api.retryBoot());
     document.getElementById('open-data').addEventListener('click', () => api.openDataFolder && api.openDataFolder());
+    let reviewedReport;
+    document.getElementById('inspect-diagnostics').addEventListener('click', async () => {
+      reviewedReport = JSON.stringify(await api.diagnostics(), null, 2);
+      document.getElementById('diagnostic-report').textContent = reviewedReport;
+      document.getElementById('diagnostic-preview').classList.remove('hidden');
+    });
+    document.getElementById('download-diagnostics').addEventListener('click', () => {
+      if (!reviewedReport) return;
+      const url = URL.createObjectURL(new Blob([reviewedReport], { type: 'application/json' }));
+      const link = document.createElement('a'); link.href = url; link.download = 'plexus-diagnostics.json'; link.click(); URL.revokeObjectURL(url);
+    });
   </script>
 </body>
 </html>

@@ -1,3 +1,32 @@
+/* Setup, diagnostics and pilot records share the existing renderer primitives. */
+#pilot-setup { margin: 24px 0 32px; }
+#pilot-setup > .ew-section { padding: 0 0 24px; border-bottom: 1px solid var(--border-soft); }
+#pilot-setup h3 { font-size: 20px; font-weight: 450; }
+.pilot-setup-grid { display: grid; grid-template-columns: minmax(200px, .8fr) minmax(280px, 1.2fr); gap: 32px; margin-top: 24px; }
+.pilot-checklist { list-style: none; margin: 0; padding: 0; }
+.pilot-checklist li { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 16px 0; border-bottom: 1px solid var(--border-soft); }
+.pilot-checklist li p { grid-column: 1 / -1; margin: 0; }
+.pilot-stage-name { font-weight: 500; }
+.pilot-stage-status { color: var(--text-dim); font-size: 12px; }
+.pilot-checklist [data-state="ready"] .pilot-stage-status { color: var(--green); }
+.pilot-checklist [data-state="failed"] .pilot-stage-status { color: var(--red); }
+.pilot-support p { line-height: 1.6; }
+.pilot-support > button { margin: 0 8px 12px 0; }
+.pilot-seat-row { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--border-soft); }
+.pilot-seat-row > :first-child { flex: 1; min-width: 120px; }
+.pilot-dialog { position: fixed; inset: 0; margin: auto; height: fit-content; color: var(--text); background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--r-panel); padding: 24px; width: min(640px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow: auto; box-sizing: border-box; }
+.pilot-dialog::backdrop { background: #000a; }
+.pilot-dialog h2 { font-size: 24px; font-weight: 450; margin-top: 0; }
+.pilot-dialog button { margin: 8px 12px 8px 0; min-height: 38px; }
+.pilot-dialog button:disabled { opacity: .45; cursor: not-allowed; }
+.pilot-dialog input[type="checkbox"], .pilot-support input[type="checkbox"] { accent-color: var(--accent); }
+.pilot-export { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: var(--bg); font-size: 12px; }
+@media (max-width: 760px) {
+  .pilot-setup-grid { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .pilot-dialog { padding: 20px; }
+  .pilot-dialog button, .pilot-support button { min-height: 44px; }
+  .pilot-seat-row { gap: 8px; }
+}
 /* ===== Plexus UI — brand tokens =====
    Palette, type, radii and motion follow the Plexus design guidelines v1.0.
    Two line weights on purpose: --border-soft is the brand's decorative divider

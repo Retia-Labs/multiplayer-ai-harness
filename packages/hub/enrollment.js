@@ -111,6 +111,7 @@ class Enrollment {
       else if (action === 'own-project') result = { grant: this.ownProject(teamId, payload.projectId, account.id) };
       else if (action === 'grant') result = this.grant(teamId, payload.projectId, { userId: account.id }, payload.userId, payload.role);
       else if (action === 'revoke-grant') result = { grant: this.revokeGrant(teamId, payload.projectId, { userId: account.id }, payload.userId) };
+      else if (action === 'task.delete' || action === 'project.delete') result = this.retention.apply(record);
       else if (action === 'recovery.configure' || action === 'recovery.revoke') result = { recoveryDescriptor: next.recoveryDescriptor, recoveryGeneration: next.recoveryGeneration };
       else if (action === 'owner.recover') {
         this.announce(teamId, account.id, signed.signer);
@@ -283,6 +284,7 @@ class Enrollment {
   }
 
   participant(teamId, projectId, userId) {
+    if (this.retention?.deleted(teamId, projectId)) return null;
     const held = this.grantRow(teamId, projectId, userId);
     return held && !held.revokedAt ? held : null;
   }
@@ -303,6 +305,7 @@ class Enrollment {
   // Creating a task in a project makes its creator that project's owner. Without this the
   // creator would immediately be unable to read what they just created.
   ownProject(teamId, projectId, userId, now = Date.now()) {
+    if (this.retention?.deleted(teamId, projectId)) throw problem('project_deleted', 410);
     if (this.participant(teamId, projectId, userId)) return this.participant(teamId, projectId, userId);
     this.db.prepare(`INSERT INTO project_grants(team_id,project_id,user_id,role,granted_by,granted_at,revoked_at) VALUES (?,?,?,'owner',?,?,NULL)
       ON CONFLICT(team_id,project_id,user_id) DO UPDATE SET role='owner', revoked_at=NULL, reset_by_recovery=NULL`).run(teamId, projectId, userId, userId, now);
@@ -392,7 +395,7 @@ class Enrollment {
       // account, and this is where that line is drawn rather than in each handler.
       // A host writes exactly one thing here: that it has applied a revocation. Everything
       // else that changes trust is a person's decision made on a client.
-      const hostAck = principal.runtimeId && req.method === 'POST' && ['ack-revocation', 'challenge'].includes(parts[0]);
+      const hostAck = principal.runtimeId && req.method === 'POST' && ['ack-revocation', 'ack-deletion', 'challenge'].includes(parts[0]);
       if (principal.runtimeId && req.method !== 'GET' && !hostAck) throw problem('client_required', 403);
       const account = principal.account;
       let body;
@@ -420,6 +423,7 @@ class Enrollment {
               ...(signer ? { signer, activationId } : {}) })),
           ...(principal.runtimeId ? { currentProof: this.challenges.get(teamId + '/' + principal.runtimeId)?.proof || null } : {}),
           revocations: this.revocations(teamId),
+          deletions: this.retention?.list(teamId) || [],
           projects: principal.runtimeId ? [] : this.projectsFor(teamId, account.id),
           ...(projectId ? { participants: this.participants(teamId, projectId) } : {})
         });
@@ -471,8 +475,12 @@ class Enrollment {
         if (!principal.runtimeId) throw problem('host_required', 403);
         return reply(200, await this.acknowledgeRevocation(teamId, principal.runtimeId, body));
       }
+      if (parts[0] === 'ack-deletion') {
+        if (!principal.runtimeId) throw problem('host_required', 403);
+        return reply(200, await this.retention.acknowledge(teamId, principal.runtimeId, body));
+      }
       if (parts[0] === 'announce') return reply(200, this.announce(teamId, account.id, body.endpoint));
-      if (['bootstrap', 'confirm', 'revoke-endpoint', 'own-project', 'grant', 'revoke-grant', 'recovery.configure', 'recovery.revoke', 'owner.recover'].includes(parts[0])) {
+      if (['bootstrap', 'confirm', 'revoke-endpoint', 'own-project', 'grant', 'revoke-grant', 'recovery.configure', 'recovery.revoke', 'owner.recover', 'task.delete', 'project.delete'].includes(parts[0])) {
         return reply(200, await this.signedMutation(teamId, account, parts[0], body, service));
       }
       throw problem('enrollment_route_required', 404);

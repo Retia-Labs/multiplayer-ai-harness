@@ -109,14 +109,15 @@ test('history requests cannot name another recipient, change task identity, or c
   const before = await f.tasks.page(f.task.id);
   for (const [request, code] of [
     [{ payload: { recipient: { userId: f.owner.id, device: 'ORIGINAL' } } }, 'invalid_task_control'],
-    [{ task: { ...f.task, creatorUserId: f.bob.id } }, 'unknown_task_control_target'],
-    [{ task: foreign }, 'sender_not_in_project']
+    [{ task: { ...f.task, creatorUserId: f.bob.id } }, 'unknown_task_control_target']
   ]) {
     await f.request(request);
     const result = await f.host.collect();
     assert.equal(result.applied.length, 0); assert.equal(result.refused[0].code, code);
     assert.equal(f.historyEvents(await f.receive()).length, 0);
   }
+  // Tagged task envelopes now fail at the relay before reaching the host.
+  await assert.rejects(f.request({ task: foreign }), /not_a_project_participant/);
   assert.equal(f.providerControls(), 0);
   assert.deepEqual((await f.tasks.page(f.task.id)).events, before.events);
 });
@@ -159,6 +160,56 @@ test('removal applied while history export awaits prevents the fresh handoff fro
     assert.equal(result.applied.length, 0); assert.equal(result.refused[0].code, 'endpoint_revoked');
     assert.equal(f.historyEvents(await f.receive()).length, 0);
   } finally { release(); t.mock.restoreAll(); }
+});
+
+test('deletion during history export prevents delivery and late task-state resurrection', async t => {
+  const f = await fixture(t);
+  let enter, release;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const exportHistory = f.host.endpoint.exportHistory.bind(f.host.endpoint);
+  t.mock.method(f.host.endpoint, 'exportHistory', async (...args) => {
+    const exported = await exportHistory(...args); enter(); await gate; return exported;
+  });
+  try {
+    await f.request(); const collecting = f.host.collect(); await entered;
+    await f.original.enrollment.deleteTask(f.team.id, f.task);
+    await Promise.all([f.host.reconcileMembership(), f.host.reconcileMembership()]);
+    release(); const result = await collecting;
+    assert.equal(result.applied.length, 0);
+    assert.equal(f.historyEvents(await f.receive()).length, 0);
+    assert.ok(f.host.state.load('deleted:' + f.task.id));
+    assert.equal(f.host.state.load(f.task.id), null);
+    assert.throws(() => f.host.state.save('execution:' + f.task.id, { state: 'running' }), /task_deleted/);
+  } finally { release(); }
+});
+
+test('production event timestamps preserve retries of legacy and pending encrypted events', async t => {
+  const f = await fixture(t), { writer, reader } = await f.host.openTask(f.task);
+  const legacy = { type: 'decision.recorded', payload: { actor: f.owner.id, text: 'legacy' } };
+  const id = newId('ev'); writer.timestampEvents = false; await writer.append(legacy, id);
+  writer.timestampEvents = true; assert.equal((await writer.append(legacy, id)).duplicate, true);
+  const event = { type: 'decision.recorded', payload: { actor: f.owner.id, text: 'new' } };
+  const next = newId('ev'), append = writer.transport.append.bind(writer.transport);
+  let loseResponse = true;
+  t.mock.method(writer.transport, 'append', async (...args) => {
+    const result = await append(...args);
+    if (loseResponse) { loseResponse = false; throw new Error('lost_response'); }
+    return result;
+  });
+  await assert.rejects(writer.append(event, next), /lost_response/);
+  assert.equal((await writer.append(event, next)).duplicate, true);
+  assert.ok(Number.isSafeInteger(reader.state.events.at(-1).payload.occurredAt));
+});
+
+test('an offline host applies signed deletion before an absent owner can answer its new challenge', async t => {
+  const f = await fixture(t);
+  await f.original.enrollment.deleteTask(f.team.id, f.task);
+  await f.host.beginReconcile();
+  await assert.rejects(f.host.reconcileMembership(), /membership_reconciliation_required/);
+  assert.ok(f.host.state.load('deleted:' + f.task.id));
+  assert.equal(f.host.state.load(f.task.id), null);
+  assert.throws(() => f.host.assertLiveTask(f.task), /task_deleted/);
 });
 
 test('fresh history retains exact writer authentication and explicit imported-session admission', async t => {

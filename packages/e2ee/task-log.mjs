@@ -241,6 +241,13 @@ export class EncryptedTaskWriter {
   }
   async write(event,id) {
     await this.resume();
+    // Stamp only new production events. Retries preserve the authenticated time
+    // (or its absence in older logs), including a pending append resumed after a crash.
+    if(this.timestampEvents) {
+      const index=[...this.reader.ids].indexOf(id);
+      const at=index<0?Date.now():this.reader.state.events[index].payload.occurredAt;
+      if(at!==undefined)event={...event,payload:{...event.payload,occurredAt:at}};
+    }
     if(this.reader.ids.has(id)) {
       const existingIndex=[...this.reader.ids].indexOf(id);
       if(canonical(this.reader.state.events[existingIndex])!==canonical(event))fail('event_id_conflict');

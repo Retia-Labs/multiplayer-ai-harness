@@ -32,6 +32,15 @@ class Hub {
     this.enrollment = new Enrollment(this.store, { service });
     this.keyExchange = new KeyExchange(this.store);
     this.encryptedTasks = new EncryptedTasks(this.store, this.enrollment);
+    this.retention = new (require('./retention').Retention)(this.store, { dbFile });
+    this.store.retention = this.retention;
+    this.enrollment.retention = this.retention;
+    this.pilot = new (require('./pilot').Pilot)(this.store, this.enrollment);
+    this.retentionTimer = setInterval(() => {
+      try { this.retention.pruneBackups(); this.pilot.prune(); this.store.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); }
+      catch { log('retention_maintenance_failed'); }
+    }, 60000);
+    this.retentionTimer.unref();
     this.staticDir = staticDir;
     this.log = log;
     this.clients = new Map();   // ws -> { user, role, runtimeId?, subs:Set<threadId> }
@@ -52,6 +61,7 @@ class Hub {
   }
 
   close() {
+    clearInterval(this.retentionTimer);
     for (const ws of this.clients.keys()) { try { ws.close(); } catch {} }
     return new Promise((resolve) => { this.wss.close(() => this.server.close(() => { this.store.close(); resolve(); })); });
   }
@@ -71,6 +81,7 @@ class Hub {
 
   handleHttp(req, res) {
     const url = new URL(req.url, 'http://x');
+    if (url.pathname.startsWith('/api/pilot/')) return this.pilot.handle(req, res, url);
     if (url.pathname.startsWith('/api/e2ee/')) {
       return this.keyExchange.handle(req, res, url);
     }
@@ -662,7 +673,9 @@ class Hub {
     'e2ee/task-control.mjs',
     'e2ee/recovery.mjs',
     'protocol/encrypted-task.mjs',
-    'protocol/related-work.mjs'
+    'protocol/related-work.mjs',
+    'product/diagnostics.mjs',
+    'product/measurement.mjs'
   ]);
 
   serveModule(res, pathname) {

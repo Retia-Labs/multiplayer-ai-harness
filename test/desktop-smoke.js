@@ -122,7 +122,11 @@ const pageErrors = [];
     await win.locator('#provider-select').selectOption('codex-cli');
     await win.locator('#model-select').selectOption('gpt-5.4-mini');
     await win.locator('#effort-select').selectOption('medium');
-  } else await win.locator('#provider-select').selectOption('demo');
+  } else {
+    await win.locator('#provider-select').selectOption('demo');
+    const pilotEvidence = path.join(__dirname, '..', '.artifacts', 'pilot-desktop'); fs.mkdirSync(pilotEvidence, { recursive: true });
+    await require('./pilot-ui-states')(win, pilotEvidence);
+  }
   await win.fill('#input', realCodex
     ? 'Read a.txt using the provided host tool. Create NOTES.md with exactly the same bytes, including its final newline. Use only the provided host workspace tools.'
     : 'Create a NOTES.md');
@@ -173,6 +177,8 @@ const pageErrors = [];
     provider: realCodex ? 'codex-cli' : 'demo', rendererErrors: pageErrors
   }, null, 2) + '\n');
   if (testWindow && !testWindow.isClosed()) {
+    const fixtureLog = desktopTemp && path.join(desktopTemp, 'ud', 'logs', 'desktop.log');
+    if (fixtureLog && fs.existsSync(fixtureLog)) fs.copyFileSync(fixtureLog, path.join(evidenceDir, 'fixture-desktop.log'));
     await testWindow.screenshot({ path: path.join(evidenceDir, 'failure.png') }).catch(() => {});
     const encryptedState = await testWindow.evaluate(() => window.__plexus?.state?.encryptedState).catch(() => null);
     const taskError = await testWindow.locator('#ew-error').textContent().catch(() => '');

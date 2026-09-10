@@ -11,6 +11,7 @@
     "codex-clone": "electron src/main/main.js",
     "test": "npm run test:protocol && npm run test:unit && npm run test:team && npm run test:codex && npm run test:e2e && npm run test:encrypted-task && npm run test:teammate-enrollment && npm run test:import-forgery && npm run test:key-exchange && npm run test:steering && npm run test:approvals && npm run test:encrypted-real-task && npm run test:catchup && npm run test:catchup:view && npm run test:catchup:encrypted && npm run test:collaboration-integration",
     "test:protocol": "node test/protocol-smoke.js",
+    "test:pilot": "node --test test/pilot-operations.js && node test/pilot-browser.js",
     "test:unit": "node test/unit.js",
     "test:e2e": "node test/e2e-multiplayer.js",
     "smoke": "node test/smoke.js",
@@ -75,7 +76,7 @@
     "test:mailbox": "node test/encrypted-mailbox-browser.js",
     "proof:codex:interactive": "node test/codex-interactive-real.js",
     "test:encrypted-workspace": "node test/encrypted-workspace-browser.js",
-    "test:collaboration-integration": "npm run test:e2ee:identity && npm run test:enrollment-authority && npm run test:local-authority && npm run test:encrypted-controls && npm run test:runtime-lifecycle && npm run test:recovery-trust && npm run test:owner-recovery && npm run test:help-inbox && npm run test:handover && npm run test:related-work && npm run test:recovery && npm run test:recover-after-loss && npm run test:revocation && npm run test:confined-writes && npm run test:client-storage && npm run test:mailbox && npm run test:encrypted-workspace && npm run test:genesis-removal-ui"
+    "test:collaboration-integration": "npm run test:e2ee:identity && npm run test:enrollment-authority && npm run test:local-authority && npm run test:encrypted-controls && npm run test:runtime-lifecycle && npm run test:recovery-trust && npm run test:owner-recovery && npm run test:help-inbox && npm run test:handover && npm run test:related-work && npm run test:recovery && npm run test:recover-after-loss && npm run test:revocation && npm run test:confined-writes && npm run test:client-storage && npm run test:mailbox && npm run test:encrypted-workspace && npm run test:genesis-removal-ui && npm run test:pilot"
   },
   "license": "MIT",
   "devDependencies": {
