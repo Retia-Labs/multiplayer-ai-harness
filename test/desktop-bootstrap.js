@@ -58,6 +58,18 @@ const launch = (dataDir, env) => electron.launch({
     await capture(page, 'failed');
     let openedDataFolder;
     await app.evaluate(({ shell }) => { shell.openPath = async (folder) => { global.testOpenedFolder = folder; return ''; }; });
+    const refused = await app.evaluate(async ({ app, BrowserWindow }, sourceRoot) => {
+      const alien = new BrowserWindow({ show: false, webPreferences: {
+        preload: (app.isPackaged ? app.getAppPath() : sourceRoot) + '/apps/desktop/preload.js',
+        contextIsolation: true, nodeIntegration: false, sandbox: true
+      } });
+      try {
+        await alien.loadURL('data:text/html,<html><body>Untrusted test page</body></html>');
+        return await alien.webContents.executeJavaScript("Promise.all(['openDataFolder', 'retryBoot'].map(action => window.harnessDesktop[action]().then(() => 'allowed', e => e.message)))");
+      } finally { alien.destroy(); }
+    }, root);
+    for (const error of refused) assert.match(error, /untrusted_desktop_request/, 'another renderer cannot invoke privileged shell actions');
+    assert.equal(await app.evaluate(() => global.testOpenedFolder), undefined);
     await page.click('#open-data');
     openedDataFolder = await app.evaluate(() => global.testOpenedFolder);
     assert.equal(openedDataFolder, temp);

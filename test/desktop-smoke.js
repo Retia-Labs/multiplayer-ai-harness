@@ -127,6 +127,11 @@ const pageErrors = [];
     ? 'Read a.txt using the provided host tool. Create NOTES.md with exactly the same bytes, including its final newline. Use only the provided host workspace tools.'
     : 'Create a NOTES.md');
   await win.click('#btn-send');
+  if (realCodex) {
+    // Open the task through its persistent row before waiting for provider output;
+    // setup/recovery surfaces are not the file-review view.
+    await win.locator('.encrypted-task-row').first().click({ timeout: 30000 });
+  }
   await win.locator('.ew-file h4').filter({ hasText: 'NOTES.md' }).waitFor({ timeout: realCodex ? 120000 : 30000 });
   assert(fs.existsSync(path.join(project, 'NOTES.md')), 'agent wrote a file through the desktop-spawned runtime');
   if (realCodex) assert(fs.readFileSync(path.join(project, 'NOTES.md'), 'utf8') === sourceText,
@@ -176,10 +181,18 @@ const pageErrors = [];
     await testWindow.screenshot({ path: path.join(evidenceDir, 'failure.png') }).catch(() => {});
     const encryptedState = await testWindow.evaluate(() => window.__plexus?.state?.encryptedState).catch(() => null);
     const taskError = await testWindow.locator('#ew-error').textContent().catch(() => '');
+    const execution = await testWindow.evaluate(() => {
+      const state = window.__plexus?.state;
+      const snapshot = state?.encryptedSnapshots?.get(state.activeThreadId);
+      return { view: { recovery: state?.recoveryOpen, access: state?.accessOpen },
+        turn: snapshot?.turn, outcome: snapshot?.outcome,
+        events: snapshot?.events?.map(event => ({ type: event.type, payload: event.payload })) };
+    }).catch(() => null);
+    fs.writeFileSync(path.join(evidenceDir, 'failure-execution.json'), JSON.stringify(execution, null, 2));
     fs.writeFileSync(path.join(evidenceDir, 'failure.txt'), await testWindow.locator('body').innerText().catch(() => '') + '\n' + pageErrors.join('\n') + '\n' + JSON.stringify(encryptedState) + '\nTask error: ' + taskError);
   }
   process.exitCode = 1;
 }).finally(async () => {
-  await desktopApp?.close().catch(() => {});
+  await quitApp(desktopApp);
   if (desktopTemp) fs.rmSync(desktopTemp, { recursive: true, force: true });
 });

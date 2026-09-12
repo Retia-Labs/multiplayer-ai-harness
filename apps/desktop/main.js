@@ -256,7 +256,8 @@ async function shutdown() {
   if (quitting) return;
   quitting = true;
   if (trayTimer) clearInterval(trayTimer);
-  if (stateFile) lifecycle.saveState(stateFile, { lastQuitAt: Date.now() });
+  if (stateFile) lifecycle.saveState(stateFile, { lastQuitAt: Date.now(),
+    ...(win && !win.isDestroyed() ? { bounds: win.getNormalBounds() } : {}) });
   const ordered = [runtimeChild, hubChild, ...children.filter((c) => c !== runtimeChild && c !== hubChild)];
   children.length = 0;
   for (const child of ordered) if (child) await stopService(child);
@@ -446,6 +447,7 @@ async function createWindow() {
   win.on('resize', remember);
   win.on('move', remember);
   win.on('close', remember);
+  remember();
   // With a tray, closing puts the window away and keeps the renderer - which holds this
   // endpoint's keys and its verified state - alive behind it, so reopening is a window coming
   // back rather than an identity being derived again. Without a tray there is no way back, so
@@ -582,7 +584,13 @@ ipcMain.handle('desktop:confirmApprovalAuthority', async (event, { teamId, ident
   return { confirmed: true };
 });
 let retryPromise = null;
-ipcMain.handle('desktop:retryBoot', () => {
+function requireShellRenderer(event) {
+  const bootUrl = require('node:url').pathToFileURL(path.join(__dirname, 'boot.html')).href;
+  if (event.sender === win?.webContents && event.senderFrame === win.webContents.mainFrame && event.senderFrame.url === bootUrl) return;
+  requireRenderer(event, win);
+}
+ipcMain.handle('desktop:retryBoot', (event) => {
+  requireShellRenderer(event);
   if (retryPromise) return retryPromise;
   retryPromise = (async () => {
     await Promise.all(children.splice(0).map(stopService));
@@ -595,7 +603,10 @@ ipcMain.handle('desktop:retryBoot', () => {
   })().finally(() => { retryPromise = null; });
   return retryPromise;
 });
-ipcMain.handle('desktop:openDataFolder', async () => shell.openPath(app.getPath('userData')));
+ipcMain.handle('desktop:openDataFolder', async (event) => {
+  requireShellRenderer(event);
+  return shell.openPath(app.getPath('userData'));
+});
 
 // The seam the tests drive. A tray icon and a native modal cannot be clicked by a test, so the
 // entries in the menu the app installed are invoked through their own handlers, and the answer

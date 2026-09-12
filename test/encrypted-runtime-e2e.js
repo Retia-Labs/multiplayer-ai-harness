@@ -25,7 +25,11 @@ const until = async (read, label) => {
   throw new Error('Timed out: ' + label);
 };
 
-test('approval deadlines expire without a caller response or runtime polling', async (t) => {
+test('approval deadlines expire without a caller response or runtime polling', { timeout: 5000 }, async (t) => {
+  // Production has a live runtime connection. Its unref'ed approval deadline must
+  // not be the fixture's only handle, or Node exits before observing expiry.
+  const runtimeLifetime = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(runtimeLifetime));
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-approval-expiry-'));
   fs.mkdirSync(path.join(workspace, 'build')); fs.writeFileSync(path.join(workspace, 'build/keep.txt'), 'unapproved');
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));

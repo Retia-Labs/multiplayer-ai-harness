@@ -32,7 +32,7 @@ const checks = [];
 const pass = (name, detail) => { checks.push({ name, status: 'pass' }); console.log('PASS ' + name + (detail ? ' - ' + detail : '')); };
 
 (async () => {
-  for (const name of ['packages/e2ee/endpoint-core.mjs', 'packages/e2ee/http-transport.mjs', 'packages/e2ee/task-log.mjs', 'packages/e2ee/enrollment.mjs', 'packages/e2ee/membership.mjs', 'packages/protocol/encrypted-task.mjs']) {
+  for (const name of [...Hub.SHARED_MODULES].map(name => 'packages/' + name).concat('packages/e2ee/http-transport.mjs')) {
     fs.mkdirSync(path.dirname(path.join(web, name)), { recursive: true });
     fs.copyFileSync(path.join(root, name), path.join(web, name));
   }

@@ -16,6 +16,7 @@ const flag = (name) => argv.includes(name);
 const value = (name) => { const i = argv.indexOf(name); return i === -1 ? null : argv[i + 1]; };
 const outDir = path.join(root, '.artifacts', 'desktop-install');
 const mergedFile = path.join(root, 'docs', 'proofs', 'desktop-platform-results.json');
+const suppliedInstaller = value('--installer');
 
 function sh(cmd, args, opts = {}) {
   const res = spawnSync(cmd, args, { cwd: root, encoding: 'utf8', ...opts });
@@ -102,6 +103,7 @@ function buildInstaller(output) {
 // Windows: the silent NSIS switches a scripted install uses. /D comes last and unquoted, so
 // the target directory cannot contain spaces.
 function installWindows(installer, target) {
+  require('./desktop-installer').assertWindowsTarget(target);
   const res = sh(installer, ['/S', '/D=' + target], { stdio: 'inherit' });
   if (res.status !== 0) throw new Error('installer exited ' + res.status);
   return path.join(target, 'Plexus.exe');
@@ -156,8 +158,9 @@ function runTest(script, executable) {
   let installed = null;
   try {
     // --skip-build reuses the last build. For local iteration only; CI always builds.
-    installer = flag('--skip-build') ? locateInstaller(output) : buildInstaller(output);
-    record('the packaged installer builds for this platform and architecture', 'pass', path.basename(installer));
+    installer = suppliedInstaller ? fs.realpathSync(suppliedInstaller)
+      : flag('--skip-build') ? locateInstaller(output) : buildInstaller(output);
+    record(suppliedInstaller ? 'the supplied installer exists' : 'the packaged installer builds for this platform and architecture', 'pass', path.basename(installer));
   } catch (err) {
     record('the packaged installer builds for this platform and architecture', 'fail', String(err.message || err));
   }
@@ -191,10 +194,12 @@ function runTest(script, executable) {
 
   const runId = process.env.GITHUB_RUN_ID;
   const report = {
-    testedCommit: process.env.GITHUB_SHA || sh('git', ['rev-parse', 'HEAD']).stdout.trim() || null,
+    testedCommit: suppliedInstaller || flag('--skip-build') ? null : process.env.GITHUB_SHA || sh('git', ['rev-parse', 'HEAD']).stdout.trim() || null,
+    harnessCommit: sh('git', ['rev-parse', 'HEAD']).stdout.trim() || null,
     workingTreeDirty: !!sh('git', ['status', '--porcelain']).stdout.trim(),
     executionProvider: process.env.PLEXUS_DESKTOP_CODEX_PROOF === '1' ? 'codex-host-tools' : 'demo',
-    reusedBuild: flag('--skip-build'),
+    reusedBuild: !!suppliedInstaller || flag('--skip-build'),
+    artifactSource: suppliedInstaller ? 'supplied-installer; source revision requires its build manifest' : flag('--skip-build') ? 'reused-local-build' : 'built-current-worktree',
     workflow: runId ? `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${runId}` : null,
     ranAt: new Date().toISOString(),
     platform: process.platform,

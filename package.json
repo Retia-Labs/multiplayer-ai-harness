@@ -1,6 +1,6 @@
 {
   "name": "multiplayer-ai-harness",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multiplayer, bring-your-own-provider AI coding harness: hub + execution hosts + shared web/desktop UI.",
   "main": "apps/desktop/main.js",
   "scripts": {
@@ -21,6 +21,8 @@
     "dist:win": "electron-builder --win --publish never",
     "dist:mac": "electron-builder --mac --publish never",
     "dist:dir": "electron-builder --dir --publish never",
+    "release:desktop": "node scripts/desktop-release.js",
+    "test:desktop-release": "node --test test/desktop-release.js",
     "test:codex": "npm run test:codex:app-server && npm run test:codex:exec && node test/codex-acceptance.js --lane control --out .artifacts/codex-control",
     "test:codex:exec": "node --test test/codex-exec-contract.js",
     "test:codex:app-server": "node --test test/codex-app-server.js test/codex-host-profile.js test/codex-account-configuration.js",
@@ -33,6 +35,7 @@
     "test:desktop-bootstrap": "node test/desktop-bootstrap.js",
     "test:desktop-lifecycle": "node test/desktop-lifecycle.js",
     "test:desktop:install": "node scripts/desktop-install-proof.js",
+    "test:desktop:upgrade": "node scripts/desktop-upgrade-proof.js",
     "test:e2ee:acceptance": "node test/e2ee-acceptance.js",
     "test:e2ee:identity": "node --test test/endpoint-cross-signing.js",
     "test:e2ee:platform": "node scripts/e2ee-platform-proof.js",

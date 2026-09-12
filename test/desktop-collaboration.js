@@ -66,6 +66,16 @@ module.exports = async function desktopCollaboration({ app, win, project, realCo
     await bobDevice.locator('[data-action="verify-teammate"]').click();
     await bobDevice.locator('[data-action="grant-project"]').click();
     await bob.locator('#encrypted-setup').filter({ hasText: 'This endpoint: verified' }).waitFor({ timeout: 45000 });
+    // Device verification by the owner is not the recipient trusting the owner.
+    // Follow the same explicit fingerprint ceremony as a browser-only teammate.
+    await bob.locator('#btn-access').click();
+    const authority = bob.locator('[data-action="confirm-team-authority"]');
+    const ownerFingerprint = await win.evaluate(() => window.__plexus.state.encryptedIdentity.fingerprint);
+    check((await authority.locator('..').innerText()).includes(ownerFingerprint),
+      'Bob compares the displayed team authority with the desktop owner fingerprint');
+    check(await bob.evaluate(() => window.__plexus.state.encryptedState.membershipIdentity === null),
+      'relay device verification alone does not establish trusted membership for Bob');
+    await authority.click();
     await bob.locator('.encrypted-task-row[data-task-id="' + taskId + '"]').click();
     await bob.locator('[data-action="verify-task-host"]').click();
     await bob.locator('[data-action="confirm-host"]').click();

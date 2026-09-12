@@ -68,6 +68,7 @@ let app;
   });
 
   app = await launch();
+  const fromVersion = await app.evaluate(({ app }) => app.getVersion());
   let win = await app.firstWindow();
   const state = () => app.evaluate(() => (global.__plexusDesktop ? global.__plexusDesktop.lifecycle() : { runtimeRunning: false, pending: true }));
 
@@ -76,6 +77,15 @@ let app;
   await win.fill('#team-name', 'Lifecycle team');
   await win.click('#btn-create-team');
   await win.waitForSelector('#app:not(.hidden)', { timeout: 60000 });
+  if (process.env.PLEXUS_UPGRADE_CYCLE) {
+    // Establish a user-selected layout on the old version, including versions
+    // that only persist bounds after a move/resize. The upgrade must retain it.
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows().find(window => window.getTitle() === 'Plexus');
+      window.restore(); window.setBounds({ x: 80, y: 80, width: 1200, height: 800 });
+    });
+    await waitFor(() => JSON.parse(fs.readFileSync(path.join(userData, 'desktop-state.json'), 'utf8')).bounds, 'old layout persisted');
+  }
   await win.locator('#encrypted-setup').filter({ hasText: 'This endpoint: verified' }).waitFor({ timeout: 30000 });
   await win.waitForFunction(() => /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(document.querySelector('#pair-code').value));
   await win.click('#btn-pair-host');
@@ -111,6 +121,8 @@ let app;
   await win.locator('#input').fill('delete cleanup'); await win.locator('#btn-send').click();
   await win.locator('[data-action="encrypted-approval-accept"]').waitFor({ timeout: 120000 });
   const taskId = (await snapshot(win)).task.id;
+  const identity = await win.evaluate(() => window.__plexus.state.encryptedIdentity);
+  const hostId = await win.evaluate(() => window.harnessDesktop.runtimeId());
   assert.ok(fs.existsSync(path.join(project, 'cleanup')), 'nothing has been removed yet');
   pass('a real task is in flight on that host, waiting on a decision', 'delete cleanup');
 
@@ -204,6 +216,57 @@ let app;
   assert.notEqual(restored.value.turn, 'running', 'the restored task is not claimed to be running');
   assert.ok(fs.existsSync(path.join(project, 'cleanup')), 'and the interrupted removal was not replayed');
   pass('a fresh launch restores the task without resuming it', 'turn ' + restored.value.turn + ', nothing replayed');
+
+  if (process.env.PLEXUS_UPGRADE_CYCLE) {
+    // Capture the authenticated baseline in the OLD installed application. A
+    // snapshot from the new app cannot prove that the initial upgrade lost nothing.
+    assert.equal(await app.evaluate(({ app }) => app.getVersion()), fromVersion);
+    const expectedEvents = restored.value.events;
+    const verifyRestored = async () => {
+      assert.deepEqual(await win.evaluate(() => window.__plexus.state.encryptedIdentity), identity,
+        'the complete encrypted endpoint identity survives the version change');
+      assert.equal(await win.evaluate(() => window.harnessDesktop.runtimeId()), hostId);
+      const current = await snapshot(win);
+      assert.deepEqual(current.value.events.slice(0, expectedEvents.length), expectedEvents,
+        'the complete preexisting authenticated history is retained');
+      // Startup may reconcile an interrupted durable execution marker after the
+      // first UI replay. That receipt reports uncertainty; it must not start work.
+      for (const event of current.value.events.slice(expectedEvents.length)) {
+        assert.equal(event.type, 'recovery.required');
+        assert.equal(event.payload.reason, 'host_restarted');
+        assert.ok(expectedEvents.some(previous => previous.payload?.turnId === event.payload.turnId));
+      }
+      assert.notEqual(current.value.turn, 'running');
+      assert.ok(fs.existsSync(path.join(project, 'cleanup/obsolete.txt')));
+    };
+    const stop = async () => {
+      const services = await app.evaluate(() => global.__plexusDesktop.servicePids());
+      const closed = app.waitForEvent('close');
+      app.evaluate(() => global.__plexusDesktop.forceQuit()).catch(() => {});
+      await closed;
+      await waitFor(() => !alive(services.runtime) && !alive(services.hub), 'upgrade services exited');
+    };
+    const reopen = async () => {
+      app = await launch(); win = await app.firstWindow();
+      await win.waitForSelector('#app:not(.hidden)', { timeout: 60000 });
+      await win.locator('.encrypted-task-row[data-task-id="' + taskId + '"]').click({ timeout: 60000 });
+      await waitFor(async () => (await snapshot(win)).value, 'upgrade history restored');
+    };
+    await stop();
+    const upgrade = require('./desktop-upgrade-cycle').cycle(process.env.PLEXUS_UPGRADE_CYCLE,
+      { userData, dataDir: env.HARNESS_DATA });
+    assert.equal(upgrade.upgrade(), packaged); await reopen();
+    const toVersion = await app.evaluate(({ app }) => app.getVersion());
+    assert.notEqual(fromVersion, toVersion, 'The upgrade must cross actual app versions.');
+    await verifyRestored(); pass('the new installed version retains endpoint, host and encrypted history');
+    await stop(); assert.equal(upgrade.reinstall(), packaged); await reopen();
+    assert.equal(await app.evaluate(({ app }) => app.getVersion()), toVersion);
+    await verifyRestored(); pass('reinstalling the new version retains the same state');
+    await stop(); assert.equal(upgrade.rollback(), packaged); await reopen();
+    assert.equal(await app.evaluate(({ app }) => app.getVersion()), fromVersion);
+    await verifyRestored(); pass('the prior installer and matching complete backup restore readable history without replay');
+    upgrade.record(fromVersion, toVersion, { host: hostId, device: identity.device });
+  }
 
   note('the tray icon itself was not clicked',
     'no supported platform lets a test make the OS open a tray menu; the entries in the menu the app installed are invoked by their own handlers, so what is untested is the click that opens it');
