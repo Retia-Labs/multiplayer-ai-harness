@@ -8,7 +8,7 @@ routes every project read and write through the execution host.
 
 ## Supported host-tools mode
 
-The bounded configuration is **Codex 0.153.4, macOS arm64, gpt-5.4-mini**, using
+The bounded configuration is **Codex 0.153.4, macOS arm64, gpt-5.5**, using
 an existing host-local ChatGPT or API-key file login. ChatGPT has the real task
 proof below; API mode has synthetic local contract evidence only. Other versions, platforms, models,
 keyring-only accounts and managed configurations remain unproven and are
@@ -91,7 +91,31 @@ The no-environment tool registration contract is checked against its
 `test/fixtures/codex-app-server-0.153.4/contract.json` records inspected schema
 hashes and the exact environment fields.
 
-## Current verification
+## Model requalification, 2026-09-12
+
+The current ChatGPT account's native `model/list` no longer includes
+`gpt-5.4-mini`; actual model turns reject it. A synthetic task with the available
+`gpt-5.5` completed an exact host read and write without changing the sandbox,
+disabled features, account binding, or native-environment restrictions. The
+runtime advertises this one qualified model; obsolete explicit selections fail
+before spawning. The setup guidance names the same model.
+
+The actual CLI loopback inventory and readiness checks passed 3/3 for this model,
+with exactly four host tools and no ambient instruction marker. The initial
+encrypted-runtime requalification passed all eight existing checks, including
+boundary refusal, correction, approval, resume and interruption. This establishes
+ChatGPT coverage; a real API-account request was not run. Installed collaboration
+and model-migration results are recorded in
+[`distribution-and-upgrades.md`](distribution-and-upgrades.md).
+The current focused adapter/account suite passes 55 tests, including rejection
+of obsolete model selections before provider startup.
+
+For an existing task whose saved settings still name the obsolete model, select
+`gpt-5.5` explicitly for a new turn. Do not rewrite encrypted history or silently
+change the model of an active turn. The same-account and explicit recovery checks
+still govern reuse of provider thread handles.
+
+## Earlier verification (before model requalification)
 
 The adapter/account suite passes **54 tests**, including actual host file bytes,
 read/traversal/symlink refusal, explicit whitespace preservation, native controls,

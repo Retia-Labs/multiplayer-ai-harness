@@ -127,6 +127,17 @@ Run installer drills sequentially: concurrent macOS mounts of the same DMG can c
 On Windows, the helper refuses an existing registered Plexus installation outside the
 fixture, because NSIS `/D` alone does not isolate upgrade/uninstall registration.
 
+For the specific 0.1.1 (obsolete model) to 0.1.2 model migration, add `--real-provider`
+and set `PLEXUS_DESKTOP_CODEX_PROOF=1`, `PLEXUS_DESKTOP_COLLABORATION_PROOF=1`, and
+`CODEX_BIN` to the qualified native CLI. This uses the existing local account with
+generated test files only. It configures that account in the old installed app,
+retains its failed task, quits and checks service exit, backs up both stores, then
+installs the new app in the same location. The UI explicitly selects `gpt-5.5` and
+the **Agent** access preset for the requested edit. The complete real collaboration
+flow must pass before it writes `*-provider.json`. This branch does not restore an
+old authority snapshot after the new collaboration; reinstall/rollback results
+belong to the separate demo drill. It is not a generic arbitrary-model migration.
+
 ## Local evidence, 2026-09-12
 
 - macOS arm64 (Darwin 25.6.0): the unsigned 0.1.0 to 0.1.1 demo upgrade,
@@ -151,15 +162,51 @@ fixture, because NSIS `/D` alone does not isolate upgrade/uninstall registration
   repairing the standalone approval-expiry fixture's process lifetime (production timers
   remain unchanged). Release-preflight checks passed 4/4. This is a completed local run
   with targeted reruns, not a claim of an uninterrupted green `npm test` invocation.
-- The real installed provider attempt configured Codex 0.153.4 with existing ChatGPT
+- The 0.1.2 full-suite run passed through the runtime, authority, recovery and storage
+  stages, then exposed an obsolete browser assertion for the previous model name.
+  After updating that expectation, `test:encrypted-workspace` and the remaining
+  `test:genesis-removal-ui` passed. All default-suite stages are therefore covered;
+  the current focused adapter/account group passed 55/55.
+- The initial 0.1.1 real installed provider attempt configured Codex 0.153.4 with existing ChatGPT
   authentication, but its model turn failed before any file operation. A separate synthetic
   adapter reproduction identified a provider error that the pinned `gpt-5.4-mini` model is
   not supported with ChatGPT. No raw account/provider error text is included in diagnostics.
-  Real-provider desktop/browser and upgrade acceptance have **not passed**.
+  This failure led to the model requalification below; it is historical evidence.
+- The 0.1.2 build pins `gpt-5.5`, which is offered by the current account. Its real
+  installed desktop/browser collaboration passed with Codex 0.153.4 and ChatGPT:
+  exact file creation, late teammate history, scoped delegated approval while the
+  desktop window was closed, live correction changing exact file bytes, handoff,
+  mobile review, and explicit outcome. All six install/readiness/lifecycle/uninstall
+  checks passed. The unsigned 0.1.2 artifact SHA-256 is
+  `6214fbdb2e55d0e4fba47c8dd29363096776137fba102d2056774893564a8fa2`.
+  Evidence: `.artifacts/desktop-collaboration/codex-results.json` and
+  `.artifacts/desktop-install/darwin-arm64.json`.
+- The real encrypted runtime passed nine checks with the same model, including a
+  stored task naming the obsolete model: it fails before execution, then explicit
+  selection of `gpt-5.5` completes a new turn while preserving every earlier event.
+  This is a same-runtime model-settings migration, not a real-provider binary-upgrade
+  or UI model-selection proof. Evidence:
+  `.artifacts/encrypted-codex-host-tools/results.json`. Real API-account eligibility
+  remains untested; the native synthetic API inventory/preflight checks passed 3/3.
+- The unsigned 0.1.1 to 0.1.2 binary upgrade, same-version reinstall and matching-backup
+  rollback also passed with the demo provider, preserving identity, authenticated history
+  and the unapproved file. This separately measures the binary/store transition; it does
+  not combine that transition with the real-provider model-migration test above.
+  `.artifacts/desktop-upgrade/darwin-arm64.json` records both artifact hashes.
+- The combined real-provider 0.1.1 to 0.1.2 upgrade also passed, retaining the exact
+  local Codex account configuration/binding, endpoint and host identities, and old
+  authenticated history. Explicit model and Agent-preset selection through the UI
+  then completed exact real file edits, delegated approval, correction and handoff.
+  Old service PIDs were verified stopped before replacement; final shutdown verifies
+  Electron exit. Evidence: `.artifacts/desktop-upgrade/darwin-arm64-provider.json`.
+  The initial combined attempt performed a read but did not create the required file;
+  the successful run explicitly selected the Agent preset for host writes.
 - Native tray opening and dialog clicking are not automated: the lifecycle test invokes
   installed menu handlers and checks the actual dialog plan and resulting process state.
 - Neither Windows execution nor trusted macOS/Windows signing has been measured. The
-  existing Windows provider gate remains closed. Issues #19 and #20 remain incomplete.
+  existing Windows provider gate remains closed. Pending work was measured with the
+  demo provider; the real-provider upgrade starts from a failed obsolete-model turn.
+  Issues #19 and #20 remain incomplete.
 
 ## Current external prerequisites
 

@@ -255,7 +255,7 @@ let hub, runtime, browser, lastPage;
   await alice.screenshot({ path: path.join(out, 'provider-failure-desktop.png') });
   pass('a real encrypted provider failure displays an actionable next step and keeps the task open');
   for (const [code, expected] of [
-    ['codex_host_tools_version_unsupported', /Codex 0\.153\.4.*darwin\/arm64.*gpt-5\.4-mini/],
+    ['codex_host_tools_version_unsupported', /Codex 0\.153\.4.*darwin\/arm64.*gpt-5\.5/],
     ['codex_host_tools_login_required', /Sign in with ChatGPT.*local file credential storage/],
     ['codex_host_tools_ambient_config', /Reconfigure the supported isolated host setup.*Keep the isolation checks enabled/]
   ]) {

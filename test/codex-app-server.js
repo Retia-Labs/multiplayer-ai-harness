@@ -511,7 +511,7 @@ function supportedToolFixture(t, override, authMode = 'chatgpt') {
     if (msg.method === 'mcpServerStatus/list') { child.answer(msg, { data: [], nextCursor: null }); return true; }
     if (msg.method === 'thread/start' || msg.method === 'thread/resume') {
       child.answer(msg, { thread: { id: msg.params.threadId || scope.threadId }, cwd: f.backend.profile.profileDir,
-        modelProvider: 'openai', model: 'gpt-5.4-mini', approvalPolicy: 'never', sandbox: { type: 'readOnly', networkAccess: false }, instructionSources: [] }); return true;
+        modelProvider: 'openai', model: 'gpt-5.5', approvalPolicy: 'never', sandbox: { type: 'readOnly', networkAccess: false }, instructionSources: [] }); return true;
     }
     return false;
   } });

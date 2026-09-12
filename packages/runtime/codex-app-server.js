@@ -17,7 +17,7 @@ const { Events, ItemTypes, ItemStatus, ApprovalDecision } = require('../protocol
 const { resolveCodex, codexConfigArgs } = require('./codex-probe');
 
 const { CodexRpc, CodexProviderError, failure, providerFailure } = require('./codex-rpc');
-const { prepareHostProfile, verifyProfileConfiguration, verifyHostAccount, validateAuthMode, SUPPORTED_CODEX_VERSION } = require('./codex-host-profile');
+const { prepareHostProfile, verifyProfileConfiguration, verifyHostAccount, validateAuthMode, SUPPORTED_CODEX_VERSION, SUPPORTED_CODEX_MODEL } = require('./codex-host-profile');
 
 // thread/start uses the kebab-case sandbox enum, not turn/start's policy object.
 function sandboxMode(policy = 'read-only') {
@@ -361,8 +361,8 @@ class HostToolsCodexAppServerBackend extends ConfinedCodexAppServerBackend {
     return super.run(session);
   }
   async prepare(session) {
-    if (session.model && session.model !== 'gpt-5.4-mini') throw failure('codex_host_tools_model_unsupported');
-    session.model = 'gpt-5.4-mini';
+    if (session.model && session.model !== SUPPORTED_CODEX_MODEL) throw failure('codex_host_tools_model_unsupported');
+    session.model = SUPPORTED_CODEX_MODEL;
     this.profile = prepareHostProfile({ profileDir: this.profileDir, authFile: this.authFile, authMode: this.authMode,
       workspace: session.cwd, resolved: this.resolved, versionProbe: this.versionProbe });
     if (this.accountBinding !== undefined && this.accountBinding !== this.profile.accountBinding) throw failure('codex_host_tools_account_reauthorization_required');
@@ -383,7 +383,7 @@ class HostToolsCodexAppServerBackend extends ConfinedCodexAppServerBackend {
       rpc.notify('initialized');
       await this.verifyConfiguration(rpc, session);
       const result = await rpc.call('thread/start', { ...this.threadOptions(session), dynamicTools: this.dynamicTools(),
-        model: 'gpt-5.4-mini', approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true });
+        model: SUPPORTED_CODEX_MODEL, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true });
       await this.verifyThread(rpc, session, result);
       return { ready: true, version: this.profile.version, authMode: this.authMode,
         accountBinding: this.profile.accountBinding, capabilities: this.capabilities() };
@@ -414,7 +414,7 @@ class HostToolsCodexAppServerBackend extends ConfinedCodexAppServerBackend {
     verifyHostAccount(this.profile);
   }
   async verifyThread(rpc, session, result) {
-    if (result.cwd !== this.profile.profileDir || result.modelProvider !== 'openai' || result.model !== 'gpt-5.4-mini' || result.approvalPolicy !== 'never' ||
+    if (result.cwd !== this.profile.profileDir || result.modelProvider !== 'openai' || result.model !== SUPPORTED_CODEX_MODEL || result.approvalPolicy !== 'never' ||
         result.sandbox?.type !== 'readOnly' || result.sandbox.networkAccess !== false ||
         !Array.isArray(result.instructionSources) || result.instructionSources.length) throw failure('codex_host_tools_policy_unverified');
     const inventory = await rpc.call('mcpServerStatus/list', { threadId: result.thread.id });

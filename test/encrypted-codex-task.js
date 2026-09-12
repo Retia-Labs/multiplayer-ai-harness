@@ -36,7 +36,7 @@ for (const name of ['build', 'pause']) {
   fs.mkdirSync(path.join(workspace, name));
   fs.writeFileSync(path.join(workspace, name, 'keep.txt'), 'Synthetic approval fixture only.\n');
 }
-const report = { ranAt: new Date().toISOString(), version: '0.153.4', model: 'gpt-5.4-mini', effort: 'medium',
+const report = { ranAt: new Date().toISOString(), version: '0.153.4', model: 'gpt-5.5', effort: 'medium',
   platform: { os: process.platform, arch: process.arch },
   inputSource: 'Fresh temporary generated ANSWER/build/pause fixtures and generated sibling read marker only; no repository/user documents',
   checks: [], turns: [] };
@@ -98,7 +98,7 @@ let hub, runtime, socket, ownerEndpoint, teammateEndpoint, hostKeys, challenges;
   const task = { version: 1, id: newId('et'), teamId: team.id, runtimeId: runtime.id, projectId, creatorUserId: owner.id };
   await createEncryptedTask(ownerEndpoint, tasks, { task, writer, payload: {
     title: 'Correct the synthetic maintenance window', provider: 'codex-cli',
-    settings: { model: 'gpt-5.4-mini', effort: 'medium', approvalPolicy: 'on-request', sandboxPolicy: 'workspace-write' },
+    settings: { model: 'gpt-5.5', effort: 'medium', approvalPolicy: 'on-request', sandboxPolicy: 'workspace-write' },
     objective: 'This temporary project contains synthetic test data only. List the project and read ANSWER.txt with the host tools. As boundary probes, call plexus_read_file for ../OUTSIDE_READ.txt and outside-link.txt; both must be refused, do not retry or guess their contents. The read tool returns JSON containing the exact file content with escaped whitespace. Use plexus_write_file to create WINDOW.md with exactly that content, preserving its final newline. Then call plexus_remove_path for build and wait for the host decision. If a teammate supplies a correction during that wait, after the host decision succeeds use plexus_write_file to replace WINDOW.md with the exact corrected contents. Then stop. Do not modify any other files.'
   } });
   const reader = new EncryptedTaskReader({ endpoint: ownerEndpoint, task, writer });
@@ -197,6 +197,38 @@ let hub, runtime, socket, ownerEndpoint, teammateEndpoint, hostKeys, challenges;
   assert.equal(relay.includes(marker), false); assert.equal(relay.includes(outsideMarker), false);
   assert.equal(/access_token|refresh_token|sk-[a-zA-Z0-9_-]{12,}/.test(relay), false);
   pass('real provider correction, handoff and outcome stay ciphertext-only at the relay');
+
+  // Existing encrypted task settings must fail safely and remain usable after
+  // an explicit model selection. Never rewrite the old authenticated history.
+  const legacyTask = { ...task, id: newId('et') };
+  await createEncryptedTask(ownerEndpoint, tasks, { task: legacyTask, writer, payload: {
+    title: 'Synthetic model migration', provider: 'codex-cli',
+    settings: { model: 'gpt-5.4-mini', effort: 'medium', approvalPolicy: 'on-request', sandboxPolicy: 'workspace-write' },
+    objective: 'Create MODEL-MIGRATION.txt with exactly the text migrated followed by one newline, using the host write tool.'
+  } });
+  const legacyReader = new EncryptedTaskReader({ endpoint: ownerEndpoint, task: legacyTask, writer });
+  const migrationReceipts = new Map();
+  const refreshLegacy = async () => {
+    for (const event of await ownerEndpoint.open(await ownerEndpoint.transport.drain())) {
+      const receipt = readTaskReceipt(event, legacyTask, writer);
+      if (receipt) migrationReceipts.set(receipt.commandId, receipt);
+    }
+    await legacyReader.reconnect(tasks); return legacyReader.snapshot();
+  };
+  await until(async () => (await refreshLegacy()).turn === 'failed', 'obsolete model refusal');
+  assert.ok(legacyReader.state.events.some(event => event.payload?.error === 'codex_host_tools_model_unsupported'));
+  assert.equal(fs.existsSync(path.join(workspace, 'MODEL-MIGRATION.txt')), false);
+  const priorEvents = structuredClone(legacyReader.state.events);
+  const migrationId = newId('cmd');
+  await sendTaskControl(ownerEndpoint, writer, { task: legacyTask, action: 'turn.start', commandId: migrationId,
+    payload: { settings: { model: 'gpt-5.5' }, input: [{ type: 'text',
+      text: 'Create MODEL-MIGRATION.txt with exactly the text migrated followed by one newline, using the host write tool.' }] } });
+  const migration = await until(async () => { await refreshLegacy(); return migrationReceipts.get(migrationId); }, 'explicit model selection');
+  assert.equal(migration.state, 'accepted');
+  await until(async () => (await refreshLegacy()).turn === 'completed', 'new model completes existing task');
+  assert.equal(fs.readFileSync(path.join(workspace, 'MODEL-MIGRATION.txt'), 'utf8'), 'migrated\n');
+  assert.deepEqual(legacyReader.state.events.slice(0, priorEvents.length), priorEvents);
+  pass('an obsolete stored model fails safely; explicit supported-model selection completes the same task without rewriting history');
   report.status = 'passed';
 })().catch(error => {
   report.status = 'failed'; report.error = String(error.message || error); console.error('FAIL ' + report.error); process.exitCode = 1;

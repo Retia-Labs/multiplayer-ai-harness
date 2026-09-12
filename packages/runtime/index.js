@@ -13,7 +13,7 @@ const { createProvider, DEFAULT_MODELS } = require('./providers');
 const { createExecutor, CrabboxExecutor } = require('./executors');
 const { PRESETS } = require('./policy');
 const { Commands, Events, ItemTypes, Errors, createPairingCode } = require('../protocol');
-const { validateAuthMode } = require('./codex-host-profile');
+const { validateAuthMode, SUPPORTED_CODEX_MODEL } = require('./codex-host-profile');
 
 const uid = (p) => p + '_' + crypto.randomBytes(8).toString('hex');
 
@@ -124,7 +124,7 @@ class Runtime {
     list.push(this.codexHostTools && /^[a-f0-9]{64}$/.test(this.codexHostTools.accountBinding || '')
       ? { id: 'codex-cli', label: 'Codex', configured: true, writes: true, providerWrites: false,
           reason: 'reads and changes use this host’s authorized workspace tools; the supported provider version and isolated configuration are checked before each turn',
-          models: ['gpt-5.4-mini'] }
+          models: [SUPPORTED_CODEX_MODEL] }
       : this.codexHostTools ? { id: 'codex-cli', label: 'Codex (local setup required)', configured: false,
           reason: 'Repeat local Codex setup to authorize the current provider account before shared tasks can run.', models: [] }
       : { id: 'codex-cli', label: 'Codex CLI (isolation pending)', configured: false,

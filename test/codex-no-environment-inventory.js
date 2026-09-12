@@ -18,7 +18,7 @@ const blockedFeatures = ['plugins', 'apps', 'enable_mcp_apps', 'recommended_plug
   'multi_agent_v2', 'tool_search', 'tool_suggest', 'skill_search', 'shell_tool', 'goals'];
 
 function candidateConfig(port) {
-  return `model = "gpt-5.4-mini"
+  return `model = "gpt-5.5"
 model_provider = "fixture"
 web_search = "disabled"
 project_doc_max_bytes = 0
@@ -133,12 +133,12 @@ test('Codex 0.153.4 API file auth reaches only the loopback fixture with exactly
   // The production preflight must reject this response before any turn starts.
   await fs.writeFile(path.join(profile, 'AGENTS.md'), canary);
   const contaminated = await rpc.call('thread/start', { cwd: profile, environments: [], dynamicTools,
-    model: 'gpt-5.4-mini', modelProvider: 'fixture', approvalPolicy: 'never', sandbox: 'read-only' });
+    model: 'gpt-5.5', modelProvider: 'fixture', approvalPolicy: 'never', sandbox: 'read-only' });
   assert.equal(contaminated.instructionSources.length, 1);
   assert.equal(captured.length, 0);
   await fs.rm(path.join(profile, 'AGENTS.md'));
   const started = await rpc.call('thread/start', { cwd: profile, environments: [], dynamicTools,
-    model: 'gpt-5.4-mini', modelProvider: 'fixture', approvalPolicy: 'never', sandbox: 'read-only',
+    model: 'gpt-5.5', modelProvider: 'fixture', approvalPolicy: 'never', sandbox: 'read-only',
     developerInstructions: 'Only the explicitly provided Plexus host tools are authorized.' });
   assert.deepEqual(started.instructionSources, []);
   await rpc.call('turn/start', { threadId: started.thread.id, environments: [],

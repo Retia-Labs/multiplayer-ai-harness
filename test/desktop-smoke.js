@@ -5,6 +5,8 @@ const { execSync } = require('child_process');
 const { localShell } = require('../packages/runtime/executors');
 const { desktopProfile } = require('../apps/desktop/profile');
 const realCodex = process.env.PLEXUS_DESKTOP_CODEX_PROOF === '1';
+const providerUpgrade = !!process.env.PLEXUS_PROVIDER_UPGRADE_CYCLE;
+if (providerUpgrade && (!realCodex || process.env.PLEXUS_DESKTOP_COLLABORATION_PROOF !== '1')) throw new Error('Provider upgrade requires real installed collaboration opt-in.');
 // The real collaboration claim requires the same explicit provider opt-in as the
 // solo proof. `demo` is a development run of the UI flow, never a real-provider claim.
 const collaborationMode = process.env.PLEXUS_DESKTOP_COLLABORATION_PROOF;
@@ -46,14 +48,15 @@ const pageErrors = [];
   if (process.env.DESKTOP_EXECUTABLE) launchEnv.PATH = process.platform === 'win32'
     ? process.env.SystemRoot + '/system32;' + process.env.SystemRoot
     : '/usr/bin:/bin';
-  const app = await electron.launch({
+  const launch = () => electron.launch({
     executablePath: process.env.DESKTOP_EXECUTABLE || undefined,
     args: [...(process.env.DESKTOP_EXECUTABLE ? [] : ['apps/desktop/main.js']), '--user-data-dir=' + path.join(tmp, 'ud'), '--no-sandbox'],
     cwd: path.join(__dirname, '..'),
     env: launchEnv
   });
+  let app = await launch();
   desktopApp = app;
-  const win = await app.firstWindow();
+  let win = await app.firstWindow();
   testWindow = win;
   if (collaboration) { await win.setViewportSize({ width: 1487, height: 1058 }); await win.emulateMedia({ reducedMotion: 'reduce' }); }
   win.on('pageerror', (error) => pageErrors.push(error.message));
@@ -120,7 +123,7 @@ const pageErrors = [];
     await win.waitForFunction(() => window.__plexus.state.runtimes.some(runtime =>
       runtime.encryptionState === 'ready' && runtime.providers.some(provider => provider.id === 'codex-cli' && provider.configured)), null, { timeout: 30000 });
     await win.locator('#provider-select').selectOption('codex-cli');
-    await win.locator('#model-select').selectOption('gpt-5.4-mini');
+    await win.locator('#model-select').selectOption(providerUpgrade ? 'gpt-5.4-mini' : 'gpt-5.5');
     await win.locator('#effort-select').selectOption('medium');
   } else await win.locator('#provider-select').selectOption('demo');
   await win.fill('#input', realCodex
@@ -131,6 +134,18 @@ const pageErrors = [];
     // Open the task through its persistent row before waiting for provider output;
     // setup/recovery surfaces are not the file-review view.
     await win.locator('.encrypted-task-row').first().click({ timeout: 30000 });
+  }
+  let recordUpgrade;
+  if (providerUpgrade) {
+    const upgraded = await require('./desktop-provider-upgrade')({ app, win, launch, quitApp,
+      userData: path.join(tmp, 'ud'), dataDir: dataRoot, runtimeConfig: path.join(profile.dataDir, 'runtime.json'), project });
+    app = desktopApp = upgraded.app; win = testWindow = upgraded.win;
+    win.on('pageerror', error => pageErrors.push(error.message));
+    win.on('console', message => { if (message.type() === 'error') pageErrors.push(message.text()); });
+    await win.setViewportSize({ width: 1487, height: 1058 });
+    await win.emulateMedia({ reducedMotion: 'reduce' });
+    recordUpgrade = await upgraded.verify();
+    assert(true, 'the binary upgrade preserves the account binding, endpoint, host and old task before explicit model selection');
   }
   await win.locator('.ew-file h4').filter({ hasText: 'NOTES.md' }).waitFor({ timeout: realCodex ? 120000 : 30000 });
   assert(fs.existsSync(path.join(project, 'NOTES.md')), 'agent wrote a file through the desktop-spawned runtime');
@@ -162,6 +177,7 @@ const pageErrors = [];
   const exited = app.waitForEvent('close', { timeout: 10000 });
   await app.evaluate(() => global.__plexusDesktop.forceQuit()); await exited;
   assert(true, 'an explicit quit exits even while the hidden crypto broker is active');
+  recordUpgrade?.();
   fs.writeFileSync(path.join(evidenceDir, realCodex ? 'codex-results.json' : 'latest-results.json'), JSON.stringify({
     status: 'pass', ranAt: new Date().toISOString(), packaged: !!process.env.DESKTOP_EXECUTABLE,
     provider: realCodex ? 'codex-cli' : 'demo', providerStatus, rendererErrors: pageErrors,

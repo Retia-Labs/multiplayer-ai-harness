@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { failure } = require('./codex-rpc');
 const SUPPORTED_CODEX_VERSION = '0.153.4';
+const SUPPORTED_CODEX_MODEL = 'gpt-5.5';
 const BLOCKED_FEATURES = ['plugins', 'apps', 'enable_mcp_apps', 'recommended_plugins', 'hooks',
   'memories', 'memory_tool', 'browser_use', 'computer_use', 'image_generation',
   'standalone_web_search', 'code_mode', 'code_mode_host', 'js_repl', 'multi_agent',
@@ -157,5 +158,5 @@ function verifyProfileConfiguration(result, { profileDir, authMode, effort = 'me
   }
   if (owned !== 1 || result.config.model_provider !== 'openai' || result.config.web_search !== 'disabled') throw failure('codex_host_tools_config_unverified');
 }
-module.exports = { SUPPORTED_CODEX_VERSION, BLOCKED_FEATURES, PROFILE_CONFIG, PROFILE_TOML,
+module.exports = { SUPPORTED_CODEX_VERSION, SUPPORTED_CODEX_MODEL, BLOCKED_FEATURES, PROFILE_CONFIG, PROFILE_TOML,
   validateAuthMode, profileConfig, isolatedEnvironment, prepareHostProfile, verifyProfileConfiguration, verifyHostAccount };

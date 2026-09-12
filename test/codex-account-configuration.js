@@ -7,6 +7,22 @@ const path = require('node:path');
 const { Runtime, parseArgs, localCodexOptIn } = require('../packages/runtime');
 const { TurnSession } = require('../packages/runtime/session');
 
+test('configured runtime advertises the qualified model and refuses an obsolete selection before spawning', async t => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-model-selection-'));
+  const runtime = new Runtime({ dataDir: base, codexHostTools: {
+    bin: process.execPath, authFile: path.join(base, 'unused-auth.json'), accountBinding: 'a'.repeat(64) } });
+  t.after(async () => { await runtime.stop(); fs.rmSync(base, { recursive: true, force: true }); });
+  assert.deepEqual(runtime.providerList().find(provider => provider.id === 'codex-cli').models, ['gpt-5.5']);
+  const provider = runtime.provider('codex-cli'); let spawns = 0;
+  provider.spawnProcess = () => { spawns++; throw new Error('must not spawn'); };
+  const session = new TurnSession({ thread: { id: 'old-model-task', cwd: base }, provider,
+    model: 'gpt-5.4-mini', input: [{ type: 'text', text: 'synthetic task' }], settings: {},
+    by: { userId: 'owner' }, emit() {} });
+  const result = await session.run();
+  assert.equal(result.error.message, 'codex_host_tools_model_unsupported');
+  assert.equal(spawns, 0);
+});
+
 test('legacy runtime configuration requires fresh local consent before any provider process or model work', async t => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-legacy-consent-'));
   const runtime = new Runtime({ dataDir: base, codexHostTools: {

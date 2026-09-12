@@ -1,6 +1,6 @@
 {
   "name": "multiplayer-ai-harness",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Multiplayer, bring-your-own-provider AI coding harness: hub + execution hosts + shared web/desktop UI.",
   "main": "apps/desktop/main.js",
   "scripts": {

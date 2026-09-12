@@ -186,7 +186,7 @@ module.exports = async function desktopCollaboration({ app, win, project, realCo
     check(desktopErrors.length === 0, 'the desktop reports no uncaught errors during collaboration: ' + desktopErrors.join(', '));
     const final = await snapshot(bob);
     const report = { status: 'pass', mode, installed: !!process.env.DESKTOP_EXECUTABLE, taskId, runtimeId, bobId,
-      model: realCodex ? 'gpt-5.4-mini' : null, effort: realCodex ? 'medium' : null,
+      model: realCodex ? 'gpt-5.5' : null, effort: realCodex ? 'medium' : null,
       providerTurns: final.value.events.filter(event => event.type === 'turn.started').length,
       realProviderCorrection: realCodex, directionCommandId, approvalRequestId: request.id, approvalTurnId: request.turnId,
       initialSha256: hash(initialNotes), correctedSha256: hash(finalText),

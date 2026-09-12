@@ -1615,7 +1615,7 @@
   }
   function hostToolsFailureMessage(code) {
     if (['codex_host_tools_version_unsupported', 'codex_host_tools_model_unsupported', 'codex_host_tools_platform_unproven'].includes(code)) {
-      return 'Use the supported Codex 0.153.4 setup on macOS with Apple silicon (darwin/arm64) and model gpt-5.4-mini, then start a new turn.';
+      return 'Use the supported Codex 0.153.4 setup on macOS with Apple silicon (darwin/arm64) and model gpt-5.5, then start a new turn.';
     }
     if (code === 'codex_host_tools_login_required') {
       return 'Sign in with ChatGPT on the execution host using Codex’s local file credential storage, then configure the supported isolated host setup. Provider credentials stay on that machine.';
