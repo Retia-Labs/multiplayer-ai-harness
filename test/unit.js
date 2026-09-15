@@ -12,9 +12,30 @@ const cc = require('../packages/runtime/claude-code');
 const { HubStore } = require('../packages/hub/store');
 const { Events } = require('../packages/protocol');
 const desktop = require('../apps/desktop/lifecycle');
+const { Runtime } = require('../packages/runtime');
 
 let n = 0;
 function t(name, fn) { fn(); n++; console.log('  ✓ ' + name); }
+
+t('runtime: changing providers selects a fresh model while preserving host policy', () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'plexus-provider-settings-'));
+  const runtime = new Runtime({ dataDir, maxPreset: 'agent' });
+  try {
+    const current = { provider: 'demo', model: 'demo-agent', preset: 'read-only' };
+    const switched = runtime.resolveSettings(current, { provider: 'codex-cli' });
+    assert.equal(switched.provider, 'codex-cli');
+    assert.equal(switched.model, undefined);
+    assert.equal(switched.sandboxPolicy, 'read-only');
+    assert.equal(current.model, 'demo-agent');
+    assert.equal(runtime.resolveSettings(current, {}).model, 'demo-agent');
+    assert.equal(runtime.resolveSettings(current, { provider: 'demo' }).model, 'demo-agent');
+    assert.equal(runtime.resolveSettings(current, { provider: 'codex-cli', model: 'chosen-model' }).model, 'chosen-model');
+    assert.throws(() => runtime.resolveSettings(current, { provider: 'codex-cli', preset: 'full-access' }), /policy_escalation/);
+  } finally {
+    runtime.store.close();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
 
 t('policy: safe commands always allowed', () => {
   assert.equal(decideCommand('git status', PRESETS['read-only']).verdict, 'allow');

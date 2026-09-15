@@ -1,0 +1,75 @@
+{
+  "parent": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1",
+  "milestones": {
+    "Internal alpha": 1,
+    "Invite-only beta": 2,
+    "Provider follow-ons": 3
+  },
+  "issues": [
+    {
+      "id": "A01",
+      "number": 65,
+      "title": "Open a project and start useful work from one workspace",
+      "type": "AFK",
+      "blocked_by": [],
+      "url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/65",
+      "body_file": "docs/planning/team-issues/a01.md"
+    },
+    {
+      "id": "A02",
+      "number": 66,
+      "title": "Complete first-run project and Codex setup through the app",
+      "type": "AFK",
+      "blocked_by": [],
+      "url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/66",
+      "body_file": "docs/planning/team-issues/a02.md"
+    },
+    {
+      "id": "A03",
+      "number": 67,
+      "title": "Join and correct an ongoing task from the project workspace",
+      "type": "AFK",
+      "blocked_by": [
+        65
+      ],
+      "url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/67",
+      "body_file": "docs/planning/team-issues/a03.md"
+    },
+    {
+      "id": "A04",
+      "number": 68,
+      "title": "Resolve an approval and review the result in context",
+      "type": "AFK",
+      "blocked_by": [
+        65
+      ],
+      "url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/68",
+      "body_file": "docs/planning/team-issues/a04.md"
+    },
+    {
+      "id": "A05",
+      "number": 69,
+      "title": "Qualify the internal alpha on two separate machines",
+      "type": "HITL",
+      "blocked_by": [
+        65,
+        66,
+        67,
+        68
+      ],
+      "url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/69",
+      "body_file": "docs/planning/team-issues/a05.md"
+    },
+    {
+      "id": "B01",
+      "number": 70,
+      "title": "Qualify the hosted collaboration service for pilots",
+      "type": "HITL",
+      "blocked_by": [
+        22
+      ],
+      "url": "https://github.com/Retia-Labs/multiplayer-ai-harness/issues/70",
+      "body_file": "docs/planning/team-issues/b01.md"
+    }
+  ]
+}

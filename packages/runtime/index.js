@@ -729,7 +729,12 @@ class Runtime {
         throw new Error(Errors.POLICY_ESCALATION + ': choose a named preset instead of overriding ' + field);
       }
     }
-    return { ...current, ...requested, preset, ...policy };
+    const settings = { ...current, ...requested, preset, ...policy };
+    // Model names belong to their provider; an unnamed switch uses its new default.
+    if (requested.provider && current.provider && requested.provider !== current.provider && !requested.model) {
+      delete settings.model;
+    }
+    return settings;
   }
 
   async turnStart(thread, cmd, by) {
