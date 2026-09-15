@@ -23,10 +23,11 @@ let hub, runtime, browser, lastPage;
 (async () => {
   fs.mkdirSync(out, { recursive: true });
   const workspace = path.join(dir, 'workspace'); fs.mkdirSync(workspace);
+  const otherWorkspace = path.join(dir, 'another-project'); fs.mkdirSync(otherWorkspace);
   fs.mkdirSync(path.join(workspace, 'build')); fs.writeFileSync(path.join(workspace, 'build/obsolete.txt'), 'disposable');
   hub = new Hub({ dbFile: path.join(dir, 'hub.sqlite'), staticDir: path.join(root, 'apps/web'), log: () => {} });
   const address = await hub.listen(); const url = 'http://127.0.0.1:' + address.port;
-  runtime = new Runtime({ hubUrl: url.replace('http', 'ws'), dataDir: path.join(dir, 'runtime'), projects: [workspace],
+  runtime = new Runtime({ hubUrl: url.replace('http', 'ws'), dataDir: path.join(dir, 'runtime'), projects: [workspace, otherWorkspace],
     encryptedTasksOnly: true, name: 'Shared execution host', encryptedEndpointFactory: options => Endpoint.create(options), log: line => logs.push(line) });
   await runtime.start();
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH, headless: true, args: ['--no-sandbox'] });
@@ -36,8 +37,12 @@ let hub, runtime, browser, lastPage;
   // runtime's real metadata file; this does not launch Electron or call a provider.
   await alice.route('**/__fixture/encrypted-setup', route => route.fulfill({ contentType: 'application/json',
     body: fs.readFileSync(path.join(runtime.dataDir, 'encrypted-setup.json'), 'utf8') }));
-  await alice.addInitScript(() => { window.harnessDesktop = { encryptedSetup: async () =>
-    (await fetch('/__fixture/encrypted-setup')).json() }; });
+  await alice.addInitScript(() => {
+    window.__setupFixture = { status: { available: false, supportedVersion: '0.153.4', platformSupported: true }, result: { enabled: false } };
+    window.harnessDesktop = { encryptedSetup: async () => (await fetch('/__fixture/encrypted-setup')).json(),
+      codexStatus: async () => window.__setupFixture.status,
+      configureCodex: async () => window.__setupFixture.result };
+  });
   lastPage = alice;
   alice.on('pageerror', error => errors.push(error.message));
   await alice.goto(url); await alice.locator('#login-name').fill('Alice'); await alice.locator('#login-form button').click();
@@ -64,6 +69,20 @@ let hub, runtime, browser, lastPage;
   await alice.locator('[data-action="confirm-host"]').click();
   await alice.locator('[aria-label="Confirm the execution host"]').waitFor({ state: 'detached' });
   pass('setup refresh preserves the open exact host fingerprint comparison until confirmation');
+  await alice.locator('#btn-setup').click();
+  await alice.locator('[data-action="configure-local-codex"]').click();
+  await alice.locator('#encrypted-setup [role="status"]').filter({ hasText: 'cancelled' }).waitFor();
+  const projectBeforeRetry = await alice.locator('#fleet-project').inputValue();
+  await alice.evaluate(() => { window.__setupFixture.status = { available: true, version: '0.1.0', supportedVersion: '0.153.4', platformSupported: true, authMode: 'none' }; });
+  await alice.locator('[data-action="refresh-local-setup"]').click();
+  await alice.locator('#encrypted-setup').filter({ hasText: 'This machine has Codex 0.1.0' }).waitFor();
+  assert.match(await alice.locator('#encrypted-setup').innerText(), /Run codex login/);
+  await alice.evaluate(() => { window.__setupFixture.status = { available: true, version: '0.153.4', supportedVersion: '0.153.4', platformSupported: true, authMode: 'chatgpt' }; });
+  await alice.locator('[data-action="refresh-local-setup"]').click();
+  await alice.locator('#encrypted-setup').filter({ hasText: 'ChatGPT account connected' }).waitFor();
+  assert.equal(await alice.locator('#fleet-project').inputValue(), projectBeforeRetry);
+  assert.equal(await alice.locator('#setup-progress .ready').count(), 3, 'login status is not configured provider execution');
+  pass('setup retries distinguish missing CLI, unsupported version, local login and cancelled consent without losing project selection');
   await alice.locator('#provider-select').selectOption('demo');
   await alice.screenshot({ path: path.join(out, 'setup-desktop.png') });
   await alice.locator('#input').fill('create VERIFIED.txt'); await alice.locator('#btn-send').click();
@@ -78,6 +97,37 @@ let hub, runtime, browser, lastPage;
   pass('public composer starts an encrypted task; integrated host writes real bytes and source diff');
   await alice.locator('.ew-main').evaluate(node => node.scrollTop = 0);
   await alice.screenshot({ path: path.join(out, 'review-desktop.png') });
+  await alice.reload();
+  await alice.locator('.encrypted-task-row[aria-current="page"]').filter({ hasText: 'create VERIFIED.txt' }).waitFor({ timeout: 45000 });
+  await alice.locator('.ew-file h4').filter({ hasText: 'VERIFIED.txt' }).waitFor({ timeout: 45000 });
+  assert.equal(await alice.locator('.encrypted-task-row[aria-current="page"]').getAttribute('data-task-id'), taskId);
+  const firstProject = await alice.locator('#fleet-project').inputValue();
+  const otherProject = [...runtime.encryptedProjects].find(([, folder]) => folder === otherWorkspace)[0];
+  await alice.locator('#nav-fleet').click();
+  await alice.locator('#project-task-feed [data-task-id="' + taskId + '"]').waitFor();
+  await alice.locator('#input').fill('create WRONG-PROJECT.txt');
+  await alice.locator('#project-list [data-project-id="' + otherProject + '"]').click();
+  assert.equal(await alice.locator('#fleet-project').inputValue(), otherProject);
+  assert.equal(await alice.locator('.encrypted-task-row').count(), 0);
+  await alice.locator('#btn-send').click();
+  await alice.locator('#encrypted-composer-error').filter({ hasText: 'another project' }).waitFor();
+  assert.equal(fs.existsSync(path.join(otherWorkspace, 'WRONG-PROJECT.txt')), false);
+  await alice.locator('#input').fill('');
+  await alice.reload();
+  await until(async () => await alice.locator('#fleet-project').inputValue() === otherProject, 'selected empty project restored');
+  assert.equal(await alice.locator('.encrypted-task-row').count(), 0);
+  await alice.locator('#fleet-view').evaluate(node => node.scrollTop = 0);
+  await alice.screenshot({ path: path.join(out, 'project-empty-desktop.png') });
+  await alice.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await alice.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await alice.screenshot({ path: path.join(out, 'project-empty-mobile.png') });
+  await alice.setViewportSize({ width: 1487, height: 1058 });
+  await alice.locator('#project-list [data-project-id="' + firstProject + '"]').click();
+  await alice.locator('#project-task-feed [data-task-id="' + taskId + '"]').click();
+  await alice.locator('.ew-file h4').filter({ hasText: 'VERIFIED.txt' }).waitFor();
+  const heldNavigation = await alice.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith('plexus.workspace.')).map(key => sessionStorage.getItem(key)).join(''));
+  assert.ok(!heldNavigation.includes('VERIFIED.txt') && !heldNavigation.includes(workspace));
+  pass('project navigation isolates task lists, restores task/project selection and refuses a draft retargeted to another folder');
   await alice.locator('[data-action="view-catchup"]').click();
   await alice.locator('#ew-content .cu-objective').filter({ hasText: 'create VERIFIED.txt' }).waitFor();
   await alice.screenshot({ path: path.join(out, 'catchup-desktop.png') });

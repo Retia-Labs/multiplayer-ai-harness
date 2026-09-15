@@ -88,6 +88,130 @@
     prefs: loadPrefs()
   };
 
+  // Only opaque encrypted IDs are remembered. Names, prompts and local paths stay
+  // in authenticated history, never in the plaintext navigation preference.
+  function rememberWorkspace() {
+    if (!state.me || !state.teamId) return;
+    const runtime = selectedRuntime();
+    if (runtime?.taskProtocol !== 'encrypted-v1') return;
+    try { sessionStorage.setItem('plexus.workspace.' + state.me.id + '.' + state.teamId,
+      JSON.stringify({ runtimeId: runtime.id, projectId: el.fleetProject.value, taskId: activeEncryptedTask()?.id || null })); } catch {}
+  }
+  function restoreWorkspace() {
+    if (state.workspaceRestored === state.teamId || !state.encrypted || !state.runtimes.length) return;
+    state.workspaceRestored = state.teamId;
+    let held;
+    try { held = JSON.parse(sessionStorage.getItem('plexus.workspace.' + state.me.id + '.' + state.teamId)); } catch {}
+    if (!held || state.activeThreadId || state.linkedTaskId) return;
+    const project = state.encryptedProjects.find(p => p.id === held.projectId && p.runtimeId === held.runtimeId);
+    if (!project) return;
+    el.fleetRuntime.value = project.runtimeId; renderProjects(); el.fleetProject.value = project.id;
+    renderProviderPicker(); renderThreadList();
+    if (state.encryptedTasks.some(t => t.id === held.taskId && t.projectId === project.id && t.runtimeId === project.runtimeId)) {
+      selectEncryptedTask(held.taskId).catch(showEncryptedError);
+    }
+  }
+  function workspaceProjects() {
+    return state.runtimes.flatMap(runtime => (runtime.taskProtocol === 'encrypted-v1'
+      ? state.encryptedProjects.filter(p => p.runtimeId === runtime.id) : runtime.projects || [])
+      .map(project => ({ ...project, id: project.id || project.dir, runtimeId: runtime.id, runtime })));
+  }
+  function selectedProject() {
+    return workspaceProjects().find(p => p.runtimeId === selectedRuntime()?.id && p.id === el.fleetProject.value);
+  }
+  function inSelectedProject(task) {
+    const project = selectedProject();
+    if (!project) return true;
+    return task.runtimeId === project.runtimeId && (task.projectId === project.id || (!task.projectId && task.cwd === project.dir));
+  }
+  function taskState(task) {
+    const snapshot = state.encryptedSnapshots.get(task.id);
+    if (snapshot?.outcome) return snapshot.outcome;
+    if (snapshot?.approvals?.some(a => isPendingApproval(snapshot, a))) return 'Awaiting approval';
+    if (snapshot?.turn) return ({ completed: 'Ready for review', failed: 'Failed', running: 'Running', interrupted: 'Interrupted' })[snapshot.turn] || snapshot.turn;
+    if (task.status?.activeFlags?.includes('waitingOnApproval')) return 'Awaiting approval';
+    if (task.status) return ({ active: 'Running', idle: 'Ready for review' })[task.status.type] || task.status.type;
+    return 'Open to read history';
+  }
+  function renderProjectWorkspace() {
+    const rail = $('#project-list'), feed = $('#project-task-feed');
+    if (!rail || !feed) return;
+    const project = selectedProject(), runtime = selectedRuntime();
+    const signature = JSON.stringify([workspaceProjects().map(p => [p.id, p.runtimeId, p.name, p.runtime.online]), project?.id, runtime?.id]);
+    if (rail.dataset.signature !== signature) {
+      rail.dataset.signature = signature; rail.replaceChildren();
+      for (const p of workspaceProjects()) {
+        const button = uiButton(p.name || 'Shared project', 'select-project', () => {
+          el.fleetRuntime.value = p.runtimeId; renderProjects(); el.fleetProject.value = p.id;
+          showFleet(); renderEncryptedSetup(); rememberWorkspace();
+        });
+        button.className = 'project-nav'; button.dataset.projectId = p.id; button.dataset.runtimeId = p.runtimeId;
+        button.setAttribute('aria-current', p.id === project?.id && p.runtimeId === runtime?.id ? 'page' : 'false');
+        button.append(uiNode('span', 'small', p.runtime.online ? p.runtime.name : p.runtime.name + ' · Offline'));
+        rail.append(button);
+      }
+      if (!rail.children.length) rail.append(uiNode('p', 'small rail-empty', 'Share a folder on your execution host to begin.'));
+    }
+    if (!state.activeThreadId && !state.accessOpen && !state.inboxOpen && !state.recoveryOpen) el.topbarTitle.textContent = project?.name || 'Workspace';
+    $('#workspace-title').textContent = project?.name || 'Make room for the next idea.';
+    $('#workspace-eyebrow').textContent = project ? 'Project workspace' : 'Your shared workspace';
+    $('#workspace-description').textContent = project
+      ? 'Start something new, or pick up where your team left off.' : 'Connect your machine and choose the project you want to work on.';
+    const tasks = [...state.encryptedTasks, ...state.threads.values()].filter(inSelectedProject);
+    const feedSignature = JSON.stringify([project?.id, runtime?.id, state.connected, tasks.map(t => [t.id, state.encryptedTitles.get(t.id), t.name, taskState(t), state.encryptedSnapshots.get(t.id)?.responsible, t.assignee, t.creatorUserId, state.runtimes.find(r => r.id === t.runtimeId)?.online])]);
+    if (feed.dataset.signature !== feedSignature) {
+      feed.dataset.signature = feedSignature; feed.replaceChildren();
+      feed.append(uiNode('h2', null, 'Shared work'));
+      if (!tasks.length) feed.append(uiNode('p', 'workspace-empty', project
+        ? 'No tasks here yet. Describe the first change below.' : 'Your tasks will appear here once a project is connected.'));
+      for (const task of tasks) {
+        const snapshot = state.encryptedSnapshots.get(task.id), host = state.runtimes.find(r => r.id === task.runtimeId);
+        const row = uiButton(state.encryptedTitles.get(task.id) || task.name || 'Encrypted task', 'open-project-task', () => selectThread(task.id));
+        row.className = 'project-task'; row.dataset.taskId = task.id;
+        const responsible = snapshot?.responsible || task.assignee?.userId || task.creatorUserId || task.createdBy?.id;
+        row.append(uiNode('span', 'project-task-status', (snapshot ? 'Last read · ' : '') + taskState(task)), uiNode('span', 'small',
+          'Responsible: ' + (nameFor(responsible) || task.assignee?.name || task.createdBy?.name || 'Not recorded') +
+          ' · Host: ' + (host?.name || 'Unavailable') + (host?.online && state.connected ? ' · Connected' : ' · Offline; execution may be unknown')));
+        feed.append(row);
+      }
+    }
+    renderSetupProgress();
+  }
+  function openWorkspaceSetup(target) {
+    showFleet(); $('#workspace-setup').open = true;
+    const node = (target && document.querySelector(target)) || $('#workspace-setup');
+    node?.scrollIntoView({ block: 'center' });
+    if (node?.matches('input,button,select')) node.focus();
+  }
+  function renderSetupProgress() {
+    const root = $('#setup-progress'); if (!root) return;
+    const runtime = selectedRuntime(), project = selectedProject(), desktop = window.harnessDesktop;
+    const connected = !!(runtime?.online && state.connected);
+    const verified = runtime?.taskProtocol !== 'encrypted-v1' || !!(state.encryptedState?.state === 'verified' && state.encrypted?.confirmedHost(runtime?.id));
+    const codex = runtime?.providers?.find(p => p.id === 'codex-cli');
+    const steps = [
+      ['Team', !!state.teamId, 'Your private team is ready.', '#btn-access'],
+      ['Execution host', connected && verified, !connected ? 'Connect the machine that will run your tasks.' : 'Verify this machine before sharing work.', !connected ? '#pair-code' : state.localEncryptedSetup && !state.localEncryptedSetup.authority ? '[data-action="authorize-encrypted-host"]' : '[data-action="show-host-fingerprint"]'],
+      ['Project', !!project, 'Choose a folder on the execution machine.', '#btn-add-project'],
+      ['Codex', !!codex?.configured, 'Connect the provider account on the execution machine.', '[data-action="configure-local-codex"]']
+    ];
+    const signature = JSON.stringify([steps, !!desktop, state.localCodexStatus, runtime?.id]);
+    if (root.dataset.signature === signature) return;
+    root.dataset.signature = signature; root.replaceChildren();
+    const ready = steps.every(s => s[1]);
+    root.append(uiNode('h2', null, ready ? 'Ready for your first task' : 'Set up your workspace'));
+    const list = uiNode('ol', 'setup-steps');
+    steps.forEach(([label, done, hint, target], index) => {
+      const item = uiNode('li', done ? 'ready' : 'pending');
+      item.append(uiNode('span', 'setup-step-number', done ? '✓' : String(index + 1)), uiNode('span', null, label), uiNode('span', 'small', done ? 'Ready' : 'Needs setup'));
+      if (!done) item.append(uiButton('Set up ' + label.toLowerCase(), 'setup-step-' + index, () => openWorkspaceSetup(target)));
+      item.title = done ? label + ' is ready' : hint; list.append(item);
+    });
+    root.append(list);
+    if (!ready && !desktop?.configureCodex) root.append(uiNode('p', 'small', 'Using a browser? Ask the execution-host owner to connect their folder and Codex account in the desktop app. You can join shared tasks after your device is verified.'));
+    if (!connected) root.append(uiNode('p', 'ew-error', 'Execution host unavailable. Open Plexus on that machine; reconnecting will not resend a task.'));
+  }
+
   function loadPrefs() {
     try { return JSON.parse(localStorage.getItem('harness.prefs') || '{}'); } catch { return {}; }
   }
@@ -486,7 +610,7 @@
     updateAddProjectAvailability();
 
     el.runtimeCards.innerHTML = '';
-    if (!state.runtimes.length) { el.runtimeCards.innerHTML = '<div class="attention-empty">No runtimes yet. Start one: <code>node packages/runtime --hub ' + esc(HUB_URL) + ' --name you --project /path/to/repo</code></div>'; }
+    if (!state.runtimes.length) { el.runtimeCards.innerHTML = '<div class="attention-empty">Open Plexus on the machine that will run your tasks, then pair its execution host with this team.</div>'; }
     for (const r of state.runtimes) {
       const c = document.createElement('div'); c.className = 'runtime-card';
       const head = document.createElement('div'); head.className = 'rc-head';
@@ -505,14 +629,19 @@
 
   function renderProjects() {
     const r = selectedRuntime();
+    const old = el.fleetProject.dataset.runtimeId === r?.id ? el.fleetProject.value : '';
+    el.fleetProject.dataset.runtimeId = r?.id || '';
     el.fleetProject.innerHTML = '';
     for (const p of (r && r.taskProtocol === 'encrypted-v1' ? (state.encryptedProjects.filter(p => p.runtimeId === r.id)) : (r && r.projects) || [])) { const o = document.createElement('option'); o.value = p.id || p.dir; o.textContent = (p.name || 'Shared project ' + (p.id || '').slice(-6)) + (p.branch ? ' · ' + p.branch : ''); el.fleetProject.appendChild(o); }
-    if (!el.fleetProject.options.length) { const o = document.createElement('option'); o.value = ''; o.textContent = 'No project registered'; el.fleetProject.appendChild(o); }
+    if (!el.fleetProject.options.length) { const o = document.createElement('option'); o.value = ''; o.textContent = 'No shared project'; el.fleetProject.appendChild(o); }
+    if ([...el.fleetProject.options].some(o => o.value === old)) el.fleetProject.value = old;
+    renderProjectWorkspace();
   }
 
   function renderProviderPicker(thread) {
     const r = thread ? state.runtimes.find((x) => x.id === thread.runtimeId) : selectedRuntime();
-    if (!state.activeThreadId) el.send.disabled = !r?.online;
+    if (!state.activeThreadId) el.send.disabled = !r?.online || !state.connected;
+    el.fleetWorktree.closest('label').classList.toggle('hidden', r?.taskProtocol === 'encrypted-v1');
     const providers = (r && r.providers) || [{ id: 'demo', label: 'Demo agent', configured: true, models: ['demo-agent'] }];
     const want = (thread && thread.settings && thread.settings.provider) || el.providerSelect.value || 'demo';
     el.providerSelect.innerHTML = '';
@@ -627,6 +756,7 @@
 
   // ================= views =================
   function showFleet() {
+    if (state.activeThreadId) { el.input.value = ''; state.newTaskDraft = null; }
     $('#encrypted-composer-error')?.remove();
     closeEncryptedSurfaces(); hideWorkViews(); document.body.classList.remove('navigation-open');
     if (state.subscribedId) send({ type: 'thread.unsubscribe', threadId: state.subscribedId });
@@ -636,7 +766,7 @@
     el.composerHostHome.appendChild(el.composer); el.composer.classList.remove('hidden');
     el.send.disabled = false; el.input.placeholder = 'Describe a task for the agent…'; state.draftTarget = null;
     el.navFleet.classList.add('active');
-    renderProviderPicker(); updateTopbar(); renderPresence(); renderThreadList();
+    renderProviderPicker(); updateTopbar(); renderPresence(); renderThreadList(); rememberWorkspace();
     el.input.focus();
   }
 
@@ -672,7 +802,7 @@
   function updateTopbar() {
     const t = state.activeThread;
     if (!t) {
-      el.topbarTitle.textContent = 'Fleet'; el.topbarBranch.classList.add('hidden'); el.topbarWorktree.classList.add('hidden'); el.topbarRuntime.classList.add('hidden'); el.changesBtn.classList.add('hidden'); el.assignBtn.classList.add('hidden'); el.auditBtn.classList.add('hidden'); el.catchupBtn.classList.add('hidden'); closeCatchup();
+      el.topbarTitle.textContent = selectedProject()?.name || 'Workspace'; el.topbarBranch.classList.add('hidden'); el.topbarWorktree.classList.add('hidden'); el.topbarRuntime.classList.add('hidden'); el.changesBtn.classList.add('hidden'); el.assignBtn.classList.add('hidden'); el.auditBtn.classList.add('hidden'); el.catchupBtn.classList.add('hidden'); closeCatchup();
       return;
     }
     el.assignBtn.classList.remove('hidden'); el.auditBtn.classList.remove('hidden'); el.catchupBtn.classList.remove('hidden');
@@ -713,16 +843,17 @@
 
   function renderThreadList() {
     const q = el.threadSearch.value.trim().toLowerCase();
-    const list = [...state.threads.values()].filter((t) => !q || (t.name || '').toLowerCase().includes(q)).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    renderProjectWorkspace();
+    const list = [...state.threads.values()].filter(inSelectedProject).filter((t) => !q || (t.name || '').toLowerCase().includes(q)).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     el.threadList.innerHTML = '';
-    for (const task of state.encryptedTasks) {
+    for (const task of state.encryptedTasks.filter(inSelectedProject)) {
       const title = state.encryptedTitles.get(task.id) || 'Encrypted task · ' + task.id.slice(-6);
       if (q && !title.toLowerCase().includes(q)) continue;
       const row = document.createElement('button'); row.className = 'thread-item encrypted-task-row' + (task.id === state.activeThreadId ? ' active' : '');
       row.dataset.taskId = task.id; row.setAttribute('aria-current', task.id === state.activeThreadId ? 'page' : 'false');
-      row.append(document.createTextNode(title)); row.addEventListener('click', () => selectEncryptedTask(task.id)); el.threadList.appendChild(row);
+      row.append(uiNode('span', 't-title', title), uiNode('span', 't-sub', taskState(task))); row.addEventListener('click', () => selectEncryptedTask(task.id)); el.threadList.appendChild(row);
     }
-    if (!list.length && !state.encryptedTasks.length) { el.threadList.innerHTML = '<div class="thread-empty">' + (q ? 'No matching threads' : 'No threads in this team yet') + '</div>'; return; }
+    if (!list.length && !el.threadList.children.length) { el.threadList.innerHTML = '<div class="thread-empty">' + (q ? 'No matching threads' : 'No threads in this team yet') + '</div>'; return; }
     let last = null;
     for (const t of list) {
       const g = groupLabel(t.updatedAt || t.createdAt);
@@ -945,6 +1076,11 @@
   async function sendMessage() {
     const text = el.input.value.trim();
     if (!text) return;
+    if (!state.activeThreadId && state.newTaskDraft &&
+        (state.newTaskDraft.runtimeId !== selectedRuntime()?.id || state.newTaskDraft.projectId !== el.fleetProject.value)) {
+      showEncryptedError(new Error('This draft was written for another project. Return to that project, or clear the draft before starting work here.'));
+      return;
+    }
     const settings = { provider: el.providerSelect.value, model: el.modelSelect.value, effort: el.effortSelect.value, preset: el.presetSelect.value };
     if (activeEncryptedTask() || (!state.activeThreadId && selectedRuntime()?.taskProtocol === 'encrypted-v1')) return sendEncryptedMessage(text, settings);
     try {
@@ -1671,14 +1807,14 @@
     const old = el.fleetProject.value;
     state.encryptedProjects = projects; renderProjects();
     if ([...el.fleetProject.options].some(o => o.value === old)) el.fleetProject.value = old;
-    renderEncryptedSetup();
+    renderEncryptedSetup(); restoreWorkspace(); renderProjectWorkspace();
   }
   function renderEncryptedSetup() {
     const root = $('#encrypted-setup'); if (!root) return;
     if (!state.encrypted) return;
     const runtime = selectedRuntime();
     if (state.setupHostPrompt && (state.setupHostPrompt.runtimeId !== runtime?.id || state.setupHostPrompt.teamId !== state.teamId)) state.setupHostPrompt = null;
-    const signature = JSON.stringify([state.encryptedState?.state, state.encryptedIdentity?.fingerprint, state.localEncryptedSetup, state.localCodexStatus, runtime?.id, runtime?.encryptedEndpoint, state.encrypted.confirmedHost(runtime?.id), state.setupHostPrompt, state.encryptedState?.membershipIdentity]);
+    const signature = JSON.stringify([state.encryptedState?.state, state.encryptedIdentity?.fingerprint, state.localEncryptedSetup, state.localCodexStatus, runtime?.id, runtime?.encryptedEndpoint, state.encrypted.confirmedHost(runtime?.id), state.setupHostPrompt, state.encryptedState?.membershipIdentity, state.localSetupNotice]);
     if (root.dataset.signature === signature) return;
     root.dataset.signature = signature; root.replaceChildren();
     const panel = uiSection('Encrypted execution', 'Choose the machine and project that will run this task. Provider usage belongs to the account configured on that machine.');
@@ -1706,6 +1842,12 @@
     renderFreshnessAuthority(panel, runtime);
     if (desktop?.configureCodex) {
       const status = state.localCodexStatus;
+      if (status?.supportedVersion) panel.append(uiNode('p', 'small',
+        'Supported setup: Codex ' + status.supportedVersion + ' on an Apple silicon Mac, with a locally saved ChatGPT or API login.'));
+      if (status?.available && status.supportedVersion && status.version !== status.supportedVersion) {
+        panel.append(uiNode('p', 'ew-error', 'This machine has Codex ' + status.version + '. Install the supported version, then choose Check setup again.'));
+      }
+      if (status?.platformSupported === false) panel.append(uiNode('p', 'ew-error', 'Shared Codex execution is not yet qualified on this platform. Join from this browser or use a supported Mac execution host.'));
       panel.append(uiNode('p', 'small', status?.available
         ? 'Codex ' + (status.version || '') + ' · ' + ({ chatgpt: 'ChatGPT account connected', apikey: 'API account connected',
           none: 'Run codex login on this execution host before starting a task.',
@@ -1714,9 +1856,18 @@
           || 'Account mode is unknown. Check codex login status on this execution host.')
         : 'Install Codex and sign in on this execution host to use its local provider account.'));
       panel.append(uiButton('Configure Codex on this machine', 'configure-local-codex', async () => {
-        await desktop.configureCodex(); state.localCodexStatus = await desktop.codexStatus(); await refreshEncryptedSetup();
+        const result = await desktop.configureCodex();
+        state.localSetupNotice = result?.enabled ? 'Codex is configured. The execution host is reconnecting; select Codex in the task composer once it is ready.'
+          : result?.code ? 'Codex could not be enabled. Check the supported version and local account below, then retry.' : 'Codex setup was cancelled. Your project and team setup are preserved.';
+        state.localCodexStatus = await desktop.codexStatus(); await refreshEncryptedSetup();
+        send({ type: 'runtimes.list' });
       }));
     }
+    if (desktop?.codexStatus) panel.append(uiButton('Check setup again', 'refresh-local-setup', async () => {
+      state.localCodexStatus = await desktop.codexStatus(); state.localSetupNotice = null;
+      await refreshEncryptedSetup(); send({ type: 'runtimes.list' });
+    }));
+    if (state.localSetupNotice) { const notice = uiNode('p', 'small', state.localSetupNotice); notice.setAttribute('role', 'status'); panel.append(notice); }
     if (runtime?.taskProtocol === 'encrypted-v1' && !state.encrypted.confirmedHost(runtime.id)) {
       panel.append(uiButton('Verify execution host', 'show-host-fingerprint', async () => {
         const teamId = state.teamId;
@@ -1727,7 +1878,7 @@
       }));
       if (state.setupHostPrompt) panel.append(hostConfirmation(state.setupHostPrompt));
     }
-    root.append(panel);
+    root.append(panel); renderSetupProgress();
   }
   function renderFreshnessAuthority(panel, runtime) {
     const local = state.localEncryptedSetup;
@@ -1802,6 +1953,8 @@
     for (const node of [el.assignBtn, el.auditBtn, el.catchupBtn, el.changesBtn, el.topbarBranch, el.topbarWorktree]) node.classList.add('hidden');
     const task = activeEncryptedTask();
     const runtime = state.runtimes.find(r => r.id === task.runtimeId);
+    if (runtime) { el.fleetRuntime.value = runtime.id; renderProjects(); el.fleetProject.value = task.projectId; }
+    rememberWorkspace();
     renderProviderPicker({ runtimeId: task.runtimeId });
     el.topbarRuntime.textContent = runtime?.name || task.runtimeId; el.topbarRuntime.classList.remove('hidden');
     renderEncryptedWorkspace(); renderThreadList();
@@ -1848,6 +2001,9 @@
       let task = activeEncryptedTask();
       if (!task) {
         const runtime = selectedRuntime(); const projectId = el.fleetProject.value;
+        if (state.newTaskDraft && (state.newTaskDraft.runtimeId !== runtime?.id || state.newTaskDraft.projectId !== projectId)) {
+          throw new Error('This draft was written for another project. Return to that project, or clear the draft before starting work here.');
+        }
         if (!runtime?.online || !projectId) throw new Error('Choose an online execution host and an explicitly shared project.');
         if (!state.encrypted.confirmedHost(runtime.id)) { renderEncryptedSetup(); throw new Error('Verify the execution host in setup before sending the objective.'); }
         task = await state.encrypted.createTask(runtime.id, projectId, { title: text.split('\n')[0].slice(0, 120), objective: text, settings });
@@ -1862,10 +2018,10 @@
           () => state.encrypted.steer(task, { input, expectedTurnId: target.turnId }));
         else await submitEncrypted('Start follow-up from ' + state.me.name, () => state.encrypted.startTurn(task, { input, settings }));
       }
-      el.input.value = ''; state.draftTarget = null; autosize();
+      el.input.value = ''; state.draftTarget = null; state.newTaskDraft = null; autosize();
       await updateEncryptedTask();
     } catch (error) { showEncryptedError(error); }
-    finally { el.send.disabled = false; }
+    finally { if (activeEncryptedTask()) renderEncryptedWorkspace(); else el.send.disabled = !selectedRuntime()?.online || !state.connected; }
   }
   function renderEncryptedReceipts() {
     const root = $('#ew-receipts'); root.replaceChildren();
@@ -2282,7 +2438,9 @@
     el.newThread.addEventListener('click', showFleet);
     el.navFleet.addEventListener('click', showFleet);
     el.threadSearch.addEventListener('input', renderThreadList);
-    el.fleetRuntime.addEventListener('change', () => { renderProjects(); renderProviderPicker(); updateAddProjectAvailability(); renderEncryptedSetup(); });
+    el.fleetRuntime.addEventListener('change', () => { renderProjects(); renderProviderPicker(); updateAddProjectAvailability(); renderEncryptedSetup(); renderThreadList(); rememberWorkspace(); });
+    el.fleetProject.addEventListener('change', () => { renderThreadList(); rememberWorkspace(); });
+    $('#btn-setup').addEventListener('click', () => openWorkspaceSetup());
     el.providerSelect.addEventListener('change', () => {
       const r = state.activeThread ? state.runtimes.find((x) => x.id === state.activeThread.runtimeId) : selectedRuntime();
       renderModelPicker((r && r.providers) || []);
@@ -2302,7 +2460,7 @@
     });
     document.querySelectorAll('.suggestion').forEach((b) => b.addEventListener('click', () => { el.input.value = b.dataset.prompt; autosize(); sendMessage(); }));
     el.send.addEventListener('click', sendMessage);
-    el.input.addEventListener('input', () => { autosize(); if (el.input.value && !state.draftTarget && activeEncryptedTask()) state.draftTarget = { taskId: state.activeThreadId, turnId: encryptedTurnId() }; if (!el.input.value) state.draftTarget = null; });
+    el.input.addEventListener('input', () => { autosize(); if (!state.activeThreadId && el.input.value && !state.newTaskDraft) state.newTaskDraft = { runtimeId: selectedRuntime()?.id, projectId: el.fleetProject.value }; if (!el.input.value) state.newTaskDraft = null; if (el.input.value && !state.draftTarget && activeEncryptedTask()) state.draftTarget = { taskId: state.activeThreadId, turnId: encryptedTurnId() }; if (!el.input.value) state.draftTarget = null; });
     el.input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
     el.stop.addEventListener('click', () => { const t = state.activeThread; if (t && t.activeTurnId) command(t.id, { method: 'turn/interrupt', turnId: t.activeTurnId }).catch(() => {}); });
     el.assignBtn.addEventListener('click', () => {

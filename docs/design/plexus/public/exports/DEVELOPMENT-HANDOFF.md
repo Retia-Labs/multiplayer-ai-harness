@@ -136,4 +136,4 @@ Use this PR checklist:
 - [ ] Desktop and browser share the implementation; fixed-viewport visuals and interaction checks are attached.
 - [ ] Intentional design changes update the template contract, token/guide references, accepted captures, and both clients together.
 
-The root `npm run check:design` and its GitHub Actions workflow currently check reference-pack integrity only. They do not validate these production behaviors, establish visual regression coverage, or configure required branch protection. The checklist above governs production implementation; its checks must be built and run against the shared renderer.
+The local root `npm run check:design` command checks reference-pack integrity only. It does not validate these production behaviors, establish visual regression coverage, or configure required branch protection. The checklist above governs production implementation; its checks must be built and run against the shared renderer.

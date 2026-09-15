@@ -8,7 +8,7 @@ The design must live in the development repository, be loaded by each coding age
 
 Use the version of this pack committed with the task's checkout. Its guides, `design/` contracts and captures, `src/` reference implementation, and `public/assets/` brand/font assets travel together. The nested React/Vite app is an optional isolated preview, not a second production renderer. Do not commit its `node_modules/` or build output.
 
-Run **`npm run check:design` from the repository root** when changing these references or their instruction wiring. The accompanying GitHub Actions workflow runs the same check. It verifies reference-pack integrity: required references and wiring, contract/token structure, and synchronized gallery exports. It does **not** establish visual fidelity, behavior coverage, production adoption, or required branch protection. A passing check is not proof that an agent followed the screen design.
+Run **`npm run check:design` from the repository root** when changing these references or their instruction wiring. Run this check locally; GitHub Actions is disabled for this repository. It verifies reference-pack integrity: required references and wiring, contract/token structure, and synchronized gallery exports. It does **not** establish visual fidelity, behavior coverage, production adoption, or required branch protection. A passing check is not proof that an agent followed the screen design.
 
 The remaining production work is to consolidate tokens and common UI anatomy in the shared renderer, establish deterministic production fixtures, and add targeted behavior and visual checks. Record real shared-module paths here as those changes land; do not invent imports before modules exist. Repository maintainers must configure any required checks or design-owner review separately before treating them as merge gates.
 
@@ -50,7 +50,7 @@ For example: “Approval uses `shell` + `decision`. Preserve request, scope, evi
 | Layer | What to put in place | Limit |
 | --- | --- | --- |
 | Repository instructions — installed | Root `AGENTS.md`, the `CLAUDE.md` pointer, and this workflow | Agents can overlook or misunderstand instructions; verify discovery per client. The files alone cannot prevent a merge. |
-| Reference integrity — installed | Root `npm run check:design` and its GitHub Actions workflow | Checks pack structure, links/wiring, and exports; does not inspect rendered pixels or production behavior. It is not automatically a required merge gate. |
+| Reference integrity — installed | Local `npm run check:design` | Checks pack structure, links/wiring, and exports; does not inspect rendered pixels or production behavior. It is not automatically a required merge gate. |
 | Shared implementation — production work | One token source and common controls/templates; keep transport outside presentation | Only effective once screen implementations actually use it. |
 | Production static checks — future work | After extraction, prohibit new raw design literals in screen styles outside documented exceptions; constrain shared-component imports and validate template metadata against a real schema | Lint can catch structural drift, not judge design quality. The supplied JSON is not currently a schema or validator. |
 | Design-specific behavior tests — future work | Use real adapter/protocol fixtures for stale commands, unknown delivery, pending interruption, scope/expiry, grants, and source availability | Coverage must be implemented; a state label alone proves nothing. |
@@ -72,3 +72,13 @@ Subsequent tickets use the same form with the relevant screen, contract IDs, beh
 Start a fresh task for a small existing-screen change. Before it edits, verify that its plan identifies the correct template, source capture, shared components, and affected states. Afterward, inspect its diff and rendered evidence. If it invents a design or skips visual verification, fix instruction discovery or the workflow before scaling to parallel feature work.
 
 Keep one owner per shared module when agents work in parallel. Workers own named screen files and request shared changes through that owner. This prevents several agents from independently adding almost-identical buttons, status labels, or spacing variants.
+
+## Project-centered alpha extension — 2026-09-15
+
+Issues #65/#66 extend the accepted identity with the founder-approved Mutex-inspired interaction structure. Production uses a project rail, a project-filtered task list/feed and one shared task composer. On desktop above 1100px, the selected encrypted task places its conversation on the left of recorded results. At 1100px and below, the existing results view and explicit discussion drawer remain; at 760px and below, navigation remains a drawer. No general chat, automatic push/sync, preview orchestration or project-wide scheduler is introduced.
+
+The `workspace` screen reuses `shell`; `setup` reuses `shell` + `setup`; selected work preserves all `review`/`decision` slots. Setup progress derives team, host verification/connectivity, selected project and advertised configured Codex state. A local login is not a configured execution capability. Retry and cancellation retain existing setup. A browser directs host-local steps to the desktop owner.
+
+Project/task navigation remembers only opaque encrypted IDs in session storage scoped to account and team, validates them against currently available objects, and restores the selected task through authenticated replay. A draft cannot be sent after changing its project or host. Home-feed status is labeled as last read; selecting a task refreshes its verified history. Host connectivity is shown separately from task state and responsibility.
+
+The original captures under `design/qa/` remain unchanged. Additional production evidence lives in `design/qa/alpha/` and the current validation record is `docs/proofs/project-workspace-alpha.md` at repository root. These captures document the intentional layout extension, not blanket approval of all product states.

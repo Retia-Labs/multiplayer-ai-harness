@@ -493,9 +493,12 @@ ipcMain.handle('desktop:confirmFreshnessAuthority', (event, request) => {
 ipcMain.handle('desktop:codexStatus', (event) => {
   requireRenderer(event, win);
   const { resolveCodex, version, authStatus } = require('../../packages/runtime/codex-probe');
+  const { SUPPORTED_CODEX_VERSION } = require('../../packages/runtime/codex-host-profile');
   const resolved = resolveCodex();
-  if (!resolved.ok) return { available: false, code: 'codex_unavailable' };
-  return { available: true, version: version(resolved), authMode: authStatus(resolved).mode };
+  const support = { supportedVersion: SUPPORTED_CODEX_VERSION,
+    platformSupported: process.platform === 'darwin' && process.arch === 'arm64' };
+  if (!resolved.ok) return { ...support, available: false, code: 'codex_unavailable' };
+  return { ...support, available: true, version: version(resolved), authMode: authStatus(resolved).mode };
 });
 ipcMain.handle('desktop:configureCodex', async (event) => {
   requireRenderer(event, win);

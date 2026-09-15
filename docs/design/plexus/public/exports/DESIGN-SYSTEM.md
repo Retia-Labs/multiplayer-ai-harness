@@ -190,3 +190,13 @@ For production changes, apply these rules in `apps/web/` through [AGENT-DEVELOPM
 6. Confirm that labels distinguish responsibility, execution, delivery, help, approval, and project access. Keep sample behavior clearly identified.
 
 Do not add decorative statistics, invented security badges, marketing CTAs, or a scroll sequence to the task workspace. The design should make a teammate's next action clear.
+
+## Project-centered alpha extension — 2026-09-15
+
+Issues #65/#66 extend the accepted identity with the founder-approved Mutex-inspired interaction structure. Production uses a project rail, a project-filtered task list/feed and one shared task composer. On desktop above 1100px, the selected encrypted task places its conversation on the left of recorded results. At 1100px and below, the existing results view and explicit discussion drawer remain; at 760px and below, navigation remains a drawer. No general chat, automatic push/sync, preview orchestration or project-wide scheduler is introduced.
+
+The `workspace` screen reuses `shell`; `setup` reuses `shell` + `setup`; selected work preserves all `review`/`decision` slots. Setup progress derives team, host verification/connectivity, selected project and advertised configured Codex state. A local login is not a configured execution capability. Retry and cancellation retain existing setup. A browser directs host-local steps to the desktop owner.
+
+Project/task navigation remembers only opaque encrypted IDs in session storage scoped to account and team, validates them against currently available objects, and restores the selected task through authenticated replay. A draft cannot be sent after changing its project or host. Home-feed status is labeled as last read; selecting a task refreshes its verified history. Host connectivity is shown separately from task state and responsibility.
+
+The original captures under `design/qa/` remain unchanged. Additional production evidence lives in `design/qa/alpha/` and the current validation record is `docs/proofs/project-workspace-alpha.md` at repository root. These captures document the intentional layout extension, not blanket approval of all product states.
