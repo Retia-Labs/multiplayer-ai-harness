@@ -1,0 +1,12 @@
+{
+  "status": "pass",
+  "ranAt": "2026-09-15T15:09:10.123Z",
+  "packaged": true,
+  "provider": "demo",
+  "providerStatus": null,
+  "rendererErrors": [],
+  "separateApprovalConsent": true,
+  "actualFileVerified": true,
+  "providerTurn": "completed",
+  "exitedWithHiddenBroker": true
+}

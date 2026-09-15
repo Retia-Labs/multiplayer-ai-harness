@@ -135,8 +135,11 @@ let hub, runtime, browser, lastPage;
   // A teammate joins after history exists. Confirming the host only after project sharing
   // exercises retained encrypted mailbox envelopes rather than pre-authorized test state.
   const bob = await browser.newPage({ viewport: { width: 1487, height: 1058 } });
+  await bob.emulateMedia({ reducedMotion: 'reduce' });
   bob.on('pageerror', error => errors.push(error.message));
-  await bob.goto(url); await bob.locator('#login-name').fill('Bob'); await bob.locator('#login-form button').click();
+  await bob.goto(url + '/t/' + taskId);
+  assert.equal(await bob.locator('.ew-file').count(), 0, 'private link exposes no file before login');
+  await bob.locator('#login-name').fill('Bob'); await bob.locator('#login-form button').click();
   await bob.locator('#team-gate').waitFor({ state: 'visible' });
   const bobId = await bob.locator('#team-gate-account-id').inputValue();
   await alice.locator('#nav-fleet').click(); await alice.locator('#invitee-user-id').fill(bobId); await alice.locator('#btn-invite').click();
@@ -155,9 +158,9 @@ let hub, runtime, browser, lastPage;
   await bob.locator('.encrypted-task-row').click();
   await bob.locator('[data-action="verify-task-host"]').click(); await bob.locator('[data-action="confirm-host"]').click();
   await bob.locator('.ew-file h4').filter({ hasText: 'VERIFIED.txt' }).waitFor({ timeout: 45000 });
-  await bob.reload(); await bob.locator('.encrypted-task-row').click();
+  await bob.goto(url + '/t/' + taskId);
   await bob.locator('.ew-file h4').filter({ hasText: 'VERIFIED.txt' }).waitFor({ timeout: 45000 });
-  pass('late teammate receives prior history, confirms host later, and replays after reload');
+  pass('private link requires login; late teammate enrolls, confirms the host and reopens the link with verified history');
   await alice.screenshot({ path: path.join(out, 'access-desktop.png') });
   await alice.locator('.encrypted-task-row').click(); await alice.locator('[data-action="view-review"]').click();
 
@@ -189,23 +192,63 @@ let hub, runtime, browser, lastPage;
   await bob.locator('[data-action="encrypted-approval-accept"]').waitFor({ timeout: 30000 });
   assert.equal(await bob.locator('[data-action="encrypted-approval-accept"]').isDisabled(), true, 'membership alone cannot approve');
   assert.equal(await bob.locator('[data-action="grant-action-approval"]').count(), 0);
+  // Disconnect the real client transport while its approval form has focus.
+  // Connectivity changes must invalidate controls without discarding the form.
+  await alice.getByLabel('Delegate this action to').selectOption(bobId);
+  await alice.getByLabel('Delegate this action to').focus();
+  await alice.context().setOffline(true);
+  for (const [socket, client] of hub.clients) if (client.user?.id === aliceId) socket.terminate();
+  await until(() => alice.locator('[data-action="encrypted-approval-accept"]').isDisabled(), 'focused approval disables on disconnect');
+  assert.equal(await alice.locator('[data-action="grant-action-approval"]').isDisabled(), true);
+  assert.equal(await alice.getByLabel('Delegate this action to').inputValue(), bobId);
+  assert.match(await alice.locator('#ew-discussion').innerText(), /not connected|unavailable|unknown/i);
+  await alice.locator('#ew-receipts [data-delivery="unknown"]').filter({ hasText: 'Direction from Alice' }).waitFor();
+  await alice.screenshot({ path: path.join(out, 'approval-disconnected-desktop.png') });
+  await alice.context().setOffline(false);
+  await until(() => alice.locator('[data-action="encrypted-approval-accept"]').isEnabled(), 'approval restored after reconnect');
+  pass('focused approval forms retain drafts but disable decisions and delegation during disconnection');
   await alice.getByLabel('Delegate this action to').selectOption(bobId); await alice.locator('[data-action="grant-action-approval"]').click();
   await alice.locator('[data-action="revoke-approval-grant"]').waitFor({ timeout: 30000 });
   await until(() => bob.locator('[data-action="encrypted-approval-accept"]').isEnabled(), 'exact grant enables the teammate decision');
   assert.equal(await bob.locator('[data-action="revoke-approval-grant"]').count(), 0, 'delegation does not make the recipient a grant administrator');
+  assert.match(await bob.locator('[data-approval-id]').last().innerText(), /Approval delegated to Bob/);
+  await bob.setViewportSize({ width: 390, height: 844 });
+  await bob.waitForFunction(() => document.querySelector('#sidebar').getBoundingClientRect().right <= 0);
+  await bob.locator('[data-approval-id]').last().evaluate(node => node.scrollIntoView({ block: 'start' }));
+  await bob.screenshot({ path: path.join(out, 'approval-granted-mobile.png') });
+  assert.equal(await bob.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await bob.setViewportSize({ width: 1487, height: 1058 });
+  await bob.locator('#input').fill('Explain the result to Alice too.'); await bob.locator('#btn-send').click();
+  await bob.locator('#ew-receipts [data-state="queued"]').filter({ hasText: 'Direction from Bob' }).waitFor({ timeout: 30000 });
+  await alice.locator('#input').fill('Draft for the previous turn');
   await bob.locator('[data-action="encrypted-approval-accept"]').click();
   await until(() => !fs.existsSync(path.join(workspace, 'build')), 'approved delete applied');
   await bob.locator('#ew-receipts [data-state="delivered"]').filter({ hasText: 'Approve once' }).waitFor({ timeout: 30000 });
   pass('owner delegates exact action; teammate resolves it with a host receipt and real filesystem effect');
   await alice.locator('#ew-receipts .ew-receipt').filter({ hasText: 'Direction from Alice' }).filter({ hasText: 'delivered' }).waitFor({ timeout: 30000 });
   pass('a named direction preserves its turn and advances from queued to delivered');
+  await bob.locator('#ew-receipts [data-state="delivered"]').filter({ hasText: 'Direction from Bob' }).waitFor({ timeout: 30000 });
+  await until(() => runtime.sessions.size === 0, 'both attributed directions finished');
+  await until(async () => !(await alice.evaluate(() => window.__plexus.state.encryptedSnapshots.get(window.__plexus.state.activeThreadId))).activeTurnId, 'client observed the finished turn');
+  for (const instruction of ['After deletion, summarize the result for Bob.', 'Explain the result to Alice too.']) {
+    assert.equal((await alice.locator('#ew-discussion .ew-message p').allTextContents()).filter(text => text === instruction).length, 1, 'reconnect does not duplicate an instruction');
+  }
+  const commandsBefore = await alice.evaluate(() => window.__plexus.state.encrypted.pendingCommands.size);
+  await alice.locator('#btn-send').click();
+  await alice.locator('#ew-error').filter({ hasText: 'turn changed' }).waitFor();
+  assert.equal(await alice.locator('#input').inputValue(), 'Draft for the previous turn');
+  assert.equal(await alice.evaluate(() => window.__plexus.state.encrypted.pendingCommands.size), commandsBefore, 'stale draft emits no command');
+  await alice.locator('#input').fill('');
+  pass('two attributed instructions deliver; a draft bound to the finished turn is retained without sending a new command');
+
   fs.mkdirSync(path.join(workspace, 'build')); fs.writeFileSync(path.join(workspace, 'build/keep.txt'), 'keep after interruption');
   await alice.locator('#input').fill('delete build'); await alice.locator('#btn-send').click();
   await alice.locator('[data-action="encrypted-approval-accept"]').waitFor({ timeout: 30000 });
   await alice.locator('[data-action="encrypted-interrupt"]').click();
   await alice.locator('#ew-receipts .ew-receipt').filter({ hasText: 'Interruption requested' }).filter({ hasText: 'accepted' }).waitFor({ timeout: 30000 });
   assert.equal(fs.existsSync(path.join(workspace, 'build/keep.txt')), true);
-  pass('interrupt targets the active turn and retains unapproved filesystem content');
+  await alice.locator('#ew-heading').filter({ hasText: 'Agent turn: interrupted' }).waitFor({ timeout: 30000 });
+  pass('interrupt is confirmed in replay and retains unapproved filesystem content');
 
   // Separate host-local consent names Bob, who is a team member, as approver. The
   // creation event still names Alice; each new request must carry the current owner.
@@ -292,6 +335,19 @@ let hub, runtime, browser, lastPage;
   await alice.locator('#nav-fleet').click();
   await alice.locator('#input').fill('create OFFLINE.txt'); await alice.locator('#btn-send').click();
   await alice.locator('.ew-file h4').filter({ hasText: 'OFFLINE.txt' }).waitFor({ timeout: 30000 });
+  const secondTaskId = await alice.locator('.encrypted-task-row[aria-current="page"]').getAttribute('data-task-id');
+  await alice.locator('[data-action="view-catchup"]').click();
+  await alice.locator('#ew-content .cu-objective').filter({ hasText: 'OFFLINE.txt' }).waitFor();
+  const blockedHistory = '**/api/encrypted-tasks/' + taskId + '/events**';
+  await alice.route(blockedHistory, route => route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"temporarily_unavailable"}' }));
+  await alice.locator('.encrypted-task-row[data-task-id="' + taskId + '"]').click();
+  await alice.locator('#ew-error').filter({ hasText: 'History unavailable' }).waitFor();
+  assert.doesNotMatch(await alice.locator('#ew-content').innerText(), /OFFLINE.txt/, 'another task summary cannot survive failed replay');
+  await alice.unroute(blockedHistory);
+  await alice.locator('#ew-content .cu-objective').filter({ hasText: 'VERIFIED.txt' }).waitFor({ timeout: 30000 });
+  await alice.locator('.encrypted-task-row[data-task-id="' + secondTaskId + '"]').click();
+  await alice.locator('[data-action="view-review"]').click();
+  pass('switching tasks during a failed history request never displays the previous task catch-up');
   assert.equal(await alice.locator('#btn-send').isEnabled(), true, 'open task accepts control while host is online');
   await until(() => runtime.sessions.size === 0, 'initial file turn ended');
   await alice.locator('#ew-target').filter({ hasText: 'Start a follow-up on this task' }).waitFor();

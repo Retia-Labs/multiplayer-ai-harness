@@ -1,0 +1,61 @@
+{
+  "ranAt": "2026-09-15T15:09:41.605Z",
+  "platform": "darwin",
+  "packaged": true,
+  "results": [
+    {
+      "name": "the app starts with a tray, an open window and a running execution host",
+      "status": "pass"
+    },
+    {
+      "name": "a real task is in flight on that host, waiting on a decision",
+      "status": "pass"
+    },
+    {
+      "name": "closing the window leaves the execution host running, and the tray says so",
+      "status": "pass"
+    },
+    {
+      "name": "the work is left exactly as it was, waiting on a person rather than on a window",
+      "status": "pass"
+    },
+    {
+      "name": "the tray entry reopens the window, and produces no duplicate runtime",
+      "status": "pass"
+    },
+    {
+      "name": "quitting with nothing running still says what teammates will see",
+      "status": "pass"
+    },
+    {
+      "name": "quitting while work is running warns, names it, and defaults to not quitting",
+      "status": "pass"
+    },
+    {
+      "name": "a refused quit changes nothing",
+      "status": "pass"
+    },
+    {
+      "name": "an explicit quit shuts the managed processes down",
+      "status": "pass"
+    },
+    {
+      "name": "a launch restores where to connect, who this is and how the window sat",
+      "status": "pass"
+    },
+    {
+      "name": "a fresh launch restores the task without resuming it",
+      "status": "pass"
+    },
+    {
+      "name": "the tray icon itself was not clicked",
+      "status": "recorded",
+      "detail": "no supported platform lets a test make the OS open a tray menu; the entries in the menu the app installed are invoked by their own handlers, so what is untested is the click that opens it"
+    },
+    {
+      "name": "the quit dialog was not clicked either",
+      "status": "recorded",
+      "detail": "a native modal cannot be answered by a test in this harness; its text, buttons and default are asserted from the plan it is built from, and the answer is chosen for it"
+    }
+  ]
+}
