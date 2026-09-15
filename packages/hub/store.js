@@ -13,6 +13,7 @@ class HubStore {
     this.db = new DatabaseSync(file);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
+      PRAGMA secure_delete = ON;
       CREATE TABLE IF NOT EXISTS orgs     (id TEXT PRIMARY KEY, name TEXT, created_at INTEGER);
       CREATE TABLE IF NOT EXISTS users    (id TEXT PRIMARY KEY, org_id TEXT, name TEXT, color TEXT, token TEXT UNIQUE, created_at INTEGER);
       -- A team is the private boundary. Its id is what the older tables call org_id, so

@@ -41,3 +41,11 @@ references are unchanged, so this slice makes no new rendered-UI claim.
    #66 and #70; its PR description is not evidence that a new merge passed.
 4. Build #65/#66, then #67/#68 and qualify #69; complete #19/#20/#70 and #25 before
    external beta. Native blockers, not readiness labels, govern availability.
+
+## Integration follow-through
+
+The current disposition and combined-code verification are recorded in
+[pending-pr-integration.md](pending-pr-integration.md). #61 is superseded by #71;
+#63 and #64 have been reconciled with the project workspace and verified locally,
+including a fresh installed macOS build. The earlier table above records the
+pre-integration audit and should not be read as current outstanding code status.

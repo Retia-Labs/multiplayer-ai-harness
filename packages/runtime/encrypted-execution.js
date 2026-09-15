@@ -102,6 +102,7 @@ class EncryptedExecution {
   }
 
   async startTask(task, opened, { input, settings = {}, by, commandId, acknowledgeUnknown = false, resumeProvider = false } = {}) {
+    this.host.assertLiveTask?.(task);
     if (this.closed) refuse('host_stopped');
     if (this.active.has(task.id) || this.pending.has(task.id)) refuse('turn_already_running');
     if (opened.reader.state.outcome) refuse('task_already_settled');
@@ -160,6 +161,7 @@ class EncryptedExecution {
         } finally { session?.interrupt(); }
       },
       runTurn: async (emit) => {
+        this.host.assertLiveTask?.(task);
         if (this.closed) refuse('host_stopped');
         requireRecoveryEpoch(epoch, this.host.membership?.recoveryEpoch);
         if (saved.approvalAuthority && !sameIdentity(saved.approvalAuthority, this.approvalOwner())) refuse('approval_authority_revoked');
@@ -184,7 +186,7 @@ class EncryptedExecution {
             if (event.method === Events.TURN_STEER_DELIVERED) {
               const command = active.steers.get(event.steerSeq);
               if (command) active.run.append({ type: 'command.receipt', payload: {
-                commandId: command.commandId, actor: command.sender, turnId,
+                commandId: command.commandId, actor: command.sender, turnId, action: 'turn.steer',
                 state: 'delivered', order: event.steerSeq
               } }).catch(() => session.interrupt());
             }
@@ -251,12 +253,15 @@ class EncryptedExecution {
       const result = session.steer(payload.input, by);
       active.steers.set(result.seq, { commandId, sender });
       await active.run.append({ type: 'command.receipt', payload: {
-        commandId, actor: sender, turnId: session.turnId, state: 'queued', order: result.seq
+        commandId, actor: sender, turnId: session.turnId, state: 'queued', order: result.seq, action: 'turn.steer'
       } });
       return { ...result, state: 'queued' };
     }
     if (action === 'turn.interrupt') {
       const result = session.requestInterrupt(by);
+      await active.run.append({ type: 'command.receipt', payload: {
+        commandId, actor: sender, turnId: session.turnId, action, state: 'accepted'
+      } });
       return { ...result, interruptState: result.state, state: 'accepted' };
     }
     const owner = this.approvalOwner();

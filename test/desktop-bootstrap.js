@@ -56,6 +56,15 @@ const launch = (dataDir, env) => electron.launch({
     await page.waitForSelector('#step-hub.failed', { timeout: 35000 });
     assert.match(await page.textContent('#detail-hub'), /Could not reach.*Check the address/);
     await capture(page, 'failed');
+    assert.equal(await page.locator('#diagnostic-preview').isVisible(), false);
+    await page.click('#inspect-diagnostics');
+    const report = JSON.parse(await page.locator('#diagnostic-report').innerText());
+    assert.equal(report.client, 'desktop');
+    assert.match(report.versions.electron, /^\d+\.\d+\.\d+$/);
+    assert.equal(report.stages.find(stage => stage.stage === 'project').code, 'connection_unavailable');
+    assert.ok(!JSON.stringify(report).includes(temp) && !JSON.stringify(report).includes(env.HUB_HTTP_URL));
+    await capture(page, 'diagnostic-preview');
+    console.log('PASS: startup diagnostics preview exposes only fixed health codes and versions');
     let openedDataFolder;
     await app.evaluate(({ shell }) => { shell.openPath = async (folder) => { global.testOpenedFolder = folder; return ''; }; });
     const refused = await app.evaluate(async ({ app, BrowserWindow }, sourceRoot) => {
@@ -65,7 +74,7 @@ const launch = (dataDir, env) => electron.launch({
       } });
       try {
         await alien.loadURL('data:text/html,<html><body>Untrusted test page</body></html>');
-        return await alien.webContents.executeJavaScript("Promise.all(['openDataFolder', 'retryBoot'].map(action => window.harnessDesktop[action]().then(() => 'allowed', e => e.message)))");
+        return await alien.webContents.executeJavaScript("Promise.all(['openDataFolder', 'retryBoot', 'diagnostics'].map(action => window.harnessDesktop[action]().then(() => 'allowed', e => e.message)))");
       } finally { alien.destroy(); }
     }, root);
     for (const error of refused) assert.match(error, /untrusted_desktop_request/, 'another renderer cannot invoke privileged shell actions');

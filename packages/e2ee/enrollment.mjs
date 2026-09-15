@@ -83,6 +83,8 @@ export class EnrollmentTransport {
   }
   async configureRecovery(teamId, descriptor) { return this.commitRecovery(teamId, await this.prepareRecovery(teamId, descriptor)); }
   revokeRecovery(teamId, payload) { return this.mutate(teamId, 'recovery.revoke', payload); }
+  deleteTask(teamId, task) { return this.mutate(teamId, 'task.delete', { taskId: task.id, projectId: task.projectId, runtimeId: task.runtimeId }); }
+  deleteProject(teamId, projectId, tasks) { return this.mutate(teamId, 'project.delete', { projectId, tasks }); }
   async recoverOwner(teamId, payload) {
     if (!this.endpoint?.signOwnerRecovery) fail('owner_recovery_material_required');
     const state = await this.state(teamId);

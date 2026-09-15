@@ -123,6 +123,7 @@ class EncryptedHost {
     // Retain authenticated observations even if the subsequent SQLite write fails.
     // A recovered disk cannot make this live host forget a removal it already saw.
     this.observedMembership = { seq: current.seq, hash: current.hash };
+    this.observedDeletions = current.deletions || [];
     return { received, current };
   }
 
@@ -168,6 +169,9 @@ class EncryptedHost {
     let received, current;
     try {
       ({ received, current } = await this.readMembership());
+      // An authenticated deletion is irreversible. Apply it even when no owner
+      // is online to answer the fresh challenge required for new execution.
+      await this.applyDeletions(current);
       if (this.freshness?.requiresRecovery(current)) {
         this.membership = current;
         this.disconnect();
@@ -355,12 +359,63 @@ class EncryptedHost {
     return new Map(current.grants.filter((g) => g.projectId === projectId && !g.revoked).map((g) => [g.userId, g]));
   }
 
+  assertLiveTask(task) {
+    if (this.state?.load('deleted:' + task.id) || (this.observedDeletions || this.membership?.deletions)?.some(entry =>
+        entry.projectId === task.projectId && (entry.action === 'project.delete' || entry.taskId === task.id))) {
+      throw Object.assign(new Error('task_deleted'), { code: 'task_deleted' });
+    }
+  }
+
+  async applyDeletions(current) {
+    if (this.deletionWork) { await this.deletionWork; return this.applyDeletions(current); }
+    const work = this.performDeletions(current);
+    this.deletionWork = work;
+    try { await work; } finally { if (this.deletionWork === work) this.deletionWork = null; }
+  }
+
+  async performDeletions(current) {
+    for (const deletion of current.deletions || []) {
+      const marker = 'deletion-applied:' + this.runtime.teamId + ':' + deletion.seq;
+      if (deletion.action === 'project.delete') {
+        this.projects.delete(deletion.projectId);
+        if (this.runtime.store?.getKv && this.runtime.store?.setKv) {
+          const retired = new Set(this.runtime.store.getKv('offboardedEncryptedProjects', []));
+          if (!retired.has(deletion.projectId)) {
+            retired.add(deletion.projectId); this.runtime.store.setKv('offboardedEncryptedProjects', [...retired]);
+          }
+        }
+      }
+      if (this.state.load(marker)?.acknowledged) continue;
+      const tasks = deletion.action === 'task.delete' ? [{ id: deletion.taskId, runtimeId: deletion.runtimeId }] : deletion.tasks;
+      for (const task of tasks.filter(task => task.runtimeId === this.runtime.id)) {
+        // Persist the fence before cancelling execution or awaiting any SDK operation.
+        // A failed disk leaves the observed membership fence in memory and stops work.
+        try { this.state.save('deleted:' + task.id, { seq: deletion.seq }); }
+        finally { this.runtime.encryptedExecution?.active.get(task.id)?.session.interrupt(); }
+        await this.runtime.encryptedExecution?.taskCompletions.get(task.id)?.catch(() => {});
+        await this.keyShareQueue;
+        await this.endpoint.shareVerifiedTaskKey(roomFor(task.id), [this.endpoint.identity()], { rotate: true });
+        this.openedTasks.delete(task.id);
+        this.controlQueues.delete(task.id);
+        for (const key of this.handedOff) if (key.startsWith(task.id + '/')) this.handedOff.delete(key);
+        this.state.forgetTask(task.id);
+      }
+      const signer = Object.fromEntries(['user', 'device', 'curve25519', 'ed25519'].map(key => [key, this.endpoint.identity()[key]]));
+      const proof = { type: 'plexus.deletion.applied.v1', teamId: this.runtime.teamId, runtimeId: this.runtime.id, seq: deletion.seq, hash: deletion.hash, signer };
+      this.state.save(marker, { applied: true });
+      await this.enrollmentRequest('/ack-deletion', { ...proof, signature: await this.endpoint.sign(canonical(proof)) });
+      this.state.save(marker, { applied: true, acknowledged: true });
+    }
+  }
+
   async openTask(task) {
+    this.assertLiveTask(task);
     if (!this.openedTasks.has(task.id)) {
       const opening = (async () => {
         const project = this.projects.get(task.projectId);
         if (!project) throw new Error('project_not_mapped');
         const current = await this.reconcileMembership();
+        this.assertLiveTask(task);
         const creator = current.endpoints.find((e) => e.userId === task.creatorUserId && e.curve25519 === task.request?.content?.sender_key);
         if (!creator) throw new Error('task_creator_unverified');
         const previouslyStarted = this.state.load(task.id)?.checkpoint?.seq > 0;
@@ -385,6 +440,12 @@ class EncryptedHost {
             }
           } });
         const opened = await adapter.open(task);
+        opened.writer.timestampEvents = true;
+        const append = opened.writer.append.bind(opened.writer);
+        opened.writer.append = (event, id) => {
+          this.assertLiveTask(task);
+          return append(event, id);
+        };
         return { ...opened, adapter };
       })();
       this.openedTasks.set(task.id, opening);
@@ -423,7 +484,8 @@ class EncryptedHost {
       requireRecoveryEpoch(envelopeEpoch, current.recoveryEpoch);
       if (!current.endpoints.some(row => row.state === 'verified' && row.user === member.identity.user && row.device === member.identity.device) ||
           !current.grants.some(row => !row.revoked && row.projectId === task.projectId && row.userId === member.userId)) continue;
-      await this.endpoint.transport.deliverToDevice(member.identity.user, member.identity.device, envelope);
+      this.assertLiveTask(task);
+      await this.endpoint.transport.deliverToDevice(member.identity.user, member.identity.device, envelope, task.id);
       this.handedOff.add(key);
       handed.push(member.userId);
     }
@@ -581,6 +643,7 @@ class EncryptedHost {
 
   // One authorized control message, turned into one log event.
   async applyOrdered(task, read) {
+    this.assertLiveTask(task);
     const { sender, senderDevice, action, payload, commandId } = read;
     const project = this.projects.get(task.projectId);
     if (!project) throw Object.assign(new Error('project_not_mapped'), { code: 'project_not_mapped' });
@@ -600,6 +663,7 @@ class EncryptedHost {
     requireRecoveryEpoch(read.recoveryEpoch, this.membership?.recoveryEpoch);
 
     const opened = await this.openTask(task);
+    this.assertLiveTask(task);
     requireRecoveryEpoch(read.recoveryEpoch, this.membership?.recoveryEpoch);
     if (!this.reconciled) throw Object.assign(new Error('membership_reconciliation_required'), { code: 'membership_reconciliation_required' });
     const commandKey = 'control:' + task.id + ':' + commandId;
@@ -634,7 +698,8 @@ class EncryptedHost {
       if (!current.grants.some(grant => grant.projectId === task.projectId && grant.userId === sender && !grant.revoked)) {
         throw Object.assign(new Error('sender_not_in_project'), { code: 'sender_not_in_project' });
       }
-      await this.endpoint.transport.deliverToDevice(matrixUser(sender), senderDevice, envelope);
+      this.assertLiveTask(task);
+      await this.endpoint.transport.deliverToDevice(matrixUser(sender), senderDevice, envelope, task.id);
       const result = { taskId: task.id, type: 'task.history', state: 'accepted', history: 'submitted' };
       this.state.save(commandKey, { fingerprint, state: 'completed', result });
       return result;
@@ -642,6 +707,7 @@ class EncryptedHost {
     if (action.startsWith('turn.') || action.startsWith('approval.') || action === 'task.diff') {
       if (!this.onControl) throw Object.assign(new Error('unsupported_task_control'), { code: 'unsupported_task_control' });
       const result = await this.onControl(task, read, opened);
+      this.assertLiveTask(task);
       this.state.save(commandKey, { fingerprint, state: 'completed', result });
       return result;
     }
@@ -764,6 +830,7 @@ class EncryptedHost {
       this.disconnect();
       await Promise.allSettled([...this.controlQueues.values()]);
       await this.keyShareQueue;
+      await this.deletionWork?.catch(() => {});
       try { await this.endpoint?.close(); } finally { this.state?.close(); }
     })();
     return this.closing;

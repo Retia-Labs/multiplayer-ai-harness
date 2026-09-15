@@ -27,6 +27,6 @@ export class HubKeyTransport {
   }
   // The SDK hands us its own request bodies; they go through unread.
   async send(type, { user, device, body }) { return JSON.stringify(await this.request('keys', { type, user, device, body })); }
-  deliverToDevice(user, device, envelope) { return this.request('deliver', { user, device, envelope }); }
+  deliverToDevice(user, device, envelope, taskId) { return this.request('deliver', { user, device, envelope, ...(taskId ? { taskId } : {}) }); }
   drain() { return this.request('drain'); }
 }

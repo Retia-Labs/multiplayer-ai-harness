@@ -1,5 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('harnessDesktop', {
+  versions: { electron: process.versions.electron },
+  diagnostics: () => ipcRenderer.invoke('desktop:diagnostics'),
   hubUrl: location.protocol === 'plexus-app:' ? ipcRenderer.sendSync('desktop:hubUrl') : null,
   endpointStoreKey: () => ipcRenderer.invoke('desktop:endpointStoreKey'),
   encryptedSetup: () => ipcRenderer.invoke('desktop:encryptedSetup'),

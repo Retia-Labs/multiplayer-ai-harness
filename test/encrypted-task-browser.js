@@ -34,7 +34,11 @@ const waitFor=async(fn)=>{for(let n=0;n<200;n++){if(fn())return;await new Promis
   const cfg={endpoint:{user:matrixUser(user.id),device:'BROWSER',storeName:'fixture',storeKey:[...randomBytes(32)],transport:keyRelay.enroll(matrixUser(user.id),'BROWSER')},token:user.token,task,writer:host.identity()};
   const launch=async()=>{
     browser=await chromium.launchPersistentContext(path.join(tmp,'profile'),{executablePath:process.env.CHROMIUM_PATH||undefined,headless:true});
-    const page=browser.pages()[0];await page.goto(url);await page.waitForFunction(()=>globalThis.fixture);
+    const page=browser.pages()[0];
+    // A module this fixture forgot to serve reads as `fixture_timeout` and says nothing about
+    // which file was missing. It cost an afternoon once; naming the 404 is cheap.
+    page.on('response',(r)=>{if(r.status()>=400)console.log('  fixture asset '+r.status()+': '+r.url());});
+    await page.goto(url);await page.waitForFunction(()=>globalThis.fixture);
     const identity=await page.evaluate(c=>fixture.init(c),cfg);return {page,identity};
   };
   let {page,identity}=await launch();

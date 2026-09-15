@@ -27,10 +27,14 @@ async function fixture(t) {
   const teammateEndpoint = await makeEndpoint(teammate, 'TEAMMATE');
   const enrollment = new EnrollmentTransport({ url, token: owner.token, endpoint: ownerEndpoint });
   const teammateEnrollment = new EnrollmentTransport({ url, token: teammate.token, endpoint: teammateEndpoint });
-  t.after(async () => { ownerEndpoint.close(); teammateEndpoint.close(); await hub.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const cleanup = [];
+  t.after(async () => {
+    for (const close of cleanup.reverse()) await close();
+    ownerEndpoint.close(); teammateEndpoint.close(); await hub.close(); fs.rmSync(dir, { recursive: true, force: true });
+  });
   await enrollment.bootstrap(team.id, announcement(ownerEndpoint));
   await teammateEnrollment.announce(team.id, announcement(teammateEndpoint));
-  return { dir, hub, url, owner, teammate, team, ownerEndpoint, teammateEndpoint, enrollment, teammateEnrollment };
+  return { dir, hub, url, owner, teammate, team, ownerEndpoint, teammateEndpoint, enrollment, teammateEnrollment, cleanup };
 }
 
 test('an account session cannot impersonate the owner’s confirmed device', async (t) => {
@@ -85,7 +89,7 @@ async function hostFixture(f, t) {
   const url = 'http://127.0.0.1:' + proxy.address().port;
   const host = new EncryptedHost({ runtime, url, statePath: path.join(f.dir, 'host.sqlite'),
     projects: new Map([[projectId, project]]), authority: f.ownerEndpoint.identity(), endpointFactory: (options) => Endpoint.create(options) });
-  t.after(async () => { host.close(); await new Promise((resolve) => proxy.close(resolve)); });
+  f.cleanup.push(async () => { await host.close(); await new Promise((resolve) => proxy.close(resolve)); });
   const writer = await host.start();
   await f.ownerEndpoint.confirmEndpoint(writer, { confirmed: true });
   await f.teammateEndpoint.confirmEndpoint(writer, { confirmed: true });
@@ -103,7 +107,7 @@ async function hostFixture(f, t) {
 async function replacementEndpoint(f, t, device = 'REPLACEMENT') {
   const endpoint = await Endpoint.create({ user: matrixUser(f.owner.id), device,
     transport: new HubKeyTransport({ url: f.url, token: f.owner.token, device }) });
-  t.after(() => endpoint.close());
+  f.cleanup.push(() => endpoint.close());
   const enrollment = new EnrollmentTransport({ url: f.url, token: f.owner.token, endpoint });
   await enrollment.pinAuthority(f.team.id, f.ownerEndpoint.identity());
   await enrollment.announce(f.team.id, announcement(endpoint));
@@ -248,7 +252,7 @@ test('a project added after the first owner proof promptly renews the challenge 
   f.hub.store.pairRuntime(runtime.id, f.team.id, f.owner.id, runtime.runtimeToken);
   const host = new EncryptedHost({ runtime, url: f.url, statePath: path.join(f.dir, 'initial-head.sqlite'),
     authority: f.ownerEndpoint.identity(), endpointFactory: options => Endpoint.create(options) });
-  t.after(() => host.close());
+  f.cleanup.push(() => host.close());
   await host.start();
   const original = await host.beginReconcile();
   assert.deepEqual(await f.enrollment.answerChallenges(f.team.id), { answered: 1 });
@@ -352,7 +356,7 @@ test('each confirmed device of the same participant receives future task access'
   const h = await hostFixture(f, t);
   const second = await Endpoint.create({ user: matrixUser(f.teammate.id), device: 'SECOND',
     transport: new HubKeyTransport({ url: f.url, token: f.teammate.token, device: 'SECOND' }) });
-  t.after(() => second.close());
+  f.cleanup.push(() => second.close());
   await f.teammateEnrollment.announce(f.team.id, announcement(second));
   await f.enrollment.confirm(f.team.id, 'OWNER', { userId: f.teammate.id, ...announcement(second) });
   await second.confirmEndpoint(h.writer, { confirmed: true });
@@ -395,7 +399,7 @@ test('customer history recovery and teammate re-enrollment require explicit loca
 
   const clean = await Endpoint.create({ user: matrixUser(f.owner.id), device: 'REPLACEMENT',
     transport: new HubKeyTransport({ url: f.url, token: f.owner.token, device: 'REPLACEMENT' }) });
-  t.after(() => clean.close());
+  f.cleanup.push(() => clean.close());
   assert.notEqual(clean.identity().ed25519, originalIdentity.ed25519);
   const restored = await restoreHistory(clean, recovery, options);
   const recovered = restored.restored.history[h.task.id];

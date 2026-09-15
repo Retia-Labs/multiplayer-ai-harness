@@ -42,7 +42,7 @@ function installRenderer({ root, hubUrl, partition }) {
     } else if (relative.startsWith('shared/')) {
       base = path.join(root, 'packages');
       relative = relative.slice(7);
-      if (!/^(e2ee|protocol)\/[A-Za-z0-9_-]+\.mjs$/.test(relative)) return new Response('Not found', { status: 404 });
+      if (!/^(e2ee|protocol|product)\/[A-Za-z0-9_-]+\.mjs$/.test(relative)) return new Response('Not found', { status: 404 });
     }
     const file = path.resolve(base, relative);
     if (!file.startsWith(base + path.sep) || !MIME[path.extname(file)]) return new Response('Not found', { status: 404 });

@@ -24,6 +24,9 @@ const { ORIGIN, installRenderer, requireRenderer, endpointStoreKey } = require('
 const { attachCryptoBroker } = require('../../packages/e2ee/desktop-crypto-broker');
 const { desktopProfile } = require('./profile');
 const { createFreshnessConfirmation } = require('./local-runtime-rpc');
+const { diagnosticExport } = require('../../packages/product/diagnostics.mjs');
+const { pathToFileURL } = require('node:url');
+const bootHealth = {};
 
 // Packaged, everything lives under the asar and `getAppPath()` is its root. In a checkout
 // that call returns whatever directory Electron was pointed at, which is not the same
@@ -77,6 +80,7 @@ function log(line) {
 const PAIRING_CODE = createPairingCode();
 
 function status(step, state, detail) {
+  bootHealth[step] = state;
   const first = detail ? String(detail).split(/\r?\n/)[0] : '';
   log(`[boot] ${step} ${state}${first ? ' — ' + first : ''}`);
   if (win && !win.isDestroyed()) win.webContents.send('boot:status', { step, state, detail });
@@ -588,10 +592,16 @@ ipcMain.handle('desktop:confirmApprovalAuthority', async (event, { teamId, ident
 });
 let retryPromise = null;
 function requireShellRenderer(event) {
-  const bootUrl = require('node:url').pathToFileURL(path.join(__dirname, 'boot.html')).href;
+  const bootUrl = pathToFileURL(path.join(__dirname, 'boot.html')).href;
   if (event.sender === win?.webContents && event.senderFrame === win.webContents.mainFrame && event.senderFrame.url === bootUrl) return;
   requireRenderer(event, win);
 }
+ipcMain.handle('desktop:diagnostics', (event) => {
+  requireShellRenderer(event);
+  return diagnosticExport({ client: 'desktop', versions: { app: app.getVersion(), electron: process.versions.electron }, stages: [
+    { stage: 'project', status: bootHealth.runtime === 'ready' ? 'ready' : 'failed', code: bootHealth.hub === 'failed' ? 'connection_unavailable' : 'runtime_missing' }
+  ] });
+});
 ipcMain.handle('desktop:retryBoot', (event) => {
   requireShellRenderer(event);
   if (retryPromise) return retryPromise;
@@ -601,6 +611,7 @@ ipcMain.handle('desktop:retryBoot', (event) => {
     hubChild = null;
     serviceLogs.hub.length = 0;
     serviceLogs.runtime.length = 0;
+    for (const step of Object.keys(bootHealth)) delete bootHealth[step];
     await win.loadFile(path.join(__dirname, 'boot.html'));
     await runBoot();
   })().finally(() => { retryPromise = null; });
