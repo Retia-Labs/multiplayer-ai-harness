@@ -1,0 +1,30 @@
+{
+  "checks": [
+    "setup refresh preserves the open exact host fingerprint comparison until confirmation",
+    "setup retries distinguish missing CLI, unsupported version, local login and cancelled consent without losing project selection",
+    "public composer starts an encrypted task; integrated host writes real bytes and source diff",
+    "project navigation isolates task lists, restores task/project selection and refuses a draft retargeted to another folder",
+    "private link requires login; late teammate enrolls, confirms the host and reopens the link with verified history",
+    "related links add/remove, human inbox resolution and responsibility handoff are host recorded",
+    "focused approval forms retain drafts but disable decisions and delegation during disconnection",
+    "owner delegates exact action; teammate resolves it with a host receipt and real filesystem effect",
+    "a named direction preserves its turn and advances from queued to delivered",
+    "two attributed instructions deliver; a draft bound to the finished turn is retained without sending a new command",
+    "interrupt is confirmed in replay and retains unapproved filesystem content",
+    "current host approver differs from membership owner; delegation, revocation and expiry follow the exact request",
+    "390px review and composer drawer stay accessible without horizontal page overflow",
+    "customer key drill, safe replacement and fresh-endpoint history restore use actual recovery controls",
+    "pending restored device explains unavailable controls and offers verification instead of unsupported removal",
+    "switching tasks during a failed history request never displays the previous task catch-up",
+    "a real encrypted provider failure displays an actionable next step and keeps the task open",
+    "host compatibility, local ChatGPT login and isolation errors each provide safe setup guidance",
+    "task outcome is separate from turn completion; offline host disables controls while retaining history",
+    "Access retains offline revocation pending despite a project response claiming host application without signed receipts"
+  ],
+  "errors": [],
+  "viewports": [
+    "1487x1058",
+    "390x844"
+  ],
+  "provider": "deterministic demo through production Runtime"
+}

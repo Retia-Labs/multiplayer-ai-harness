@@ -514,7 +514,7 @@
         refreshApprovalActions();
         break;
       case 'thread.updated': onThreadUpdated(m.thread); break;
-      case 'users': state.users = m.users; renderMembers(); if (!el.assignModal.classList.contains('hidden')) fillAssignUsers(); break;
+      case 'users': state.users = m.users; renderMembers(); renderEncryptedWorkspace(); if (!el.assignModal.classList.contains('hidden')) fillAssignUsers(); break;
       case 'workspace.activity': {
         const prevOverlaps = state.activity.overlaps.map((o) => o.projectKey + '::' + o.path);
         state.activity = { threads: m.threads || [], overlaps: m.overlaps || [] };
@@ -1799,7 +1799,8 @@
     return snap && (snap.activeTurnId || snap.turnId || snap.execution?.turnId) || null;
   }
   function hostOnline(task = activeEncryptedTask()) { return !!(task && state.connected && state.runtimes.find(r => r.id === task.runtimeId)?.online); }
-  function canControlTask() { return !!(state.encryptedState?.state === 'verified' && hostOnline() && !encryptedSnapshot()?.outcome); }
+  function canControlTask() { return !!(state.encryptedState?.state === 'verified' && hostOnline() && encryptedSnapshot() &&
+    state.encrypted?.confirmedHost(activeEncryptedTask()?.runtimeId) && !encryptedSnapshot().outcome); }
   function closeEncryptedSurfaces() {
     $('#encrypted-workspace').classList.add('hidden'); $('#access-view').classList.add('hidden');
     state.accessOpen = false; $('#app').classList.remove('encrypted-selected');
@@ -1966,6 +1967,7 @@
     if (state.subscribedId) send({ type: 'thread.unsubscribe', threadId: state.subscribedId });
     state.subscribedId = null; state.activeThreadId = id; state.activeThread = null; state.setupHostPrompt = null;
     state.draftTarget = null; el.input.value = ''; state.catchupSnapshot = state.encryptedSnapshots.get(id) || null;
+    state.catchup = null; state.catchupExplain = null; state.projectAccess = null;
     hideWorkViews(); $('#encrypted-workspace').classList.remove('hidden'); $('#app').classList.add('encrypted-selected');
     $('#ew-composer').append(el.composer); el.composer.classList.remove('hidden');
     el.navFleet.classList.remove('active');
@@ -2005,7 +2007,8 @@
       state.catchupSnapshot = result.snapshot; state.catchup = result.projection; state.catchupExplain = null;
     }
     if (state.encrypted.projectAccess) {
-      try { state.projectAccess = await state.encrypted.projectAccess(task.projectId); } catch { state.projectAccess = null; }
+      try { const access = await state.encrypted.projectAccess(task.projectId); if (id !== state.activeThreadId) return; state.projectAccess = access; }
+      catch { if (id !== state.activeThreadId) return; state.projectAccess = null; }
     }
     renderEncryptedWorkspace(); renderThreadList();
   }
@@ -2036,6 +2039,7 @@
         if (!canControlTask()) throw new Error('Task controls are unavailable until the host is connected and your endpoint is verified.');
         const target = state.draftTarget || { taskId: task.id, turnId: encryptedTurnId() };
         if (target.taskId !== task.id) throw new Error('This draft belongs to another task.');
+        if (target.turnId !== encryptedTurnId()) throw new Error('The agent turn changed while you were writing. Copy or clear this draft, then write a new instruction for the current turn.');
         const input = [{ type: 'text', text }];
         if (target.turnId) await submitEncrypted('Direction from ' + state.me.name + ' · turn ' + target.turnId,
           () => state.encrypted.steer(task, { input, expectedTurnId: target.turnId }));
@@ -2062,6 +2066,18 @@
         const code = receipt.error?.code || receipt.error || receipt.code;
         entry.append(uiNode('p', 'ew-error', hostToolsFailureMessage(code) || code));
       }
+      const explanations = {
+        accepted: 'The host accepted the request; this alone does not confirm execution.',
+        queued: 'Waiting for the agent to receive this instruction.',
+        delivered: 'The host confirmed delivery; review the resulting changes separately.',
+        rejected: 'The host refused this request. Review the reason before sending another.',
+        unknown: 'The outcome is unknown. Reconnect and inspect history before retrying.'
+      };
+      if (explanations[status]) entry.append(uiNode('p', 'small', explanations[status]));
+      if (!hostOnline() && ['submitted', 'accepted', 'queued'].includes(status)) {
+        entry.dataset.delivery = 'unknown';
+        entry.append(uiNode('p', 'ew-error', 'Connection unavailable. Current delivery is unknown; this request will not be resent automatically.'));
+      }
       const settled = receipt?.result?.settled || receipt?.settled;
       if (settled) entry.append(uiNode('p', 'small', 'Settled by ' + (settled.by?.name || settled.by?.userId || settled.by || 'another approver') + ' · ' + settled.decision));
       root.append(entry);
@@ -2073,6 +2089,16 @@
     pane.prepend(uiButton('Close source', 'close-source', () => pane.remove()));
     $('#ew-content').append(pane); pane.scrollIntoView({ block: 'nearest' });
   }
+  function currentTaskCatchup(task) {
+    const projection = state.catchup;
+    if (!projection || projection.scope?.taskId !== task?.id) return null;
+    if (!hostOnline(task) || state.catchupExplain) return { ...projection, freshness: {
+      ...projection.freshness, state: 'unknown',
+      explain: !hostOnline(task) ? 'The execution host is not connected. Previously verified history remains available; current execution is unknown.'
+        : 'History refresh is unavailable. Showing previously verified records.'
+    } };
+    return projection;
+  }
   function renderEncryptedWorkspace() {
     const task = activeEncryptedTask(); if (!task || $('#encrypted-workspace').classList.contains('hidden')) return;
     const snapshot = encryptedSnapshot(); const runtime = state.runtimes.find(r => r.id === task.runtimeId);
@@ -2081,7 +2107,7 @@
     const head = $('#ew-heading'); head.replaceChildren(uiNode('h1', null, title));
     head.append(uiNode('p', 'ew-ownership', 'Responsible: ' + (nameFor(snapshot?.responsible || task.creatorUserId) || snapshot?.responsible || 'You') +
       ' · Host: ' + (runtime?.name || task.runtimeId) + ' · ' + (hostOnline(task) ? 'Connected' : 'Disconnected · execution may be unknown')));
-    head.append(uiNode('p', 'small', 'Provider: ' + (snapshot?.provider || 'Awaiting host record') + ' · Account: execution host’s provider account · Task outcome: ' + (snapshot?.outcome || 'open')));
+    head.append(uiNode('p', 'small', 'Provider: ' + (snapshot?.provider || 'Awaiting host record') + ' · Account: execution host’s provider account · Agent turn: ' + (snapshot?.turn || 'awaiting host record') + ' · Task outcome: ' + (snapshot?.outcome || 'open')));
     const nav = $('#ew-tabs'); nav.replaceChildren();
     for (const [id, label] of [['review', 'Changes'], ['catchup', 'Catch up'], ['access', 'Access']]) {
       const button = uiButton(label, 'view-' + id, () => { state.encryptedTab = id; renderEncryptedWorkspace(); });
@@ -2089,25 +2115,29 @@
     }
     nav.append(uiButton('Discussion', 'toggle-discussion', () => $('#encrypted-workspace').classList.toggle('inspector-open')));
     const content = $('#ew-content');
+    const projection = currentTaskCatchup(task);
     // Keep a person’s partially completed access/action form stable while replay updates.
     const editing = content.contains(document.activeElement) && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
     const now = Date.now();
     const deadlines = JSON.stringify([(snapshot?.approvals || []).map(request => !!request.expiresAt && request.expiresAt <= now),
       (snapshot?.approvers || []).map(grant => grant.expiresAt <= now)]);
-    const contentSignature = JSON.stringify([task.id, state.encryptedTab, snapshot?.events?.length, state.catchup?.freshness?.state, hostOnline(task), state.encryptedState?.state, state.catchupExplain, state.projectAccess, state.encryptedState?.endpoints, state.encryptedState?.revocations, deadlines]);
+    const contentSignature = JSON.stringify([task.id, state.encryptedTab, snapshot?.events?.length, state.catchup?.freshness?.state, hostOnline(task), state.encryptedState?.state, state.catchupExplain, state.projectAccess, state.encryptedState?.endpoints, state.encryptedState?.revocations, state.users, deadlines]);
     // Deadlines can change eligibility without another host event. Preserve drafts,
     // but never retain an enabled expired decision just because a field has focus.
-    if ((!editing || content.dataset.approvalDeadlines !== deadlines) && content.dataset.signature !== contentSignature) {
+    const authority = JSON.stringify([canControlTask(), snapshot?.activeTurnId, snapshot?.outcome,
+      snapshot?.approvers, snapshot?.decisions, state.encryptedState?.revocations, projectPeople()]);
+    if ((!editing || content.dataset.approvalDeadlines !== deadlines || content.dataset.authority !== authority) && content.dataset.signature !== contentSignature) {
       const openSections = new Set([...content.querySelectorAll('details[open]')].map(node => node.querySelector('summary')?.textContent));
       const drafts = new Map([...content.querySelectorAll('input[name],textarea[name],select[name]')].map(node => [node.name, { value: node.value, checked: node.checked }]));
-      content.dataset.signature = contentSignature; content.dataset.approvalDeadlines = deadlines; content.replaceChildren();
+      content.dataset.signature = contentSignature; content.dataset.approvalDeadlines = deadlines; content.dataset.authority = authority; content.replaceChildren();
       const error = uiNode('p', 'ew-error', state.catchupExplain || ''); error.id = 'ew-error'; error.setAttribute('role', 'status'); content.append(error);
+      if (state.catchupExplain && state.encryptedState?.membershipIdentity?.state !== 'verified') content.append(uiButton('Open Team & access', 'task-enrollment', openAccess));
       if (!state.encrypted.confirmedHost(task.runtimeId)) {
         content.append(uiButton('Verify execution host', 'verify-task-host', async () => content.append(hostConfirmation({ runtimeId: task.runtimeId, endpoints: await state.encrypted.hostEndpoints(task.runtimeId) }))));
       }
-      if (state.encryptedTab === 'catchup' && state.catchup) {
-        const projection = uiNode('div'); content.append(projection);
-        window.PlexusCatchup.renderCatchup(state.catchup, projection, { onOpenSource: openEncryptedSource, onOpenTranscript: () => $('#encrypted-workspace').classList.add('inspector-open') });
+      if (state.encryptedTab === 'catchup' && projection) {
+        const pane = uiNode('div'); content.append(pane);
+        window.PlexusCatchup.renderCatchup(projection, pane, { onOpenSource: openEncryptedSource, onOpenTranscript: () => $('#encrypted-workspace').classList.add('inspector-open') });
       } else if (state.encryptedTab === 'access') renderAccessContent(content, task.projectId);
       else renderEncryptedReview(content, task, snapshot);
       for (const node of content.querySelectorAll('details')) node.open = openSections.has(node.querySelector('summary')?.textContent);
@@ -2167,7 +2197,7 @@
     const root = $('#ew-discussion'); const oldScroll = root.scrollTop;
     root.replaceChildren(uiNode('h3', null, 'Review together'));
     const close = uiButton('Close discussion', 'close-discussion', () => $('#encrypted-workspace').classList.remove('inspector-open')); close.classList.add('ew-close-discussion'); root.append(close);
-    root.append(uiNode('p', 'small', state.catchup?.freshness?.explain || 'Waiting for a verified event range.'));
+    root.append(uiNode('p', 'small', currentTaskCatchup(activeEncryptedTask())?.freshness?.explain || 'Waiting for a verified event range.'));
     for (const message of snapshot?.messages || []) {
       const row = uiNode('article', 'ew-message');
       const actor = message.actor?.name || nameFor(message.by?.userId || message.actor) || message.by?.name || (message.role === 'user' ? 'Teammate' : 'Agent');
@@ -2213,6 +2243,14 @@
         ' · Host: ' + task.runtimeId + ' · Turn: ' + (request.turnId || 'unavailable') + ' · Scope: this action, once'));
       const seq = snapshot.events.findIndex(event => event.type === 'approval.requested' && event.payload.id === request.id) + 1;
       if (seq) section.append(uiButton('Inspect request', 'approval-source', () => openEncryptedSource({ seq, type: 'approval.requested' })));
+      for (const grant of snapshot?.approvers || []) {
+        if (grant.requestId !== request.id || grant.turnId !== request.turnId) continue;
+        const active = isPendingApproval(snapshot, request) && grant.expiresAt > Date.now();
+        const row = uiNode('p', 'ew-link-row', (active ? 'Approval delegated to ' : 'Previous approval grant for ') + (nameFor(grant.userId) || grant.userId) + ' · request ' + (grant.requestId || grant.scope?.requestId || 'unknown') + (active ? ' · expires ' + new Date(grant.expiresAt).toLocaleTimeString() : ' · no longer active'));
+        if (active && isRequestApprovalOwner(snapshot, request)) row.append(uiButton('Remove approval grant', 'revoke-approval-grant', () => submitEncrypted('Approval grant revoked', () => state.encrypted.revokeApproval(task, { userId: grant.userId, turnId: grant.turnId }))));
+        if (!canControlTask()) for (const button of row.querySelectorAll('button')) button.disabled = true;
+        section.append(row);
+      }
       if (resolved) section.append(uiNode('p', 'ew-receipt', (nameFor(resolved.actor) || resolved.actor) + ' · ' + resolved.text));
       else if (request.turnId !== snapshot.activeTurnId) section.append(uiNode('p', 'ew-error', 'This request belongs to a finished or interrupted turn. It cannot authorize a new action.'));
       else if (request.expiresAt && Date.now() >= request.expiresAt) section.append(uiNode('p', 'ew-error', 'Expired. This request can no longer authorize an action.'));
@@ -2231,15 +2269,17 @@
           if (!mayApprove) button.title = 'The host approver must delegate this exact action to you before you can respond.';
           actions.append(button);
         }
-        section.append(actions, uiNode('p', 'small', mayApprove
+        section.append(actions, uiNode('p', 'small', !hostOnline(task) ? 'Host unavailable. Approval and delegation wait until you reconnect.' : mayApprove
           ? 'The execution host checks the current grant and exact action; the first valid decision wins.'
           : 'Approval rights are missing. The host’s configured approver must delegate this exact action to you.'));
         if (isOwner) {
           const person = uiField('Delegate this action to', 'approval-recipient', { options: projectPeople() });
-          section.append(person.wrap, uiButton('Delegate this action', 'grant-action-approval', () => submitEncrypted('Delegate approval', () => state.encrypted.grantApproval(task, {
+          const delegate = uiButton('Delegate this action', 'grant-action-approval', () => submitEncrypted('Delegate approval', () => state.encrypted.grantApproval(task, {
             userId: person.input.value, requestId: request.id, turnId: request.turnId,
             expiresAt: Math.min(request.expiresAt || Date.now() + 15 * 60000, Date.now() + 60 * 60000)
-          }))));
+          })));
+          delegate.disabled = !canControlTask();
+          section.append(person.wrap, delegate);
         }
       }
       root.append(section);
@@ -2254,13 +2294,6 @@
         await submitEncrypted('Follow-up after unknown execution', () => state.encrypted.startTurn(task, { input: [{ type: 'text', text }], acknowledgeUnknown: true }));
         el.input.value = ''; state.draftTarget = null; await updateEncryptedTask();
       }));
-    }
-    for (const grant of snapshot?.approvers || []) {
-      const request = snapshot.approvals?.find(entry => entry.id === grant.requestId && entry.turnId === grant.turnId);
-      const active = isPendingApproval(snapshot, request) && grant.expiresAt > Date.now();
-      const row = uiNode('p', 'ew-link-row', (active ? 'Approval delegated to ' : 'Previous approval grant for ') + (nameFor(grant.userId) || grant.userId) + ' · request ' + (grant.requestId || grant.scope?.requestId || 'unknown') + (active ? ' · expires ' + new Date(grant.expiresAt).toLocaleTimeString() : ' · no longer active'));
-      if (active && isRequestApprovalOwner(snapshot, request)) row.append(uiButton('Remove approval grant', 'revoke-approval-grant', () => submitEncrypted('Approval grant revoked', () => state.encrypted.revokeApproval(task, { userId: grant.userId, turnId: grant.turnId }))));
-      controls.append(row);
     }
     const stop = uiButton('Interrupt active turn', 'encrypted-interrupt', () => submitEncrypted('Interruption requested', () => state.encrypted.interrupt(task, { turnId: encryptedTurnId() })));
     stop.disabled = !canControlTask() || !encryptedTurnId(); controls.append(stop);
