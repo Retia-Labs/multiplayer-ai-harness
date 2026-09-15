@@ -8,7 +8,7 @@ The root [AGENTS.md](../../../AGENTS.md) directs coding agents to [AGENT-DEVELOP
 
 Start with [AGENT-DEVELOPMENT.md](AGENT-DEVELOPMENT.md), then identify the screen, template IDs, shared components, required states, and accepted captures for the ticket. [DEVELOPMENT-HANDOFF.md](DEVELOPMENT-HANDOFF.md) maps the first production slice to the current renderer and protocol. Shared-component extraction and visual regression gates remain implementation work.
 
-From the repository root, `npm run check:design` checks the reference pack and instruction wiring; GitHub Actions runs the same check. It does not test rendered appearance or production behavior and does not configure required branch protection. Keep existing harness behavior checks in the implementation workflow.
+From the repository root, `npm run check:design` checks the reference pack and instruction wiring. Run it locally; GitHub Actions is disabled for this repository. It does not test rendered appearance or production behavior and does not configure required branch protection. Keep existing harness behavior checks in the implementation workflow.
 
 ## Optional isolated preview
 
