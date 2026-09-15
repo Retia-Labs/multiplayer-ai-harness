@@ -212,7 +212,7 @@
         membershipIdentity = { owner: head.owner || null, state: admitted?.state || 'pending',
           checkpoint: { seq: head.seq, hash: head.hash }, recoveryEpoch: head.recoveryEpoch || null,
           recoveryDescriptor: head.recoveryDescriptor || null, recoveryGeneration: head.recoveryGeneration || 0,
-          grants: head.grants || [] };
+          grants: head.grants || [], deletions: head.deletions || [] };
       } catch (error) {
         // A clean device still needs the original authority comparison. Relay endpoint
         // labels cannot make that device eligible for host-local authority recovery.
@@ -230,6 +230,24 @@
         hosts: [...knownHosts].map(runtimeId => ({ runtimeId, identity: this.confirmedHost(runtimeId) })),
         authorityLog: state.authorityLog || []
       });
+      const { sameIdentity, verifySignature, operationBody } = await import('/shared/e2ee/membership.mjs');
+      this.deletions = membershipIdentity?.deletions || this.deletions || [];
+      const deletions = [];
+      for (const entry of this.deletions) {
+        const expected = entry.action === 'task.delete' ? [entry.runtimeId] : [...new Set([...knownHosts, ...entry.tasks.map(task => task.runtimeId)])];
+        const applied = new Set();
+        const raw = (state.deletions || []).find(value => value.operation.seq === entry.seq);
+        for (const receipt of raw?.receipts || []) {
+          const proof = receipt.proof, pin = this.confirmedHost(receipt.runtimeId);
+          if (proof?.type === 'plexus.deletion.applied.v1' && proof.teamId === this.teamId && proof.runtimeId === receipt.runtimeId && proof.seq === entry.seq && proof.hash === entry.hash &&
+              sameIdentity(pin, proof.signer) && await verifySignature(pin, operationBody(proof), proof.signature)) applied.add(receipt.runtimeId);
+        }
+        deletions.push({ ...entry, pendingHosts: expected.filter(id => !applied.has(id)) });
+        for (const taskId of entry.action === 'task.delete' ? [entry.taskId] : entry.tasks.map(task => task.id)) {
+          for (const prefix of [CHECKPOINT_ITEM, ADMITTED_ITEM, RECOVERY_TRUST_ITEM]) localStorage.removeItem(this.storageKey(prefix, taskId));
+          for (const [id, value] of this.pendingCommands) if (value.task.id === taskId) { this.pendingCommands.delete(id); this.receipts.delete(id); }
+        }
+      }
       return {
         device: this.device,
         state: mine ? mine.state : 'unannounced',
@@ -242,6 +260,7 @@
           isOriginal: !!membershipIdentity?.owner && this.m.matrixUser(e.userId) === membershipIdentity.owner.user &&
             e.device === membershipIdentity.owner.device })),
         revocations,
+        deletions,
         pendingHosts: [...new Set(revocations.flatMap(entry => entry.pendingHosts))]
       };
     }
@@ -329,8 +348,9 @@
     // which is #8's whole point and why a replay can still refuse after this succeeds.
     async list() {
       const out = await this.tasks.list(this.teamId);
-      return out.tasks || [];
+      return (out.tasks || []).filter(task => !this.deletedTask(task));
     }
+    deletedTask(task) { return this.deletions?.some(entry => entry.projectId === task.projectId && (entry.action === 'project.delete' || entry.taskId === task.id)); }
 
     // Start a task on a host this browser has confirmed. The creating request is sealed to
     // that host and to nobody else, which is why the confirmation has to come first: an
@@ -413,7 +433,7 @@
           if (!event.verified || event.sender !== pin.writer.user || event.senderDevice !== pin.writer.device ||
               event.senderKey !== pin.writer.curve25519) { this.mailboxError = 'task_control_unauthenticated'; continue; }
           const named = event.content?.task;
-          if (named?.teamId !== this.teamId || named.runtimeId !== pin.runtimeId) continue;
+          if (named?.teamId !== this.teamId || named.runtimeId !== pin.runtimeId || this.deletedTask(named)) continue;
           try {
             let inner = null;
             const transfer = this.m.readTaskHistory(event, named, epoch);
@@ -438,6 +458,7 @@
       persistSealed(remaining);
       const pending = [];
       for (const entry of entries) {
+        if (entry.event.content?.task && this.deletedTask(entry.event.content.task)) continue;
         const task = tasks.find(candidate => candidate.id === entry.event.content?.task?.id);
         const writer = this.confirmedHost(entry.runtimeId);
         if (!task || !sameEndpoint(writer, entry.writer)) { pending.push(entry); continue; }
@@ -488,12 +509,12 @@
      * somebody has and the log still did not verify.
      */
     async catchUp(task, context) {
+      if (this.deletedTask(task)) return { error: 'task_deleted' };
       const ctx = context || {};
       const writer = ctx.writer || this.confirmedHost(task.runtimeId);
       if (!writer) return { error: 'host_unconfirmed', runtimeId: task.runtimeId };
-      // What the mailbox managed to take delivery of, kept because it explains a replay that
-      // then fails. An endpoint with no signed membership covering it cannot accept a key at
-      // all, and a replay attempted without one fails for that reason and no other.
+      // Keep delivery status for failed replay guidance. Previously imported history
+      // may still verify while new delivery is waiting on membership.
       let delivery = null;
       try { delivery = await this.receiveKeys(); }
       catch (error) { return { error: error.code || 'mailbox_unavailable' }; }
@@ -508,12 +529,9 @@
         snapshot = await reader.reconnect(this.tasks);
       } catch (error) {
         const code = error.code || 'task_integrity_failed';
-        // `task_integrity_failed` says somebody vouched for this writer and the log still did
-        // not verify. When the mailbox is waiting on membership authority, nothing was ever
-        // delivered to verify against: the keys are sitting undeliverable, not wrong. Saying
-        // "integrity" there sends a reader looking for tampering instead of for the enrolment
-        // step they are missing, and a fresh handoff cannot help - it would land in the same
-        // mailbox that cannot open it.
+        // Report the actionable enrollment prerequisite without claiming the log
+        // verified. A new handoff would wait in the same mailbox. Replay errors such
+        // as rollback remain distinct, and successful restored history is retained.
         if (code === 'task_integrity_failed' && delivery?.waiting) {
           return { error: delivery.waiting, seq: reader.seq, pending: delivery.pending };
         }
@@ -529,11 +547,13 @@
         // original integrity error until the entire ordered replay actually verifies.
         return { error: code, seq: reader.seq, historyRecovery };
       }
+      if (this.deletedTask(task)) return { error: 'task_deleted' };
       // Only a replay that verified may move the floor a later one is checked against.
       hold(this.storageKey(CHECKPOINT_ITEM, task.id), JSON.stringify(reader.checkpoint()));
       for (const receipt of snapshot.receipts || []) {
         this.receipts.set(receipt.commandId, { ...this.receipts.get(receipt.commandId), ...receipt });
       }
+      global.PlexusPilot?.observeVerified(this.userId, this.teamId, task, snapshot)?.catch(() => {});
       return {
         snapshot,
         projection: this.m.catchUp(snapshot, {
@@ -552,6 +572,7 @@
     // ---- asking a named teammate ----
 
     async sendControl(task, action, payload, { commandId } = {}) {
+      if (this.deletedTask(task)) throw mailboxFailure('task_deleted');
       if (this.recoveryTransition) throw mailboxFailure('owner_recovery_in_progress');
       const writer = await this.controlHost(task.runtimeId);
       const enrollment = await this.enrolmentState();
@@ -723,7 +744,7 @@
       const recoveryKey = api.createOwnerRecoveryKey();
       const kit = await this.endpoint.provisionOwnerRecoveryKit({ descriptor, log: prepared.log,
         expected: this.ownerRecoveryContext(), historyRooms: taskIds.map(this.m.roomFor), recoveryKey });
-      this.ownerProvision = { prepared, kit, recoveryKey, descriptor, expected: this.ownerRecoveryContext(), scope: 'owner-authority:' + this.teamId + ':' + descriptor.generation };
+      this.ownerProvision = { prepared, kit, taskIds, recoveryKey, descriptor, expected: this.ownerRecoveryContext(), scope: 'owner-authority:' + this.teamId + ':' + descriptor.generation };
       return { recoveryKey, generation: descriptor.generation, tasks: taskIds.length, replaceAuthority };
     }
 
@@ -734,7 +755,7 @@
       // This is a cryptographic restore drill, not a string comparison.
       await this.m.Endpoint.drillOwnerRecoveryKit({ ciphertext: draft.kit.ciphertext, recoveryKey: typedKey,
         expected: draft.expected });
-      await this.recovery.put(draft.scope, draft.kit.ciphertext, 'owner-authority-v1');
+      await this.recovery.put(draft.scope, draft.kit.ciphertext, 'owner-authority-v1', draft.taskIds);
       const alreadyCommitted = async () => {
         const state = await this.enrolment.state(this.teamId);
         await this.enrolment.signedHead(this.teamId, state);

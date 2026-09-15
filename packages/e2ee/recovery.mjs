@@ -31,7 +31,7 @@ export class RecoveryTransport {
     if (!response.ok) fail(typeof body.error === 'string' ? body.error : 'recovery_request_refused');
     return body;
   }
-  put(scope, ciphertext, version = '1') { return this.request('put', { scope, ciphertext, version }); }
+  put(scope, ciphertext, version = '1', taskIds) { return this.request('put', { scope, ciphertext, version, ...(taskIds ? { taskIds } : {}) }); }
   get(scope) { return this.request('get', { scope }); }
   list() { return this.request('list'); }
 }
@@ -48,7 +48,7 @@ export async function backupHistory(endpoint, transport, { scope, taskIds, recov
   if (!Array.isArray(taskIds) || !taskIds.length) fail('recovery_scope_required');
   const rooms = taskIds.map(roomFor);
   const ciphertext = await endpoint.exportRecoveryHistory(rooms, recoveryKey);
-  await transport.put(scope, ciphertext);
+  await transport.put(scope, ciphertext, '1', taskIds);
   return { scope, tasks: taskIds.length, bytes: ciphertext.length };
 }
 

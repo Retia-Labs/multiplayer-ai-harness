@@ -340,6 +340,7 @@
       // A browser that cannot hold an endpoint still works for everything unencrypted, so
       // this reports rather than blocks - but it does report.
       state.encryptedState = { state: 'unavailable', device: null, durable: false };
+      await pilot.poll(); pilot.failure('endpoint', error.code);
       renderEnrollment();
       toast('⚠ Encrypted endpoint unavailable: ' + esc(error.message || String(error)));
     }
@@ -352,6 +353,15 @@
     if (state.authorityNeeded) state.authorityEndpoints = await state.encrypted.authorityEndpoints();
     const enrolment = await state.encrypted.enrolmentState({ hosts: state.runtimes });
     state.encryptedState = { ...enrolment, fingerprint: state.encryptedIdentity && state.encryptedIdentity.fingerprint };
+    pilot.clear('endpoint');
+    for (const deletion of enrolment.deletions || []) {
+      const ids = deletion.action === 'task.delete' ? [deletion.taskId] : deletion.tasks.map(task => task.id);
+      for (const id of ids) {
+        state.encryptedSnapshots.delete(id); state.encryptedTitles.delete(id);
+        for (const [commandId, receipt] of state.encryptedReceipts) if (receipt.taskId === id) state.encryptedReceipts.delete(commandId);
+        if (state.activeThreadId === id) { state.activeThreadId = null; state.catchup = null; state.catchupSnapshot = null; el.input.value = ''; state.draftTarget = null; showFleet(); }
+      }
+    }
     try { state.encryptedTasks = await state.encrypted.list(); } catch { state.encryptedTasks = []; }
     // A private link names a task and nothing else. Everything that decides whether its
     // holder may read it has already happened by the time this runs: they signed in, the
@@ -377,12 +387,14 @@
     } else state.inbox = [];
     renderThreadList();
     await refreshEncryptedSetup();
+    await pilot.poll();
     renderAccess();
     renderInbox();
     renderRecovery();
   }
 
   function showInvite(invitation) {
+    pilot.invite(invitation.code).catch(() => {});
     const mins = Math.round((invitation.expiresAt - Date.now()) / 60000);
     const targetName = invitation.targetName || invitation.inviteeName || (invitation.invitee && invitation.invitee.name) || (invitation.target && invitation.target.name);
     el.inviteCode.value = invitation.code;
@@ -1259,6 +1271,7 @@
       return renderIfOpen();
     }
     state.catchup = out.projection;
+    pilot.catchup(task).catch(() => {});
     state.catchupSnapshot = out.snapshot;
     state.catchupTaskId = task.id;
     state.encryptedSnapshots.set(task.id, out.snapshot);
@@ -1372,7 +1385,7 @@
     view._recoveryDrillKey = state.recoveryDrill?.recoveryKey || '';
     view._ownerDrillGeneration = state.ownerRecoveryDrill?.generation || '';
     const signature = JSON.stringify([state.recoveryState, state.recoveryDrill, !!state.ownerRecoveryDrill,
-      state.ownerRecoveryReceipt?.state, state.ownerRecoveryPreview, state.localEncryptedSetup, state.encryptedState?.durable]);
+      state.ownerRecoveryReceipt?.state, state.ownerRecoveryPreview, state.localEncryptedSetup, state.encryptedState?.durable, !!state.ownerKitCiphertext]);
     if (view.dataset.signature === signature) return;
     view.dataset.signature = signature; view.innerHTML = '';
     const head = document.createElement('h3');
@@ -1549,6 +1562,7 @@
     const file = uiField('Customer-held encrypted kit file (optional)', 'owner-kit-file', { type: 'file' });
     file.input.accept = '.json,application/json';
     restore.append(file.wrap);
+    if (state.ownerKitCiphertext) restore.append(uiNode('p', 'small', 'Customer-held kit loaded for verification.'));
     const stage = uiButton(information.resumeRequired ? 'Resume inactive recovery' : 'Verify kit in an inactive endpoint', 'stage-owner-recovery', async () => {
       const client = state.encrypted;
       const status = await client.stageOwnerRecovery({ scope: choose?.input.value, ciphertext: state.ownerKitCiphertext, recoveryKey: key.input.value });
@@ -1562,6 +1576,7 @@
       stage.disabled = true;
       state.ownerKitCiphertext = file.input.files[0] ? await file.input.files[0].text() : null;
       stage.disabled = !choose && !state.ownerKitCiphertext && !information.resumeRequired;
+      renderRecovery();
     });
     restore.append(stage); section.append(restore);
     if (information.stage) {
@@ -1727,9 +1742,9 @@
     button.type = 'button'; button.dataset.action = action;
     button.addEventListener('click', async () => {
       button.disabled = true;
-      try { await handler(); } catch (error) {
+      try { await handler(); if (action.includes('recovery') || action === 'restore-history') pilot.clear('recovery'); } catch (error) {
         showEncryptedError(error);
-        const scope = button.closest('section');
+        const scope = button.closest('section, dialog');
         if (scope) { let detail = scope.querySelector('.ew-inline-error'); if (!detail) { detail = uiNode('p', 'ew-error ew-inline-error'); detail.setAttribute('role', 'alert'); scope.append(detail); } const code = error.code || error.message || 'Action unavailable'; detail.textContent = hostToolsFailureMessage(code) || code; }
       }
       finally { if (button.isConnected) button.disabled = false; }
@@ -1763,6 +1778,9 @@
   }
   function showEncryptedError(error) {
     const code = error.code || error.message || 'Action unavailable';
+    if (state.recoveryOpen) pilot.failure('recovery', code);
+    else if (/^(codex_|provider_)/.test(code)) pilot.failure('provider', code);
+    else if (state.encryptedState?.state !== 'verified') pilot.failure('endpoint', code);
     const explanation = code === 'endpoint_key_mismatch'
       ? 'The execution host keys do not match the verified fingerprint. Confirm the host identity through a trusted channel before sending more work.'
       : FRIENDLY[code] || hostToolsFailureMessage(code) || code;
@@ -1800,6 +1818,7 @@
     for (const runtime of state.runtimes) {
       const localProjects = local?.runtimeId === runtime.id ? local.projects || [] : [];
       for (const project of runtime.encryptedProjects || []) {
+        if (state.encryptedState?.membershipIdentity?.deletions?.some(entry => entry.action === 'project.delete' && entry.projectId === project.id)) continue;
         const named = localProjects.find(p => p.id === project.id);
         projects.push({ ...project, runtimeId: runtime.id, name: named?.name || project.name || 'Shared project ' + project.id.slice(-6) });
       }
@@ -2280,6 +2299,7 @@
     controls.append(outcome);
     if (!canControlTask()) for (const button of controls.querySelectorAll('button')) if (button.dataset.action !== 'copy-private-task') button.disabled = true;
     root.append(controls);
+    pilot.taskActions(root, task);
   }
   function originalRemovalAvailability() {
     const membership = state.encryptedState?.membershipIdentity;
@@ -2399,9 +2419,10 @@
     const root = $('#access-view');
     if (root.contains(document.activeElement) && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) return;
     const signature = JSON.stringify([state.encryptedState, state.authorityNeeded, state.projectAccess, state.localEncryptedSetup,
-      activeEncryptedTask()?.projectId, el.fleetProject.value, selectedRuntime()?.id]);
+      activeEncryptedTask()?.projectId, el.fleetProject.value, selectedRuntime()?.id, state.pilotSignature]);
     if (root.dataset.signature === signature) return;
     root.dataset.signature = signature; root.replaceChildren(); renderAccessContent(root, activeEncryptedTask()?.projectId || el.fleetProject.value || null);
+    pilot.renderAccess(root, activeEncryptedTask()?.projectId || el.fleetProject.value || null);
   }
   async function openAccess() {
     hideWorkViews(); $('#encrypted-workspace').classList.add('hidden'); state.accessOpen = true;
@@ -2428,7 +2449,7 @@
     try {
       await refreshEncrypted();
       if (activeEncryptedTask()) await updateEncryptedTask();
-    } catch (error) { state.catchupExplain = 'Connection unavailable. Last verified history is retained.'; renderEncryptedWorkspace(); }
+    } catch (error) { pilot.failure('endpoint', error.code); state.catchupExplain = 'Connection unavailable. Last verified history is retained.'; renderEncryptedWorkspace(); }
     finally { encryptedPolling = false; }
   }
 
@@ -2446,6 +2467,7 @@
     el.fleetProject.addEventListener('change', () => { renderThreadList(); rememberWorkspace(); });
     $('#btn-setup').addEventListener('click', () => openWorkspaceSetup());
     el.providerSelect.addEventListener('change', () => {
+      pilot.clear('provider');
       const r = state.activeThread ? state.runtimes.find((x) => x.id === state.activeThread.runtimeId) : selectedRuntime();
       renderModelPicker((r && r.providers) || []);
       if (r && r.taskProtocol !== 'encrypted-v1' && el.providerSelect.value !== 'demo') command(null, { method: 'model/list', provider: el.providerSelect.value }, r.id).then((res) => { if (res.models && res.models.length) { const cur = el.modelSelect.value; el.modelSelect.innerHTML = ''; for (const m of res.models) { const o = document.createElement('option'); o.value = m; o.textContent = m; el.modelSelect.appendChild(o); } if (res.models.includes(cur)) el.modelSelect.value = cur; } }).catch(() => {});
@@ -2557,6 +2579,8 @@
   }
 
   // ================= boot =================
+  const pilot = window.PlexusPilot.create({ state, node: uiNode, button: uiButton, section: uiSection, field: uiField,
+    runtime: selectedRuntime, projectId: () => el.fleetProject.value, refresh: refreshEncrypted, showFleet, openAccess, openRecovery });
   applyTheme();
   bind();
   $('#btn-access').addEventListener('click', () => openAccess().catch(showEncryptedError));

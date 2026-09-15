@@ -50,7 +50,7 @@ export async function sendTaskControl(endpoint, writer, { task, action, payload,
     type: epoch ? 'plexus.task.control.v2' : CONTROL_TYPE, task: routing(task), commandId, action, payload,
     ...(epoch ? { recoveryEpoch: epoch } : {})
   });
-  await endpoint.transport.deliverToDevice(writer.user, writer.device, envelope);
+  await endpoint.transport.deliverToDevice(writer.user, writer.device, envelope, task.id);
   return { commandId, state: 'submitted' };
 }
 
@@ -62,7 +62,7 @@ export async function sendTaskReceipt(endpoint, target, { task, commandId, state
     ...(epoch ? { recoveryEpoch: epoch } : {}),
     ...(result === undefined ? {} : { result }), ...(code ? { code } : {})
   });
-  await endpoint.transport.deliverToDevice(target.user, target.device, envelope);
+  await endpoint.transport.deliverToDevice(target.user, target.device, envelope, task.id);
   return { commandId, state };
 }
 

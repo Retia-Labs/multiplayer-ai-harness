@@ -43,6 +43,7 @@ class KeyExchange {
         version TEXT NOT NULL, updated_at INTEGER NOT NULL,
         PRIMARY KEY(user_id, scope));
     `);
+    if (!this.db.prepare('PRAGMA table_info(e2ee_mailbox)').all().some(column => column.name === 'task_id')) this.db.exec('ALTER TABLE e2ee_mailbox ADD COLUMN task_id TEXT');
   }
 
   // ---- who is asking ----
@@ -159,11 +160,17 @@ class KeyExchange {
     return JSON.stringify({ one_time_keys, failures });
   }
 
-  deliver(principal, user, device, envelope, now = Date.now()) {
+  deliver(principal, user, device, envelope, now = Date.now(), taskId = null) {
     if (!DEVICE.test(String(device || ''))) throw problem('invalid_endpoint');
     if (!this.visible(principal, user)) throw problem('endpoint_not_visible', 403);
-    this.db.prepare('INSERT INTO e2ee_mailbox(user_id, device_id, envelope, created_at) VALUES (?,?,?,?)')
-      .run(user, device, JSON.stringify(envelope), now);
+    if (taskId) {
+      const task = this.db.prepare('SELECT team_id,project_id,runtime_id FROM encrypted_tasks WHERE id=?').get(taskId);
+      if (!task || !principal.teams.includes(task.team_id)) throw problem('task_deleted', 410);
+      if (principal.kind === 'runtime' && task.runtime_id !== principal.id) throw problem('foreign_runtime', 403);
+      if (principal.kind === 'account' && !this.db.prepare('SELECT 1 FROM project_grants WHERE team_id=? AND project_id=? AND user_id=? AND revoked_at IS NULL').get(task.team_id, task.project_id, principal.id)) throw problem('not_a_project_participant', 403);
+    }
+    this.db.prepare('INSERT INTO e2ee_mailbox(user_id, device_id, envelope, created_at, task_id) VALUES (?,?,?,?,?)')
+      .run(user, device, JSON.stringify(envelope), now, taskId);
     return { delivered: true };
   }
 
@@ -187,13 +194,32 @@ class KeyExchange {
   // a team owner. History is shared through #8's grants and handoffs, which are somebody
   // deciding; a backup is somebody's own copy, and widening that would turn "the operator
   // cannot read your history" into "anybody on your team can restore it".
-  putRecovery(principal, scope, ciphertext, version, now = Date.now()) {
+  putRecovery(principal, scope, ciphertext, version, now = Date.now(), taskIds) {
     if (!/^[A-Za-z0-9_:.-]{1,120}$/.test(String(scope || ''))) throw problem('invalid_recovery_scope');
     if (typeof ciphertext !== 'string' || !ciphertext.length) throw problem('invalid_recovery_material');
     if (ciphertext.length > 4 * 1024 * 1024) throw problem('record_too_large', 413);
-    this.db.prepare(`INSERT INTO e2ee_recovery VALUES (?,?,?,?,?)
-      ON CONFLICT(user_id, scope) DO UPDATE SET ciphertext=excluded.ciphertext, version=excluded.version, updated_at=excluded.updated_at`)
-      .run(principal.id, scope, ciphertext, String(version || '1'), now);
+    if (this.store.retention) {
+      if (this.db.prepare('SELECT 1 FROM retired_recovery WHERE user_id=? AND scope=?').get(principal.id, scope)) throw problem('recovery_archive_deleted', 410);
+      if (taskIds !== undefined) {
+        if (!Array.isArray(taskIds) || taskIds.length > 10000 || new Set(taskIds).size !== taskIds.length) throw problem('invalid_recovery_scope');
+        for (const id of taskIds) {
+          const task = this.db.prepare('SELECT team_id,project_id FROM encrypted_tasks WHERE id=?').get(id);
+          if (!task || !this.store.membership(task.team_id, principal.id) ||
+              !this.db.prepare('SELECT 1 FROM project_grants WHERE team_id=? AND project_id=? AND user_id=? AND revoked_at IS NULL').get(task.team_id, task.project_id, principal.id)) throw problem('recovery_task_unavailable', 403);
+        }
+      }
+    }
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare(`INSERT INTO e2ee_recovery VALUES (?,?,?,?,?)
+        ON CONFLICT(user_id, scope) DO UPDATE SET ciphertext=excluded.ciphertext, version=excluded.version, updated_at=excluded.updated_at`)
+        .run(principal.id, scope, ciphertext, String(version || '1'), now);
+      if (this.store.retention) {
+        this.db.prepare('DELETE FROM recovery_task_index WHERE user_id=? AND scope=?').run(principal.id, scope);
+        for (const id of taskIds || []) this.db.prepare('INSERT INTO recovery_task_index VALUES (?,?,?)').run(principal.id, scope, id);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     return { stored: true, scope, bytes: ciphertext.length };
   }
 
@@ -244,12 +270,12 @@ class KeyExchange {
         // An execution host has no customer recovery material and never will: what it holds
         // is a log it wrote, not a person's history to restore.
         if (principal.kind !== 'account') throw problem('client_required', 403);
-        if (value.op === 'put') return reply(200, this.putRecovery(principal, value.scope, value.ciphertext, value.version));
+        if (value.op === 'put') return reply(200, this.putRecovery(this.principal(req), value.scope, value.ciphertext, value.version, Date.now(), value.taskIds));
         if (value.op === 'get') return reply(200, this.getRecovery(principal, value.scope));
         if (value.op === 'list') return reply(200, { backups: this.listRecovery(principal) });
         throw problem('unsupported_recovery_request');
       }
-      if (route === 'deliver') return reply(200, this.deliver(principal, String(value.user || ''), String(value.device || ''), value.envelope));
+      if (route === 'deliver') return reply(200, this.deliver(this.principal(req), String(value.user || ''), String(value.device || ''), value.envelope, Date.now(), value.taskId || null));
       if (route === 'drain') {
         if (!DEVICE.test(String(value.device || ''))) throw problem('invalid_endpoint');
         return reply(200, this.drain(principal, value.device));

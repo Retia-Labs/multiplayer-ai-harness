@@ -35,7 +35,15 @@ function writeOwnerFileAtomic(file, contents) {
   const temp = `${file}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   try {
     fs.writeFileSync(temp, contents, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
-    fs.renameSync(temp, file);
+    // Windows scanners/readers can briefly lock the replaced status file. Keep
+    // the old complete file until atomic replacement succeeds; never unlink it.
+    for (let attempt = 0; ; attempt++) {
+      try { fs.renameSync(temp, file); break; }
+      catch (error) {
+        if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 20) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      }
+    }
     fs.chmodSync(file, 0o600);
   } catch (err) {
     try { fs.unlinkSync(temp); } catch {}
@@ -83,10 +91,11 @@ class Runtime {
       });
     }
     const mapped = this.store.getKv('encryptedProjects', {});
+    const offboarded = new Set(this.store.getKv('offboardedEncryptedProjects', []));
     this.encryptedProjects = new Map();
     for (const dir of this.projects.keys()) {
       mapped[dir] ||= 'ep_' + crypto.randomBytes(16).toString('hex');
-      this.encryptedProjects.set(mapped[dir], dir);
+      if (!offboarded.has(mapped[dir])) this.encryptedProjects.set(mapped[dir], dir);
     }
     this.store.setKv('encryptedProjects', mapped);
     this.encryptionAuthority = encryptionAuthority;

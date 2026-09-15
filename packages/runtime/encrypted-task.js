@@ -12,7 +12,21 @@ class EncryptedTaskState {
     this.db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS encrypted_task_state(id TEXT PRIMARY KEY,state TEXT NOT NULL)');
   }
   load(id) {const r=this.db.prepare('SELECT state FROM encrypted_task_state WHERE id=?').get(id);return r?JSON.parse(r.state):null;}
-  save(id,state) {this.db.prepare('INSERT INTO encrypted_task_state VALUES (?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state').run(id,JSON.stringify(state));}
+  save(id,state) {
+    const taskId = id.split(':').find(part => TASK_ID.test(part));
+    if (taskId && id !== 'deleted:' + taskId && this.load('deleted:' + taskId)) throw Object.assign(new Error('task_deleted'), { code: 'task_deleted' });
+    this.db.prepare('INSERT INTO encrypted_task_state VALUES (?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state').run(id,JSON.stringify(state));
+  }
+  forgetTask(taskId) {
+    if (!TASK_ID.test(taskId)) throw new Error('invalid_task');
+    this.db.exec('PRAGMA secure_delete=ON');
+    for (const row of this.db.prepare('SELECT id FROM encrypted_task_state').all()) {
+      if (row.id !== 'deleted:' + taskId && (row.id === taskId || row.id.endsWith(':' + taskId) || row.id.includes(':' + taskId + ':'))) {
+        this.db.prepare('DELETE FROM encrypted_task_state WHERE id=?').run(row.id);
+      }
+    }
+    this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  }
   // Task checkpoints predate authority replacement. Enumerate those durable IDs,
   // so a restarted host can rotate every known room even when the relay omits it.
   taskIds() {return this.db.prepare('SELECT id FROM encrypted_task_state').all().map(row=>row.id).filter(id=>TASK_ID.test(id));}

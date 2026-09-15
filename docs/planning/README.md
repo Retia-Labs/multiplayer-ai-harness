@@ -13,6 +13,7 @@ The spec supersedes earlier drafts where they differ. User interviews and a mark
 
 ## Decisions and supporting evidence
 
+- [Pilot operations](../operations/pilot-operations.md) and [implementation verification](../proofs/pilot-operations.md) for issues #21–#24.
 - [Discovery record](product-discovery.md).
 - [Domain glossary](../../CONTEXT.md) and [architectural decisions](../adr/).
 - [Product-validity assessment](product-validity-assessment.md).

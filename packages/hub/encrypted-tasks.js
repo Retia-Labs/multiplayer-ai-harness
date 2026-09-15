@@ -20,6 +20,7 @@ class EncryptedTasks {
       !TASK_ID.test(value.id) || !PROJECT_ID.test(value.projectId) || typeof value.teamId!=='string' || typeof value.runtimeId!=='string' ||
       !validRequest(value.request,matrixUser(user.id))) throw problem('invalid_encrypted_task');
     if (!this.store.membership(value.teamId,user.id)) throw problem('not_a_member',403);
+    if (this.store.retention?.deleted(value.teamId,value.projectId,value.id)) throw problem('task_deleted',410);
     const pairing=this.store.runtimePairing(value.runtimeId);
     if (!pairing || pairing.teamId!==value.teamId) throw problem('foreign_runtime',403);
     if (this.store.getRuntime(value.runtimeId)?.taskProtocol!=='encrypted-v1') throw problem('encrypted_runtime_required',409);
@@ -36,6 +37,7 @@ class EncryptedTasks {
     return {task,duplicate:false};
   }
   append(task,record) {
+    if (this.store.retention?.deleted(task.teamId,task.projectId,task.id) || !this.get(task.id)) throw problem('task_deleted',410);
     if (!validRecord(record,task)) throw problem('invalid_encrypted_record');
     const encoded=canonical(record);
     this.db.exec('BEGIN IMMEDIATE');
