@@ -1972,7 +1972,11 @@
     if (id !== state.activeThreadId) return;
     if (result.error) {
       state.catchupExplain = result.error === 'host_unconfirmed' ? 'Verify the execution host before opening this history.'
-        : 'History unavailable: ' + result.error + '. Previously verified records remain available.';
+        // Not an integrity problem and not something a retry fixes: this endpoint is not yet
+        // covered by a signed membership, so the host's keys cannot be delivered to it at all.
+        : result.error === 'membership_authority_required'
+          ? 'This device is not covered by a signed team membership yet, so the execution host cannot deliver its keys here. Ask a teammate who already holds membership authority to publish one that includes this device.'
+          : 'History unavailable: ' + result.error + '. Previously verified records remain available.';
       if (result.historyRecovery?.state === 'host_offline') state.catchupExplain += ' Reconnect the execution host to request another authenticated history transfer.';
       else if (result.historyRecovery?.state === 'requested') state.catchupExplain += ' A fresh history transfer has been requested; the task remains unavailable until verification succeeds.';
       else if (result.historyRecovery?.state === 'throttled') state.catchupExplain += ' History delivery retries are briefly paused; the task remains unavailable until verification succeeds.';
