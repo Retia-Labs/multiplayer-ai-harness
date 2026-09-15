@@ -53,20 +53,22 @@
     <aside id="sidebar">
       <div class="sidebar-top">
         <div class="brand"><img class="on-dark" src="brand/plexus-lockup-primary.svg" alt="Plexus" /><img class="on-light" src="brand/plexus-lockup-dark.svg" alt="Plexus" /></div>
-        <button id="btn-new-thread" class="btn-icon" title="New thread (⌘N)">
+        <button id="btn-new-thread" class="btn-icon" title="New task (⌘N)">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg>
         </button>
       </div>
       <nav class="sidebar-nav">
         <button id="nav-fleet" class="nav-btn active">
-          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 5h8v6H3zm10 0h8v6h-8zM3 13h8v6H3zm10 0h8v6h-8z"/></svg> Fleet
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 5h8v6H3zm10 0h8v6h-8zM3 13h8v6H3zm10 0h8v6h-8z"/></svg> Workspace
         </button>
       </nav>
+      <div class="rail-label">Projects</div><nav id="project-list" aria-label="Projects"></nav>
+      <div class="rail-label">Tasks</div>
       <div class="sidebar-search">
         <svg viewBox="0 0 24 24" width="13" height="13"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14"/></svg>
-        <input id="thread-search" type="text" placeholder="Search threads" spellcheck="false" />
+        <input id="thread-search" type="text" placeholder="Find a task" spellcheck="false" />
       </div>
-      <button id="btn-access" class="nav-btn">Team &amp; access</button><div id="thread-list" class="thread-list"></div>
+      <div id="thread-list" class="thread-list"></div><button id="btn-setup" class="nav-btn">Setup</button><button id="btn-access" class="nav-btn">Team &amp; access</button>
       <div class="sidebar-footer">
         <span id="me" class="me"></span>
         <span id="enrollment-badge" class="enroll-badge hidden">Encryption pending</span>
@@ -82,7 +84,7 @@
     <main id="main">
       <header id="topbar">
         <div class="topbar-left">
-          <button id="btn-navigation" class="chip-btn mobile-only" aria-label="Open navigation">☰</button><span id="topbar-title" class="topbar-title">Fleet</span>
+          <button id="btn-navigation" class="chip-btn mobile-only" aria-label="Open navigation">☰</button><span id="topbar-title" class="topbar-title">Workspace</span>
           <span id="topbar-branch" class="chip mono hidden"></span>
           <span id="topbar-worktree" class="wt-badge hidden">worktree</span>
           <span id="topbar-runtime" class="chip hidden"></span>
@@ -102,27 +104,31 @@
       </header>
 
       <!-- Fleet / home -->
-      <section id="fleet-view">
+      <section id="fleet-view" data-template="shell setup" aria-label="Project workspace">
         <div class="fleet-wrap">
           <div class="fleet-head">
-            <h1>What are we coding next?</h1>
-            <p class="fleet-sub">Every agent in the team, live. Pick a runtime and project to start a thread — or jump into someone else's.</p>
+            <p id="workspace-eyebrow" class="small">Your shared workspace</p>
+            <h1 id="workspace-title">Make room for the next idea.</h1>
+            <p id="workspace-description" class="fleet-sub">Choose a project. Start a task. Bring a teammate into the work.</p>
           </div>
+          <div id="setup-progress" aria-label="Setup progress"></div>
+          <section id="project-task-feed" aria-label="Project tasks"></section>
           <div class="fleet-composer">
             <div class="fleet-controls">
-              <div class="select-wrap"><select id="fleet-runtime" title="Runtime"></select></div>
+              <div class="select-wrap"><select id="fleet-runtime" title="Execution host"></select></div>
               <div class="select-wrap"><select id="fleet-project" title="Project"></select></div>
               <button id="btn-add-project" class="chip-btn hidden" title="Register a folder on this runtime">+ Project</button>
               <label class="wt-toggle" title="Run in an isolated git worktree"><input id="fleet-worktree" type="checkbox" /><span>Isolated worktree</span></label>
             </div>
             <div id="composer-host-home"></div>
-            <div class="suggestions">
+            <div class="suggestions" aria-label="Task suggestions">
               <button class="suggestion" data-prompt="Explore this codebase and explain how it's structured">Explore the codebase</button>
-              <button class="suggestion" data-prompt="Delete the build directory">Delete the build dir (approval demo)</button>
               <button class="suggestion" data-prompt="Create a NOTES.md summarizing this repo">Create NOTES.md</button>
               <button class="suggestion" data-prompt="Show the diff">Show the diff</button>
             </div>
           </div>
+          <details id="workspace-setup" open>
+          <summary>Setup &amp; teammates <span class="small">Connection, provider and access</span></summary>
           <div class="fleet-section">
             <div class="fleet-section-head">Team</div>
             <div class="team-admin">
@@ -146,9 +152,10 @@
             </div>
           </div>
           <div class="fleet-section">
-            <div class="fleet-section-head">Runtimes</div>
+            <div class="fleet-section-head">Execution hosts</div>
             <div id="encrypted-setup" class="ew-setup"></div><div id="runtime-cards" class="runtime-cards"></div>
           </div>
+          </details>
           <div class="fleet-section">
             <div class="fleet-section-head">Needs attention</div>
             <div id="attention-list" class="attention-list"></div>

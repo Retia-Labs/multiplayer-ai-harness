@@ -72,3 +72,13 @@ Subsequent tickets use the same form with the relevant screen, contract IDs, beh
 Start a fresh task for a small existing-screen change. Before it edits, verify that its plan identifies the correct template, source capture, shared components, and affected states. Afterward, inspect its diff and rendered evidence. If it invents a design or skips visual verification, fix instruction discovery or the workflow before scaling to parallel feature work.
 
 Keep one owner per shared module when agents work in parallel. Workers own named screen files and request shared changes through that owner. This prevents several agents from independently adding almost-identical buttons, status labels, or spacing variants.
+
+## Project-centered alpha extension — 2026-09-15
+
+Issues #65/#66 extend the accepted identity with the founder-approved Mutex-inspired interaction structure. Production uses a project rail, a project-filtered task list/feed and one shared task composer. On desktop above 1100px, the selected encrypted task places its conversation on the left of recorded results. At 1100px and below, the existing results view and explicit discussion drawer remain; at 760px and below, navigation remains a drawer. No general chat, automatic push/sync, preview orchestration or project-wide scheduler is introduced.
+
+The `workspace` screen reuses `shell`; `setup` reuses `shell` + `setup`; selected work preserves all `review`/`decision` slots. Setup progress derives team, host verification/connectivity, selected project and advertised configured Codex state. A local login is not a configured execution capability. Retry and cancellation retain existing setup. A browser directs host-local steps to the desktop owner.
+
+Project/task navigation remembers only opaque encrypted IDs in session storage scoped to account and team, validates them against currently available objects, and restores the selected task through authenticated replay. A draft cannot be sent after changing its project or host. Home-feed status is labeled as last read; selecting a task refreshes its verified history. Host connectivity is shown separately from task state and responsibility.
+
+The original captures under `design/qa/` remain unchanged. Additional production evidence lives in `design/qa/alpha/` and the current validation record is `docs/proofs/project-workspace-alpha.md` at repository root. These captures document the intentional layout extension, not blanket approval of all product states.

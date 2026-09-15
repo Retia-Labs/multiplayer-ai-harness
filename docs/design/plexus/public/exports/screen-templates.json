@@ -147,5 +147,41 @@
     { "id": "setup", "name": "Setup", "templates": ["shell", "setup"] },
     { "id": "access", "name": "Access", "templates": ["shell", "setup"] },
     { "id": "templates", "name": "Templates", "templates": ["shell"] }
+  ],
+  "extensions": [
+    {
+      "id": "project-centered-alpha",
+      "screens": [
+        "workspace",
+        "setup",
+        "review"
+      ],
+      "templates": [
+        "shell",
+        "setup",
+        "review",
+        "decision"
+      ],
+      "desktop": "Project navigation and task feed; selected task conversation beside recorded results above 1100px.",
+      "narrow": "Existing results view, explicit discussion drawer and mobile navigation drawer.",
+      "states": [
+        "project-empty",
+        "project-selected",
+        "draft-project-mismatch",
+        "selection-restored",
+        "host-unavailable",
+        "setup-pending",
+        "setup-cancelled",
+        "setup-retry",
+        "provider-unconfigured",
+        "provider-configured"
+      ],
+      "semantics": [
+        "Remember only opaque task/project/host identifiers scoped to account and team; validate current access before replay.",
+        "Never retarget an unsent draft when the selected project or host changes.",
+        "Local provider login does not establish configured execution readiness.",
+        "Home-feed status is last-read history; host connectivity is independent."
+      ]
+    }
   ]
 }
