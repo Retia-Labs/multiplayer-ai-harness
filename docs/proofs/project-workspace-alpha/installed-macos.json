@@ -1,0 +1,49 @@
+{
+  "testedCommit": "61e162c01cbe3b63374d8932379c6d78c89aacd8",
+  "harnessCommit": "61e162c01cbe3b63374d8932379c6d78c89aacd8",
+  "workingTreeDirty": true,
+  "executionProvider": "codex-host-tools",
+  "reusedBuild": false,
+  "artifactSource": "built-current-worktree",
+  "workflow": null,
+  "ranAt": "2026-09-15T13:55:49.441Z",
+  "platform": "darwin",
+  "arch": "arm64",
+  "os": "macOS 26.5.1",
+  "electron": "44.2.0",
+  "installer": {
+    "file": "Plexus-0.1.2-mac-arm64.dmg",
+    "bytes": 130625785,
+    "sha256": "2a8888b67e6f3f2121c780008d1bdc0cb228da310ec7d5fd4a0f2051daa04eed"
+  },
+  "installedTo": "/var/folders/5s/4wfm7vg971b23hxjfpjbxjb00000gn/T/plexus-install-proof/Plexus.app/Contents/MacOS/Plexus",
+  "systemNode": "present on the machine, excluded from the launched app: PATH=/usr/bin:/bin",
+  "results": [
+    {
+      "name": "the packaged installer builds for this platform and architecture",
+      "status": "pass",
+      "detail": "Plexus-0.1.2-mac-arm64.dmg"
+    },
+    {
+      "name": "installing outside a checkout produces a runnable app",
+      "status": "pass",
+      "detail": "/var/folders/5s/4wfm7vg971b23hxjfpjbxjb00000gn/T/plexus-install-proof/Plexus.app/Contents/MacOS/Plexus"
+    },
+    {
+      "name": "the installed copy starts its services, selects a project and runs an agent with no Node on PATH",
+      "status": "pass"
+    },
+    {
+      "name": "the installed copy reports readiness, holds a failed start and recovers on retry",
+      "status": "pass"
+    },
+    {
+      "name": "the installed copy keeps its host running when the window closes, and quits explicitly",
+      "status": "pass"
+    },
+    {
+      "name": "uninstalling removes the installed copy",
+      "status": "pass"
+    }
+  ]
+}

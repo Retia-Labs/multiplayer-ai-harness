@@ -1,0 +1,18 @@
+{
+  "status": "pass",
+  "ranAt": "2026-09-15T13:55:18.377Z",
+  "packaged": true,
+  "provider": "codex-cli",
+  "providerStatus": {
+    "supportedVersion": "0.153.4",
+    "platformSupported": true,
+    "available": true,
+    "version": "0.153.4",
+    "authMode": "chatgpt"
+  },
+  "rendererErrors": [],
+  "separateApprovalConsent": true,
+  "actualFileVerified": true,
+  "providerTurn": "completed",
+  "exitedWithHiddenBroker": true
+}
