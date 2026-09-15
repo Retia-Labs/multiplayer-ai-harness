@@ -1,0 +1,13 @@
+{
+  "checks": [
+    "onboarding identifies a missing host; inspected download contains only allowlisted diagnostics and no automatic measurement",
+    "a successful solo task is measured without activating anyone",
+    "passive reading does not activate; actual peer execution activates both humans and reload deduplicates content-free reports",
+    "customer-visible paid and revoked seats leave membership, keys, project access and approval grants unchanged",
+    "owner deletion works while the host is offline, removes teammate navigation and survives service restore",
+    "reconnected production host erases task state, preserves a durable deletion fence and reports a signed receipt while retaining project files",
+    "project offboarding cancels an active approval, revokes grants and preserves the retired mapping across host reconstruction"
+  ],
+  "errors": [],
+  "provider": "deterministic demo through production Runtime"
+}

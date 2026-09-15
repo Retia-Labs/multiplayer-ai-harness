@@ -21,13 +21,19 @@ const pass = name => { checks.push(name); console.log('PASS ' + name); };
 const capture = async (page, name, selector = '#pilot-setup', mobile = false) => {
   await page.setViewportSize(mobile ? { width: 390, height: 844 } : { width: 1487, height: 1058 });
   await page.emulateMedia({ reducedMotion: 'reduce' }); await page.evaluate(() => document.fonts.ready);
+  // Viewport media queries can settle after setViewportSize resolves. Measure
+  // the rendered frame, not the old desktop bounds during a mobile resize.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await page.locator(selector).evaluate(node => node.scrollIntoView({ block: 'start' }));
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   if (selector === '.pilot-dialog') {
-    assert.equal(await page.locator(selector).evaluate(node => {
+    const bounds = await page.locator(selector).evaluate(node => {
       const box = node.getBoundingClientRect();
-      return Math.abs((box.left + box.right) / 2 - innerWidth / 2) <= 1 && box.top >= 0 && box.bottom <= innerHeight;
-    }), true, 'dialog is centered and fits the viewport');
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: innerWidth, height: innerHeight };
+    });
+    await page.screenshot({ path: path.join(out, name + '.png') });
+    assert.ok(Math.abs((bounds.left + bounds.right) / 2 - bounds.width / 2) <= 1 && bounds.top >= 0 && bounds.bottom <= bounds.height,
+      'dialog is centered and fits the viewport: ' + JSON.stringify(bounds));
   }
   await page.screenshot({ path: path.join(out, name + '.png') });
 };
