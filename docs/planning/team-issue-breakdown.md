@@ -2,7 +2,7 @@
 
 Parent: [Implementation spec #1](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1). All 28 child issues are published, covering the spec's 48 user stories.
 
-There are 22 `ready-for-agent` issues and 6 `ready-for-human` issues. Readiness indicates the kind of work; an issue is available to start only when its blockers are complete. Suggested lanes are responsibilities, not assignments to named founders. Interviews and market-validation exercises are not blockers.
+The original publication contained 22 `ready-for-agent` issues and 6 `ready-for-human` issues. As of 2026-09-15, foundation issues #2–#18 are closed; #19–#29 remain open. Six additional alpha/beta issues are indexed in [the execution plan](alpha-beta-execution.md). Readiness indicates the kind of work; an issue is available to start only when its blockers are complete. Suggested lanes are responsibilities, not assignments to named founders. Interviews and market-validation exercises are not blockers.
 
 ## Numbered issue breakdown
 
@@ -63,21 +63,20 @@ There are 22 `ready-for-agent` issues and 6 `ready-for-human` issues. Readiness 
 28. **[P28 / #29 — Release Cursor through the encrypted team workflow](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/29)** — AFK; blocked by: [#25](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/25), [#28](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/28); parent stories: 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 34, 35; lane: Runtime/providers. [Local body](team-issues/p28.md).
 
 
-## First work to pick up
+## Current work order — 2026-09-15
 
-- [Prove real Codex shared control and supported authentication — #2](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/2) (HITL; Runtime/providers).
+1. Reconcile PRs #61/#63/#64 against current main; see [the source audit](../proofs/alpha-beta-pr-reconciliation.md).
+2. Implement [#65 — Project workspace](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/65) and [#66 — First-run setup](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/66).
+3. Complete [#67 — Join and correct](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/67) and [#68 — Approve and review](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/68), then [#69 — Two-machine alpha](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/69).
+4. Finish Windows #19, signed distribution #20, pilot operations #21–#24 and [#70 — Hosted service](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/70); #25 remains the external release gate. Seats must be ready before charging, not before free internal alpha.
+5. Keep Claude/Cursor #26–#29 in follow-on releases.
 
-- [Prove encrypted endpoint enrollment, control and customer recovery — #3](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/3) (HITL; Collaboration/encryption).
-
-- [Install desktop bootstrap builds on macOS and Windows — #4](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/4) (AFK; Desktop/product).
-
-- [Create a private team and pair an explicitly shared execution host — #5](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/5) (AFK; Collaboration/encryption).
-
+Read live native blockers before claiming work. Setup #66 owns first-run completion; #21 owns support, disclosures and diagnostics. Use the same implementation rather than overlapping tickets. Closed foundation issues retain their evidence; new defects receive linked follow-ups.
 
 ## Dependencies and publication record
 
-All 59 blocking edges are stored as native GitHub issue dependencies and as readable links in each issue body. Claude and Cursor release branches do not depend on one another. Paid-seat operations can proceed independently after team setup.
+The original 59 blocking edges were stored as native GitHub issue dependencies and as readable links in each issue body. Claude and Cursor release branches do not depend on one another. Paid-seat operations can proceed independently after team setup.
 
-The [manifest](team-issues/manifest.json) maps stable P-identifiers to GitHub numbers and URLs. Local issue bodies match their published copies. The spec parent was not edited or closed.
+The [manifest](team-issues/manifest.json) maps stable P-identifiers to GitHub numbers and URLs. The original manifest retains its publication history. The [alpha/beta manifest](alpha-beta-manifest.json) records the added issues; the spec and affected open issue bodies were updated for the approved sequencing. The spec parent remains open.
 
 Start signing-account provisioning alongside desktop bootstrap work, rather than waiting for the distribution issue to become unblocked.

@@ -2,6 +2,8 @@
 
 ## Current source of truth
 
+- [Alpha/beta execution plan](alpha-beta-execution.md), with the approved project-centered UX, internal alpha and external beta gates, and [new issue manifest](alpha-beta-manifest.json).
+- [PR reconciliation](../proofs/alpha-beta-pr-reconciliation.md), identifying existing, superseded and outstanding changes in PRs #61, #63 and #64.
 - [Implementation specification](product-spec.md), published as [GitHub issue #1](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/1).
 - [Team issue breakdown](team-issue-breakdown.md), with work lanes, story coverage and dependencies.
 - [Issue manifest](team-issues/manifest.json), with the publication mapping and complete local issue bodies in the same directory.
