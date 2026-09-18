@@ -256,6 +256,9 @@ class Hub {
       case TeamOps.TEAM_MEMBERS:
         this.requireMember(ctx, msg.teamId);
         return this.send(ws, { type: 'users', users: this.store.listMembers(msg.teamId), ref: msg.id });
+      case TeamOps.INVITE_LIST:
+        this.requireOwner(ctx, msg.teamId);
+        return this.send(ws, { type: 'invitations', teamId: msg.teamId, invitations: this.store.listInvitations(msg.teamId), ref: msg.id });
       case TeamOps.INVITE_CREATE: {
         this.requireOwner(ctx, msg.teamId);
         const invitee = this.auth ? this.auth.invitee(msg.inviteeEmail) : this.store.userById(String(msg.inviteeUserId || ''));

@@ -282,6 +282,7 @@
   function enterTeam() {
     state.approvers = new Set();
     state.users = [];
+    $('#invitation-list').replaceChildren();
     renderMembers();
     el.teamGate.classList.add('hidden');
     el.app.classList.remove('hidden');
@@ -393,8 +394,34 @@
     renderRecovery();
   }
 
+  function refreshInvitations() {
+    const owner = state.membership?.role === 'owner';
+    $('#team-invitations').classList.toggle('hidden', !owner);
+    if (owner && state.connected) send({ type: 'team/invite/list', teamId: state.teamId });
+  }
+
+  function renderInvitations(invitations) {
+    const root = $('#invitation-list'); root.replaceChildren();
+    if (!invitations.some(invitation => invitation.code === el.inviteCode.value && invitation.status === 'pending')) el.inviteRow.classList.add('hidden');
+    if (!invitations.length) root.append(uiNode('p', 'small', 'No invitations yet.'));
+    for (const invitation of invitations) {
+      const row = uiNode('div', 'team-admin-row'); row.dataset.invitationStatus = invitation.status;
+      row.append(uiNode('span', null, invitation.invitee.name), uiNode('span', 'small', invitation.role + ' · ' + invitation.status));
+      if (invitation.status === 'pending') {
+        const code = uiNode('input', 'code-field'); code.readOnly = true; code.value = invitation.code;
+        code.setAttribute('aria-label', 'Invitation for ' + invitation.invitee.name);
+        row.append(code, uiButton('Revoke invitation', 'revoke-invitation', () => {
+          send({ type: 'team/invite/revoke', code: invitation.code }); refreshInvitations();
+        }));
+        row.append(uiNode('span', 'small', 'Expires ' + new Date(invitation.expiresAt).toLocaleString()));
+      }
+      root.append(row);
+    }
+  }
+
   function showInvite(invitation) {
     pilot.invite(invitation.code).catch(() => {});
+    refreshInvitations();
     const mins = Math.round((invitation.expiresAt - Date.now()) / 60000);
     const targetName = invitation.targetName || invitation.inviteeName || (invitation.invitee && invitation.invitee.name) || (invitation.target && invitation.target.name);
     el.inviteCode.value = invitation.code;
@@ -411,6 +438,7 @@
     el.pairCode.disabled = !owner;
     el.pairBtn.disabled = !owner;
     el.teamAdminNotice.classList.toggle('hidden', !!owner);
+    $('#team-invitations').classList.toggle('hidden', !owner);
     for (const member of state.users) {
       const row = document.createElement('div');
       row.className = 'team-admin-row';
@@ -493,6 +521,9 @@
         enterTeam();
         break;
       case 'teams': state.teams = m.teams; break;
+      case 'invitations':
+        if (m.teamId === state.teamId && state.membership?.role === 'owner') renderInvitations(m.invitations);
+        break;
       case 'invitation':
         showInvite(m.invitation);
         break;
@@ -523,7 +554,7 @@
         refreshApprovalActions();
         break;
       case 'thread.updated': onThreadUpdated(m.thread); break;
-      case 'users': state.users = m.users; renderMembers(); renderEncryptedWorkspace(); if (!el.assignModal.classList.contains('hidden')) fillAssignUsers(); break;
+      case 'users': state.users = m.users; renderMembers(); refreshInvitations(); renderEncryptedWorkspace(); if (!el.assignModal.classList.contains('hidden')) fillAssignUsers(); break;
       case 'workspace.activity': {
         const prevOverlaps = state.activity.overlaps.map((o) => o.projectKey + '::' + o.path);
         state.activity = { threads: m.threads || [], overlaps: m.overlaps || [] };
@@ -2586,6 +2617,7 @@
       el.gateError.classList.add('hidden');
       send({ type: 'team/invite/accept', code });
     });
+    $('#btn-refresh-invitations').addEventListener('click', refreshInvitations);
     el.inviteBtn.addEventListener('click', () => {
       const inviteeUserId = el.inviteeUserId.value.trim();
       if (!inviteeUserId) return toast(state.authMode === 'github' ? 'Enter your teammate’s verified GitHub email.' : 'Enter your teammate’s account ID.');

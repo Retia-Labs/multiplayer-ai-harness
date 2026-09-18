@@ -71,6 +71,32 @@ const { DesktopAccount } = require('../apps/desktop/account');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     console.log('PASS hosted settings expose verified invitation email; absent host leaves provider setup pending');
 
+    const owner = await page.evaluate(() => ({ userId: window.__plexus.state.me.id, teamId: window.__plexus.state.teamId }));
+    const guest = hub.store.createAccount('Invitation fixture');
+    const pending = hub.store.createInvitation(owner.teamId, owner.userId, guest.id);
+    const acceptedInvite = hub.store.createInvitation(owner.teamId, owner.userId, guest.id);
+    hub.store.redeemInvitation(acceptedInvite.code, guest.id);
+    hub.store.createInvitation(owner.teamId, owner.userId, guest.id, 'member', -1);
+    await page.setViewportSize({ width: 1487, height: 1058 });
+    await page.locator('#btn-refresh-invitations').click();
+    await page.locator('[data-invitation-status="pending"]').waitFor();
+    assert.equal(await page.locator('[data-invitation-status="accepted"]').count(), 1);
+    assert.equal(await page.locator('[data-invitation-status="expired"]').count(), 1);
+    await page.locator('#team-invitations').evaluate(node => node.scrollIntoView({ block: 'start' }));
+    await page.screenshot({ path: path.join(out, 'invitations-desktop.png') });
+    await page.locator('[data-action="revoke-invitation"]').click();
+    await page.locator('[data-invitation-status="revoked"]').waitFor();
+    assert.equal(hub.store.redeemInvitation(pending.code, guest.id).reason, 'invitation_revoked');
+    await page.goto(origin);
+    await page.waitForFunction(() => window.__plexus?.state.encryptedIdentity);
+    await page.locator('#nav-fleet').click();
+    await page.locator('[data-invitation-status="revoked"]').waitFor();
+    assert.equal(await page.locator('[data-action="revoke-invitation"]').count(), 0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#team-invitations').evaluate(node => node.scrollIntoView({ block: 'start' }));
+    await page.locator('#team-invitations').screenshot({ path: path.join(out, 'invitations-mobile.png') });
+    console.log('PASS invitation receipts survive reload; revoke UI changes server state without altering accepted receipts');
+
     // Exercise the actual desktop account exchange through its native I/O seams.
     nativeContext = await request.newContext({ ignoreHTTPSErrors: true });
     const nativeRequest = async (url, options = {}) => {

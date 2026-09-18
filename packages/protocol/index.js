@@ -101,6 +101,7 @@ const TeamOps = {
   TEAM_LIST: 'team/list',               // {} → { teams }
   TEAM_MEMBERS: 'team/members',         // { teamId } → { members }
   INVITE_CREATE: 'team/invite',         // { teamId, inviteeUserId, role?, ttlMs? } → { code, invitee, expiresAt } (owner only)
+  INVITE_LIST: 'team/invite/list',      // { teamId } → { invitations } (owner only)
   INVITE_ACCEPT: 'team/invite/accept',  // { code } → { team, membership }
   INVITE_REVOKE: 'team/invite/revoke',  // { code } → { ok }
   MEMBER_REMOVE: 'team/member/remove',  // { teamId, userId } → { ok } (owner only)

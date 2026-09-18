@@ -152,6 +152,11 @@
                 <span id="invite-expiry" class="small"></span>
               </div>
               <div id="team-admin-notice" class="small hidden">Only the team owner can invite teammates, remove members, or pair execution hosts.</div>
+              <section id="team-invitations" class="hidden" aria-label="Team invitations">
+                <div class="team-admin-row"><span>Invitations</span><button id="btn-refresh-invitations" class="mini-btn">Refresh invitations</button></div>
+                <p class="small">Status at last refresh. Accepting an invitation does not grant device verification or project access.</p>
+                <div id="invitation-list" class="team-admin" aria-live="polite"></div>
+              </section>
               <div class="small">Members</div>
               <div id="team-members" class="team-admin" aria-label="Team members"></div>
               <div class="team-admin-row">
