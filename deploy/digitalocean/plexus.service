@@ -1,0 +1,24 @@
+[Unit]
+Description=Plexus hosted collaboration relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=plexus
+Group=plexus
+WorkingDirectory=/opt/plexus/current
+EnvironmentFile=/etc/plexus/relay.env
+ExecStart=/usr/local/bin/node packages/hub/server.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/plexus
+
+[Install]
+WantedBy=multi-user.target
