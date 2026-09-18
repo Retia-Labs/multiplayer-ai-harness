@@ -589,3 +589,10 @@ pre.ew-code-scroll { padding: 16px; }
   .setup-steps li { padding: 12px; }
   #setup-progress { padding-bottom: 0; }
 }
+
+/* Shared invited-alpha download card; account entry and workspace setup reuse it. */
+#desktop-download { display: block; text-align: left; }
+#desktop-download .primary-btn { display: inline-block; text-decoration: none; }
+#desktop-download p { margin: 12px 0; }
+#desktop-download-sha { overflow-wrap: anywhere; }
+#desktop-download-warning a { color: var(--accent); }

@@ -52,6 +52,13 @@
         <input id="join-code" type="text" placeholder="Invitation code" autocomplete="off" spellcheck="false" />
         <button id="btn-join-team" class="mini-btn">Accept invitation</button>
       </div>
+      <section id="desktop-download" class="gate-block hidden" aria-label="Desktop download">
+        <p id="desktop-download-status" class="small" role="status"></p>
+        <a id="desktop-download-link" class="primary-btn hidden" href="/api/desktop-download">Download for Apple Silicon Mac</a>
+        <p id="desktop-download-warning" class="small hidden">Invited alpha · unnotarized. macOS may require approval in System Settings → Privacy &amp; Security. <a href="https://support.apple.com/en-gb/102445" target="_blank" rel="noopener noreferrer">Apple installation guidance</a></p>
+        <details id="desktop-download-checksum" class="hidden"><summary>Verify download</summary><p class="small">SHA-256</p><code id="desktop-download-sha"></code></details>
+        <button id="desktop-download-retry" class="mini-btn hidden" type="button">Retry download details</button>
+      </section>
       <div id="gate-error" class="gate-error hidden"></div>
       <button id="gate-logout" class="mini-btn" type="button">Sign out</button>
     </div>
@@ -136,6 +143,7 @@
               <button class="suggestion" data-prompt="Show the diff">Show the diff</button>
             </div>
           </div>
+          <div id="desktop-download-home"></div>
           <div id="pilot-setup"></div>
           <details id="workspace-setup" open>
           <summary>Setup &amp; teammates <span class="small">Connection, provider and access</span></summary>

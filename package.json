@@ -80,7 +80,7 @@
     "proof:codex:interactive": "node test/codex-interactive-real.js",
     "test:encrypted-workspace": "node test/encrypted-workspace-browser.js",
     "test:collaboration-integration": "npm run test:e2ee:identity && npm run test:enrollment-authority && npm run test:local-authority && npm run test:encrypted-controls && npm run test:runtime-lifecycle && npm run test:recovery-trust && npm run test:owner-recovery && npm run test:help-inbox && npm run test:handover && npm run test:related-work && npm run test:recovery && npm run test:recover-after-loss && npm run test:revocation && npm run test:confined-writes && npm run test:client-storage && npm run test:mailbox && npm run test:encrypted-workspace && npm run test:genesis-removal-ui && npm run test:pilot",
-    "test:hosted-auth": "node --test test/hosted-auth.js",
+    "test:hosted-auth": "node --test test/hosted-auth.js test/desktop-download.js",
     "test:hosted-auth:browser": "node test/hosted-auth-browser.js"
   },
   "license": "MIT",

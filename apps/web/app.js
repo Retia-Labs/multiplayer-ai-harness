@@ -249,6 +249,7 @@
 
   // ================= teams, invitations and host pairing =================
   function showTeamGate() {
+    $('#gate-error').before($('#desktop-download'));
     el.app.classList.add('hidden');
     el.teamGate.classList.remove('hidden');
     el.teamGateWho.textContent = state.me ? `Signed in as ${state.me.name}` : '';
@@ -284,6 +285,7 @@
     state.users = [];
     $('#invitation-list').replaceChildren();
     renderMembers();
+    $('#desktop-download-home').appendChild($('#desktop-download'));
     el.teamGate.classList.add('hidden');
     el.app.classList.remove('hidden');
     const team = state.teams.find((t) => t.id === state.teamId);
@@ -394,6 +396,25 @@
     renderRecovery();
   }
 
+  async function loadDesktopDownload() {
+    if (window.harnessDesktop || state.authMode !== 'github') return;
+    const root = $('#desktop-download'); root.classList.remove('hidden');
+    $('#desktop-download-status').textContent = 'Checking desktop download…';
+    for (const id of ['desktop-download-link', 'desktop-download-warning', 'desktop-download-checksum', 'desktop-download-retry']) $('#' + id).classList.add('hidden');
+    try {
+      const response = await fetch('/api/desktop-release', { signal: AbortSignal.timeout(10000) });
+      if (!response.ok) throw new Error('download_unavailable');
+      const release = await response.json();
+      if (!release.available) { $('#desktop-download-status').textContent = 'The desktop installer has not been published for this service yet.'; return; }
+      $('#desktop-download-status').textContent = 'Plexus ' + release.version + ' · Apple Silicon Mac · ' + Math.ceil(release.bytes / 1024 / 1024) + ' MB';
+      $('#desktop-download-sha').textContent = release.sha256;
+      for (const id of ['desktop-download-link', 'desktop-download-warning', 'desktop-download-checksum']) $('#' + id).classList.remove('hidden');
+    } catch {
+      $('#desktop-download-status').textContent = 'Could not load the desktop download. Check your connection and retry.';
+      $('#desktop-download-retry').classList.remove('hidden');
+    }
+  }
+
   function refreshInvitations() {
     const owner = state.membership?.role === 'owner';
     $('#team-invitations').classList.toggle('hidden', !owner);
@@ -500,6 +521,7 @@
     switch (m.type) {
       case 'welcome':
         state.me = m.user;
+        loadDesktopDownload();
         if (state.authMode === 'github') {
           $('#gate-account-help').textContent = 'Ask your team owner to invite ' + m.user.verifiedEmail + ', then paste their invitation below.';
           el.teamGateAccountId.parentElement.classList.add('hidden');
@@ -2617,6 +2639,7 @@
       el.gateError.classList.add('hidden');
       send({ type: 'team/invite/accept', code });
     });
+    $('#desktop-download-retry').addEventListener('click', loadDesktopDownload);
     $('#btn-refresh-invitations').addEventListener('click', refreshInvitations);
     el.inviteBtn.addEventListener('click', () => {
       const inviteeUserId = el.inviteeUserId.value.trim();

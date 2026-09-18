@@ -6,6 +6,8 @@ User-visible changes by version. Dates identify publication only when an entry e
 
 Changes after the `0.2.0-alpha.1` candidate build:
 
+- Added authenticated installer delivery and a browser setup download card with version, architecture, unnotarized notice, checksum and retry states. The service validates configured installer bytes before advertising them.
+
 - Added this changelog and linked it from the README.
 - Verified replacement of the internal 0.1.2 app with the 0.2.0-alpha.1 DMG preserves the hosted account session and encrypted device fingerprint; logout clears the saved credential afterward (isolated HTTPS fixture).
 - Extended the native authentication test to run against an installed application. Verified the candidate DMG's authentication and startup-recovery paths using isolated fixtures.

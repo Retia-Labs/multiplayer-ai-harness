@@ -28,7 +28,8 @@ const PAIRING_TTL_MS = 10 * 60 * 1000;   // a pairing code is short-lived on pur
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 
 class Hub {
-  constructor({ dbFile = ':memory:', staticDir = null, service, auth, log = () => {} } = {}) {
+  constructor({ dbFile = ':memory:', staticDir = null, service, auth, desktopReleaseDir, log = () => {} } = {}) {
+    this.desktopDownload = new (require('./desktop-download').DesktopDownload)(desktopReleaseDir);
     this.store = new HubStore(dbFile);
     this.auth = auth ? new HostedAuth(this.store, auth) : null;
     this.enrollment = new Enrollment(this.store, { service });
@@ -100,6 +101,9 @@ class Hub {
       res.setHeader('X-Content-Type-Options', 'nosniff');
       res.setHeader('Referrer-Policy', 'no-referrer');
       res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    }
+    if (['/api/desktop-release', '/api/desktop-download'].includes(url.pathname)) {
+      return this.desktopDownload.handle(req, res, url.pathname, this.httpAccount(req, url));
     }
     if (url.pathname.startsWith('/api/pilot/')) return this.pilot.handle(req, res, url);
     if (url.pathname.startsWith('/api/e2ee/')) {
@@ -896,6 +900,7 @@ if (require.main === module) {
   const hub = new Hub({
     service: process.env.PLEXUS_PUBLIC_ORIGIN,
     auth: hostedConfiguration(process.env),
+    desktopReleaseDir: process.env.PLEXUS_DESKTOP_RELEASE_DIR,
     dbFile: process.env.HUB_DB || path.join(process.cwd(), '.harness-hub.sqlite'),
     staticDir: path.join(__dirname, '..', '..', 'apps', 'web'),
     log: (m) => console.log('[hub]', m)
