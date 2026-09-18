@@ -1,6 +1,6 @@
 # Hosted authentication implementation evidence — 2026-09-18
 
-This records local implementation checks, not a live deployment or alpha-readiness claim.
+This records local implementation checks and the separately identified production qualification below. It is not an alpha-readiness claim.
 
 ## Behavior
 
@@ -50,3 +50,19 @@ Real GitHub credentials, live HTTPS/WSS/domain qualification, signed packaged-ap
 - [Native desktop signed in](hosted-authentication/native-desktop-signed-in.png)
 
 Desktop follow-up: the native test also verifies that an unconfigured execution host leaves provider selection and Send disabled. The renderer no longer invents a configured demo provider when no host advertises one. Native captures use the 1487×1058 CSS viewport.
+
+## Production installed-app qualification — 2026-09-19
+
+An internal ARM64 DMG built from application revision `ec4d031` was mounted read-only and copied into an isolated test directory. The installed executable used the packaged default `https://app.tryplexus.dev` without a service URL override. The account owner approved its desktop exchange in Chrome.
+
+Verified against the live service:
+
+- The installed app consumed its approved exchange and connected over authenticated WSS.
+- No account session was stored in renderer localStorage.
+- Restart restored the same account. Electron reported OS encryption available and the persisted credential did not contain the plaintext session token.
+- Sign-out removed the local credential; the old bearer session returned HTTP 401 from `/api/auth/session`.
+- A second restart remained signed out.
+
+Artifact: `Plexus-0.1.2-mac-arm64.dmg`, SHA-256 `7f91bdacb15c6630d23e8464b4ce833794829cdeb0814a2e37fb019f013776e1`. This is an internal unnotarized build, not a published release. Generated evidence and the probe scripts are under `.artifacts/hosted-installed/` (ignored). The initial restart probe needed a guarded wait for renderer initialization; the corrected probe passed.
+
+Limitations: the test captured the browser destination and opened it in Chrome, so it did not qualify the OS default-browser opener. A locally built DMG does not establish downloaded-app Gatekeeper behavior. No project sharing, execution-host approval, real-provider task, second physical machine or trusted installer qualification is claimed.

@@ -1,6 +1,6 @@
 # ADR 0008: Hosted accounts and installation sign-in
 
-Status: implemented; production browser OAuth and restart persistence verified on DigitalOcean. Desktop production and full release qualification remain pending (#75).
+Status: implemented; production browser OAuth and restart persistence verified on DigitalOcean. Production authorization, protected storage, restart and logout also passed in an internal installed Mac build. Signed distribution and full release qualification remain pending (#75).
 
 ## Decision
 
