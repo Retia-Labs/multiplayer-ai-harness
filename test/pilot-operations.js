@@ -69,6 +69,14 @@ test('diagnostic export cannot contain canary content, keys, paths or arbitrary 
   assert.equal(rows.find(row => row.stage === 'recovery').code, 'recovery_failed');
 });
 
+test('provider setup waits for an online host before reporting provider failure or readiness', () => {
+  const provider = facts => onboarding(facts).find(row => row.stage === 'provider');
+  assert.deepEqual(provider({ host: false, providerCode: 'provider_missing' }), { stage: 'provider', status: 'pending', code: 'runtime_missing' });
+  assert.equal(provider({ host: false, provider: true }).status, 'pending');
+  assert.deepEqual(provider({ host: true, providerCode: 'provider_missing' }), { stage: 'provider', status: 'failed', code: 'provider_missing' });
+  assert.deepEqual(provider({ host: true, provider: true }), { stage: 'provider', status: 'ready', code: null });
+});
+
 test('only signed owner deletion removes live task data, archives and indexes; replay and restoration cannot revive it', async t => {
   const f = await fixture(t), snapshot = f.hub.retention.snapshot();
   await assert.rejects(f.bob.deleteTask(f.team.id, f.task), /deletion_owner_required/);

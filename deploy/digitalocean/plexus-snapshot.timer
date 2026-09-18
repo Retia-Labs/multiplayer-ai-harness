@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Plexus ciphertext snapshot and seven-day expiry cleanup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -237,3 +237,7 @@ Execution order: reconcile PRs #61/#63/#64 against current main; implement the p
 - [A04 / #68 — Resolve an approval and review the result in context](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/68)
 - [A05 / #69 — Qualify the internal alpha on two separate machines](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/69)
 - [B01 / #70 — Qualify the hosted collaboration service for pilots](https://github.com/Retia-Labs/multiplayer-ai-harness/issues/70)
+
+## Hosted alpha clarification — 2026-09-18
+
+The founder's alpha target is the complete invited-user product at `https://app.tryplexus.dev`, including verified account authentication, hosted synchronization, desktop distribution/authorization, usable invitations and end-to-end onboarding. Name-based local sessions and localhost/installer tests do not satisfy this release definition. Implement account authentication (#75) and the hosted entry journey (#76), qualify hosting (#70) and real multi-machine execution (#69), and retain all external-release gates (#19/#20/#25). The hosting account is not yet provisioned. See [the execution plan](alpha-beta-execution.md) for scope, prerequisites and the distinction between account login and encrypted endpoint authority.

@@ -1,5 +1,7 @@
 # Multiplayer AI Harness
 
+[Changelog](CHANGELOG.md) · [Invited Mac alpha installation](docs/operations/invited-mac-alpha.md)
+
 A working prototype of a **multiplayer, bring-your-own-provider agent workbench** — the
 "mission control" layer from the strategy dossier: several people supervise coding agents
 together, on inference they already pay for, with keys and code that never leave their machines.

@@ -11,6 +11,7 @@ const { HubStore, uid } = require('./store');
 const { EncryptedTasks } = require('./encrypted-tasks');
 const { Enrollment } = require('./enrollment');
 const { KeyExchange } = require('./key-exchange');
+const { HostedAuth, hostedConfiguration } = require('./auth');
 const { TeamOps, Errors, Roles, Commands, ThreadStatus } = require('../protocol');
 
 // Authorization failures carry a code so a caller can tell them apart. `fail` is used for
@@ -27,8 +28,10 @@ const PAIRING_TTL_MS = 10 * 60 * 1000;   // a pairing code is short-lived on pur
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8' };
 
 class Hub {
-  constructor({ dbFile = ':memory:', staticDir = null, service, log = () => {} } = {}) {
+  constructor({ dbFile = ':memory:', staticDir = null, service, auth, desktopReleaseDir, log = () => {} } = {}) {
+    this.desktopDownload = new (require('./desktop-download').DesktopDownload)(desktopReleaseDir);
     this.store = new HubStore(dbFile);
+    this.auth = auth ? new HostedAuth(this.store, auth) : null;
     this.enrollment = new Enrollment(this.store, { service });
     this.keyExchange = new KeyExchange(this.store);
     this.encryptedTasks = new EncryptedTasks(this.store, this.enrollment);
@@ -50,8 +53,8 @@ class Hub {
     this.pendingPairings = new Map(); // pairingCode -> { runtimeId, descriptor, at, ws }
     this.activity = new Map();  // threadId -> { threadId, projectKey, files: Map<path, ts>, branch, worktree, by, name, runtimeId, active, lastAt }
     this.server = http.createServer((req, res) => this.handleHttp(req, res));
-    this.wss = new WebSocketServer({ server: this.server });
-    this.wss.on('connection', (ws) => this.onConnection(ws));
+    this.wss = new WebSocketServer({ server: this.server, maxPayload: 1024 * 1024 });
+    this.wss.on('connection', (ws, req) => this.onConnection(ws, req));
   }
 
   listen(port = 0, host = '127.0.0.1') {
@@ -70,7 +73,7 @@ class Hub {
   // Bearer token on the Authorization header, or ?token= for the polling fallback.
   httpAccount(req, url) {
     const header = req.headers.authorization || '';
-    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : url.searchParams.get('token');
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : (this.auth ? null : url.searchParams.get('token'));
     return token ? this.store.userByToken(token) : null;
   }
 
@@ -81,6 +84,27 @@ class Hub {
 
   handleHttp(req, res) {
     const url = new URL(req.url, 'http://x');
+    if (url.pathname.startsWith('/api/auth/')) {
+      if (!this.auth) {
+        if (url.pathname === '/api/auth/config' && req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+          return res.end(JSON.stringify({ mode: 'local' }));
+        }
+        return this.httpError(res, 404, 'not_found');
+      }
+      return this.auth.handle(req, res, url, token => {
+        for (const [ws, ctx] of this.clients) if (ctx.sessionToken === token) ws.close(4001, 'signed_out');
+      }).catch(error => this.auth.failure(res, error, url.pathname === '/api/auth/callback'));
+    }
+    if (this.auth) {
+      try { this.auth.prepare(req); } catch (error) { return this.httpError(res, error.status, error.code); }
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+    }
+    if (['/api/desktop-release', '/api/desktop-download'].includes(url.pathname)) {
+      return this.desktopDownload.handle(req, res, url.pathname, this.httpAccount(req, url));
+    }
     if (url.pathname.startsWith('/api/pilot/')) return this.pilot.handle(req, res, url);
     if (url.pathname.startsWith('/api/e2ee/')) {
       return this.keyExchange.handle(req, res, url);
@@ -135,7 +159,7 @@ class Hub {
     // matters happens afterwards, in the client, against an endpoint somebody confirmed.
     // Answering differently for a real id than for an invented one would leak the one thing
     // an unauthorized visitor could otherwise not find out.
-    let p = url.pathname === '/' || /^\/t\/[A-Za-z0-9_-]{1,80}$/.test(url.pathname)
+    let p = url.pathname === '/' || /^\/(t|connect)\/[A-Za-z0-9_-]{1,80}$/.test(url.pathname)
       ? '/index.html' : url.pathname;
     const file = path.normalize(path.join(this.staticDir, p));
     if (!file.startsWith(this.staticDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -146,9 +170,12 @@ class Hub {
   }
 
   // ---------------- WebSocket ----------------
-  onConnection(ws) {
-    const ctx = { user: null, role: null, runtimeId: null, subs: new Set(), teamId: null };
+  onConnection(ws, req) {
+    const ctx = { user: null, role: null, runtimeId: null, subs: new Set(), teamId: null, request: req };
     this.clients.set(ws, ctx);
+    // ws closes malformed/oversized connections itself. Consume its error event
+    // so an unauthenticated peer cannot crash the relay; cleanup runs on close.
+    ws.on('error', () => this.log('websocket_connection_error'));
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
@@ -174,6 +201,7 @@ class Hub {
   }
 
   onClose(ws, ctx) {
+    clearTimeout(ctx.sessionTimer);
     this.clients.delete(ws);
     for (const [commandId, pending] of this.pendingCommands) {
       pending.waiters.delete(ws);
@@ -218,6 +246,8 @@ class Hub {
   handleMessage(ws, ctx, msg) {
     if (msg.type === 'hello') return this.onHello(ws, ctx, msg);
     if (!ctx.user) throw fail(Errors.UNAUTHENTICATED, 'send hello first');
+    if (this.auth && ctx.role === 'client' && !this.auth.account(ctx.sessionToken)) { ws.close(4001, 'session_expired'); throw fail(Errors.UNAUTHENTICATED); }
+    if (this.auth && ctx.role === 'runtime' && !['thread.upsert', 'append', 'command.result', 'runtime.update', 'runtime.offline', 'ping'].includes(msg.type)) throw fail(Errors.UNAUTHENTICATED);
     switch (msg.type) {
       // ---- team administration (never routed to a runtime) ----
       case TeamOps.TEAM_CREATE: {
@@ -230,9 +260,12 @@ class Hub {
       case TeamOps.TEAM_MEMBERS:
         this.requireMember(ctx, msg.teamId);
         return this.send(ws, { type: 'users', users: this.store.listMembers(msg.teamId), ref: msg.id });
+      case TeamOps.INVITE_LIST:
+        this.requireOwner(ctx, msg.teamId);
+        return this.send(ws, { type: 'invitations', teamId: msg.teamId, invitations: this.store.listInvitations(msg.teamId), ref: msg.id });
       case TeamOps.INVITE_CREATE: {
         this.requireOwner(ctx, msg.teamId);
-        const invitee = this.store.userById(String(msg.inviteeUserId || ''));
+        const invitee = this.auth ? this.auth.invitee(msg.inviteeEmail) : this.store.userById(String(msg.inviteeUserId || ''));
         if (!invitee) throw fail(Errors.UNKNOWN_USER, 'inviteeUserId must identify an existing account');
         if (this.store.membership(msg.teamId, invitee.id)) throw fail(Errors.ALREADY_MEMBER);
         const ttl = Math.min(Math.max(parseInt(msg.ttlMs, 10) || 7 * 24 * 3600 * 1000, 60000), 30 * 24 * 3600 * 1000);
@@ -444,13 +477,24 @@ class Hub {
   // from a membership row, and a membership row comes only from an accepted invitation.
   onHello(ws, ctx, msg) {
     if (ctx.user) throw fail(Errors.UNAUTHENTICATED, 'hello was already received on this connection');
-    let user = msg.token ? this.store.userByToken(msg.token) : null;
+    let user;
+    if (this.auth && msg.role !== 'runtime') {
+      const cookieToken = this.auth.token(ctx.request);
+      if (cookieToken && ctx.request.headers.origin !== this.auth.origin) throw fail(Errors.UNAUTHENTICATED);
+      ctx.sessionToken = msg.token || cookieToken;
+      user = this.auth.account(ctx.sessionToken);
+      if (!user) throw fail(Errors.UNAUTHENTICATED);
+      ctx.sessionTimer = setTimeout(() => ws.close(4001, 'session_expired'), user.sessionExpiresAt - this.auth.now());
+      ctx.sessionTimer.unref();
+    } else if (this.auth) {
+      // Runtime authority comes exclusively from its installation credential and pairing.
+      user = { id: msg.runtime?.id, name: 'Execution host', color: '#888' };
+    } else user = msg.token ? this.store.userByToken(msg.token) : null;
     if (msg.token && !user) throw fail(Errors.UNAUTHENTICATED, 'unknown token');
     if (!user) {
       if (!msg.name) throw fail(Errors.UNAUTHENTICATED, 'hello needs a token or a name');
       user = this.store.createAccount(msg.name, msg.color);
     }
-    ctx.user = user;
     ctx.role = msg.role === 'runtime' ? 'runtime' : 'client';
 
     if (ctx.role === 'runtime') {
@@ -492,10 +536,11 @@ class Hub {
       }
     }
 
+    ctx.user = user;
     const teams = ctx.role === 'client' ? this.store.teamsFor(user.id) : [];
     this.send(ws, {
       type: 'welcome',
-      user: { id: user.id, name: user.name, color: user.color, token: user.token },
+      user: { id: user.id, name: user.name, color: user.color, ...(this.auth && ctx.role === 'client' ? { verifiedEmail: user.verifiedEmail } : {}), token: this.auth ? (ctx.role === 'client' && msg.token ? msg.token : null) : user.token },
       role: ctx.role,
       teams,
       // No team yet is the normal first-run state, not an error: create one or accept an invite.
@@ -851,9 +896,11 @@ Hub.prototype.broadcastActivity = function (orgId) {
 module.exports = { Hub };
 
 if (require.main === module) {
-  const port = parseInt(process.env.HUB_PORT || process.argv[2] || '7777', 10);
+  const port = parseInt(process.env.PORT || process.env.HUB_PORT || process.argv[2] || '7777', 10);
   const hub = new Hub({
     service: process.env.PLEXUS_PUBLIC_ORIGIN,
+    auth: hostedConfiguration(process.env),
+    desktopReleaseDir: process.env.PLEXUS_DESKTOP_RELEASE_DIR,
     dbFile: process.env.HUB_DB || path.join(process.cwd(), '.harness-hub.sqlite'),
     staticDir: path.join(__dirname, '..', '..', 'apps', 'web'),
     log: (m) => console.log('[hub]', m)
@@ -863,6 +910,8 @@ if (require.main === module) {
   const closeHub = () => hub.close().then(() => process.exit(0), () => process.exit(0));
   process.on('message', (msg) => { if (msg && msg.type === 'shutdown') closeHub(); });
   process.on('disconnect', closeHub);
+  process.on('SIGTERM', closeHub);
+  process.on('SIGINT', closeHub);
   hub.listen(port, process.env.HUB_HOST || '127.0.0.1').then((addr) => {
     console.log(`[hub] listening on http://${addr.address}:${addr.port}`);
   });

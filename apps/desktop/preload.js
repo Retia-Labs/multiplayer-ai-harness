@@ -1,5 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('harnessDesktop', {
+  accountSession: () => ipcRenderer.invoke('desktop:account:session'),
+  accountStart: () => ipcRenderer.invoke('desktop:account:start'),
+  accountPoll: () => ipcRenderer.invoke('desktop:account:poll'),
+  accountLogout: () => ipcRenderer.invoke('desktop:account:logout'),
   versions: { electron: process.versions.electron },
   diagnostics: () => ipcRenderer.invoke('desktop:diagnostics'),
   hubUrl: location.protocol === 'plexus-app:' ? ipcRenderer.sendSync('desktop:hubUrl') : null,

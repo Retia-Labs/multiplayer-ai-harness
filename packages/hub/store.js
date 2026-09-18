@@ -67,8 +67,9 @@ class HubStore {
       deleteMember: this.db.prepare('DELETE FROM memberships WHERE team_id = ? AND user_id = ?'),
       insertInvite: this.db.prepare('INSERT INTO invitations (code, team_id, role, created_by, invitee_user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
       getInvite: this.db.prepare('SELECT * FROM invitations WHERE code = ?'),
+      listInvites: this.db.prepare('SELECT * FROM invitations WHERE team_id = ? ORDER BY created_at DESC, code'),
       acceptInvite: this.db.prepare('UPDATE invitations SET accepted_by = ?, accepted_at = ? WHERE code = ?'),
-      revokeInvite: this.db.prepare('UPDATE invitations SET revoked_at = ? WHERE code = ?'),
+      revokeInvite: this.db.prepare('UPDATE invitations SET revoked_at = ? WHERE code = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at >= ?'),
       revokePendingInvitesForMember: this.db.prepare('UPDATE invitations SET revoked_at = ? WHERE team_id = ? AND invitee_user_id = ? AND accepted_at IS NULL AND revoked_at IS NULL'),
       insertPairing: this.db.prepare('INSERT INTO pairings (runtime_id, team_id, paired_by, paired_at) VALUES (?, ?, ?, ?) ON CONFLICT(runtime_id) DO UPDATE SET team_id = excluded.team_id, paired_by = excluded.paired_by, paired_at = excluded.paired_at'),
       getPairing: this.db.prepare('SELECT * FROM pairings WHERE runtime_id = ?'),
@@ -162,7 +163,21 @@ class HubStore {
   }
 
   getInvitation(code) { return this._stmts.getInvite.get(code) || null; }
-  revokeInvitation(code) { this._stmts.revokeInvite.run(Date.now(), code); return { ok: true }; }
+  listInvitations(teamId, now = Date.now()) {
+    return this._stmts.listInvites.all(teamId).map(row => {
+      const invitee = this.userById(row.invitee_user_id);
+      return { code: row.code, teamId: row.team_id, role: row.role,
+        createdAt: row.created_at, expiresAt: row.expires_at,
+        acceptedAt: row.accepted_at, revokedAt: row.revoked_at,
+        status: row.accepted_at ? 'accepted' : row.revoked_at ? 'revoked' : now > row.expires_at ? 'expired' : 'pending',
+        invitee: { userId: row.invitee_user_id, name: invitee?.name || 'Unavailable account' } };
+    });
+  }
+  revokeInvitation(code, now = Date.now()) {
+    // Preserve terminal receipts: revoking an accepted invitation is not member removal.
+    this._stmts.revokeInvite.run(now, code, now);
+    return { ok: true };
+  }
 
   // ---- delegated approval authority ----
   // Never granted implicitly. Creating a team, owning it, or holding a seat gives none of
@@ -221,6 +236,7 @@ class HubStore {
   }
 
   userByToken(token) {
+    if (this.accountAuthentication) return this.accountAuthentication(token);
     return this._stmts.getUserByToken.get(token) || null;
   }
 
