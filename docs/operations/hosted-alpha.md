@@ -1,12 +1,12 @@
 # Hosted alpha setup
 
-Status (2026-09-19): DigitalOcean server provisioned, source installed, DNS and public HTTPS certificate verified. The relay is stopped pending OAuth credentials; real sign-in and customer-alpha qualification are not complete. Issues #75, #76 and #70 remain open until their full acceptance checks pass.
+Status (2026-09-19): DigitalOcean server provisioned, source installed, DNS and public HTTPS certificate verified. The authenticated relay is running. Real GitHub consent/callback, logout/relogin, team creation and browser-session survival across a service restart are verified; customer-alpha qualification remains incomplete. Issues #75, #76 and #70 remain open until their full acceptance checks pass.
 
 ## Service
 
 The approved host is a separate DigitalOcean Droplet named `plexus-alpha` in Singapore: Ubuntu 24.04, 1 vCPU, 1 GB RAM and 25 GB persistent disk. The dashboard quotes US$6/month base, approximately US$6.54 with Singapore GST, before excess usage. Active promotional credits were not verified. The existing landing-page Droplets are not part of this deployment.
 
-Deployment configuration is in `deploy/digitalocean/`. Node v22.23.2 runs the relay under the `plexus` system account. Source releases live under `/opt/plexus/releases/`, with `/opt/plexus/current` pointing to the selected release. The current installed source is `db32f80cbf8d84fecbda061e29128fbf023fe10f` from PR #77, not main. Install production dependencies with `npm ci --omit=dev --ignore-scripts`.
+Deployment configuration is in `deploy/digitalocean/`. Node v22.23.2 runs the relay under the `plexus` system account. Source releases live under `/opt/plexus/releases/`, with `/opt/plexus/current` pointing to the selected release. The current installed source is `ec4d031de675c944daad72c631461ed5709bd618` from PR #77, not main. Install production dependencies with `npm ci --omit=dev --ignore-scripts`.
 
 SQLite and application-aware snapshots stay under `/var/lib/plexus`, owned by `plexus` with mode 0700. The systemd unit permits writes there and binds the hub only to `127.0.0.1:7777`. Caddy handles public HTTPS and WebSocket proxying. UFW permits SSH and TCP ports 80/443; port 7777 is not public. `/etc/plexus/relay.env` is root-owned mode 0600. Keep secrets out of the repository, shell history and service logs.
 
@@ -32,7 +32,7 @@ For an update, unpack the reviewed exact commit into a new release directory, in
 
 ### Observed installation checks
 
-On the new Ubuntu server, all 11 `test/hosted-auth.js` tests and `test/protocol-smoke.js` passed. `test/pilot-operations.js` passed 11 tests with its Windows-only test skipped: these cover deletion tombstones, restore against current grants, snapshot expiry and diagnostic/measurement content boundaries in isolated fixtures. They do not establish an off-server production recovery drill. The production-only dependency install reported zero known vulnerabilities. Public DNS resolved to the new server and curl verified its HTTPS certificate. These checks do not prove real OAuth, live collaboration, signed distribution or customer-alpha readiness.
+On the new Ubuntu server, all 12 `test/hosted-auth.js` tests and `test/protocol-smoke.js` passed. `test/pilot-operations.js` passed 11 tests with its Windows-only test skipped: these cover deletion tombstones, restore against current grants, snapshot expiry and diagnostic/measurement content boundaries in isolated fixtures. They do not establish an off-server production recovery drill. The production-only dependency install reported zero known vulnerabilities. Public DNS resolved to the new server and curl verified its HTTPS certificate. Public `/api/health` returns 200 and `/api/auth/config` reports GitHub mode. A single oversized unauthenticated message sent over public WSS closed with code 1009 while health remained 200, verifying the relay-crash regression fix through Caddy. Real GitHub consent/callback, private team creation, logout followed by reload, repeat login and session survival across a relay restart were exercised in Chrome at the public origin. The daily snapshot job returned success against the live database (no collaborative task content yet). These checks do not prove desktop authorization against production, live collaboration, off-server disaster recovery, signed distribution or customer-alpha readiness.
 
 ## Identity and domain
 

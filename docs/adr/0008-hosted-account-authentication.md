@@ -1,6 +1,6 @@
 # ADR 0008: Hosted accounts and installation sign-in
 
-Status: implemented locally; production qualification pending (#75).
+Status: implemented; production browser OAuth and restart persistence verified on DigitalOcean. Desktop production and full release qualification remain pending (#75).
 
 ## Decision
 
@@ -18,7 +18,7 @@ Account authentication is independent of browser endpoint keys, device verificat
 
 ## Operational limits
 
-One relay instance with persistent SQLite. Pending login/exchange state is in memory: restarting cancels in-progress sign-ins, while issued sessions survive. Disk-backed Render deployments interrupt connections; existing reconnect/replay behavior remains necessary. Application-aware deletion/revocation-preserving recovery is required; restoring an old whole-disk snapshot is not a safe account or content recovery procedure.
+One relay instance with persistent SQLite. Pending login/exchange state is in memory: restarting cancels in-progress sign-ins, while issued sessions survive. Single-instance deployments interrupt connections on restart; existing reconnect/replay behavior remains necessary. Application-aware deletion/revocation-preserving recovery is required; restoring an old whole-disk snapshot is not a safe account or content recovery procedure.
 
 Local tests stub GitHub's external identity response. The base desktop exchange test substitutes the OS sealing primitive; the native fixture also exercises real Electron safeStorage, restart and logout on the development Mac. These do not prove production OAuth configuration, signed distribution, two physical machines, or external privacy/control review. Those release gates remain open.
 
