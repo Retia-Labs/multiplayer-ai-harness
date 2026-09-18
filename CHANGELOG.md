@@ -6,6 +6,8 @@ User-visible changes by version. Dates identify publication only when an entry e
 
 Changes after the `0.2.0-alpha.1` candidate build:
 
+- Added a repeatable off-server ciphertext restore drill; Linux-to-Mac snapshot transfer preserved current deletion, membership and grant restrictions. Scheduled off-server production backups remain pending.
+
 - Deployed authenticated installer delivery and a browser setup download card with version, architecture, unnotarized notice, checksum and retry states. The service validates configured installer bytes before advertising them.
 
 - Added this changelog and linked it from the README.

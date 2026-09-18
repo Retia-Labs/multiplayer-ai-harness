@@ -6,7 +6,7 @@ Status (2026-09-19): DigitalOcean server provisioned, source installed, DNS and 
 
 The approved host is a separate DigitalOcean Droplet named `plexus-alpha` in Singapore: Ubuntu 24.04, 1 vCPU, 1 GB RAM and 25 GB persistent disk. The dashboard quotes US$6/month base, approximately US$6.54 with Singapore GST, before excess usage. Active promotional credits were not verified. The existing landing-page Droplets are not part of this deployment.
 
-Deployment configuration is in `deploy/digitalocean/`. Node v22.23.2 runs the relay under the `plexus` system account. Source releases live under `/opt/plexus/releases/`, with `/opt/plexus/current` pointing to the selected release. The current installed source is `046b020` from PR #77, not main. Install production dependencies with `npm ci --omit=dev --ignore-scripts`.
+Deployment configuration is in `deploy/digitalocean/`. Node v22.23.2 runs the relay under the `plexus` system account. Source releases live under `/opt/plexus/releases/`, with `/opt/plexus/current` pointing to the selected release. The current installed source is `046b020`, an implementation revision from PR #77 (now merged into main as `e515778`). The server has not been redeployed merely because the PR merged. Install production dependencies with `npm ci --omit=dev --ignore-scripts`.
 
 SQLite and application-aware snapshots stay under `/var/lib/plexus`, owned by `plexus` with mode 0700. The systemd unit permits writes there and binds the hub only to `127.0.0.1:7777`. Caddy handles public HTTPS and WebSocket proxying. UFW permits SSH and TCP ports 80/443; port 7777 is not public. `/etc/plexus/relay.env` is root-owned mode 0600. Keep secrets out of the repository, shell history and service logs.
 
@@ -47,18 +47,18 @@ The Render GitHub deployment integration and the Plexus GitHub sign-in app are d
 ## Qualification before invitations
 
 - Real GitHub login/cancel/retry, logout and expired session at the production domain. No name-only access over HTTP or WebSocket.
-- Signed packaged desktop opens the system browser, receives its own approved session, retains it through restart, and signs out. Verify actual OS-protected credential storage.
+- The exact packaged desktop artifact (unnotarized for the approved first invited Mac exception) opens the system browser, receives its own approved session, retains it through restart, and signs out. Verify actual OS-protected credential storage.
 - A second allowlisted account signs in, receives an owner-created invitation by verified email, enrolls and confirms its endpoint, then opens a private task link. Login alone must not expose history.
 - Real supported provider task, attributed steering, scoped approval, handoff, disconnect/reconnect and replay from separate physical machines (#69).
 - Restart the relay and verify persistent account/team/content state. Exercise deletion-aware backup/restore and revocation with `pilot-operations.md`; do not treat an old disk snapshot as a qualified restore.
 - Check hosted diagnostics/health reveal no content or credentials. Confirm support and retention behavior before inviting customers.
 
-Signed downloads/updates (#20), Windows (#19), independent privacy/control review (#25), live hosting (#70) and complete onboarding (#76) remain separate release gates. No unsigned development artifact should be presented as the early-access download.
+Signed downloads/updates (#20), Windows (#19), independent privacy/control review (#25), live hosting (#70) and complete onboarding (#76) remain separate release gates. Only the explicitly approved, clearly labelled unnotarized Mac candidate may use the first invited-Mac exception; this does not qualify other development artifacts or waive the remaining release checks.
 
 
 ### Invited Mac candidate — 2026-09-19
 
-Source `bbe643c` is deployed with hosted invitation history and onboarding fixes. Server-side hosted authentication (12 tests) and protocol smoke passed before switching the release symlink. Public HTTPS health/auth configuration succeeded and the served `app.js` SHA-256 matched the checkout.
+At this qualification step, source `bbe643c` was deployed with hosted invitation history and onboarding fixes; the current service revision is listed above. Server-side hosted authentication (12 tests) and protocol smoke passed before switching the release symlink. Public HTTPS health/auth configuration succeeded and the served `app.js` SHA-256 matched the checkout.
 
 The unnotarized Apple Silicon candidate is `Plexus-0.2.0-alpha.1-mac-arm64-unnotarized.dmg` (130651850 bytes), SHA-256 `e5317610d3049b8653ae5329eaf43030240d6d1b9a919d32e8b4f0575e5c9a9e`. Its manifest records application source `bbe643c989df32b69463aa8de5848743d203ee7e`. Packaging inputs were committed; unrelated user documentation changes were excluded by the package file list.
 
@@ -91,3 +91,17 @@ Service revision `046b020` is live. `/opt/plexus/downloads/0.2.0-alpha.1/` holds
 The GitHub draft asset was downloaded back through `gh` and passed `SHA256SUMS`, proving its bytes match the tested DMG. This CLI download does not prove browser quarantine or Gatekeeper behavior.
 
 Clicking the live download in controlled Chrome returned `ERR_BLOCKED_BY_CLIENT` (“This page has been blocked by Chrome”). No browser protection was bypassed. The user was asked to try the same download manually, and the Plexus app was left open. The cause and real Chrome download/installation qualification remain unresolved. The GitHub prerelease is still a draft; the service download is restricted to authenticated alpha accounts.
+
+
+### Off-server ciphertext restore drill — 2026-09-19
+
+The repeatable `test/service-backup-transfer.js` drill creates its own synthetic database in a **new** directory. It reuses the pilot fixture's real endpoint enrollment and signed deletion/grant-revocation flows. It never targets the production database, OAuth credentials or customer tasks.
+
+1. Run `node test/service-backup-transfer.js prepare <new-isolated-directory>` on the source machine. This creates four task/event fixtures and a CLI snapshot, then records a signed deletion, revokes a creator's project grant, removes a member/approval and advances an existing task log. It simulates lost ciphertext while keeping current authority. The exported snapshot is moved out of the restore directory.
+2. Copy only the printed `snapshot-<timestamp>.json` file to a separate machine. Record its SHA-256 and compare it with the printed hash. Keep the authority database on the source machine.
+3. Copy that off-server file back into `<isolated-directory>/hub.sqlite.backups/` using the same filename.
+4. Run `node test/service-backup-transfer.js verify <isolated-directory>`. Verification is one-shot; use a new directory for another drill. Retain `result.json` as evidence, then remove the synthetic fixture directories and snapshot copies.
+
+Observed on the dedicated Ubuntu server using Node 22.23.2, with the snapshot transferred over SSH to this Mac and back: SHA-256 `4952a6ed266eed3cb358701b6e5f535be4e6624098b0da57bc77d9a194dcde5e` matched. Exactly one eligible missing task restored; the deleted task and revoked creator-grant task did not. The existing two-event log stayed intact. Current memberships, approvals, grants, endpoint records, signed authority history and tombstones were unchanged. A repeated restore restored zero tasks. The same snapshot restored zero tasks into an empty authority database and imported no authority. The local Mac drill also passed. Existing pilot tests passed 12 tests with the Windows-only test skipped. The live service remained active.
+
+This qualifies the CLI content-restore procedure with transferred synthetic data. It does **not** provide scheduled off-server production backups, a full server-loss recovery path, customer decryption proof or a recovery-time commitment. Daily production snapshots still reside only on the Droplet. #70 remains open.
