@@ -249,12 +249,12 @@
         <button id="btn-close-settings" class="btn-icon"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></button>
       </div>
       <div class="modal-body">
-        <p class="modal-desc">Provider keys live on <b>runtimes</b>, never in this UI or the hub. Configure them where the runtime runs: <code>OPENAI_API_KEY</code> / <code>ANTHROPIC_API_KEY</code> / <code>OPENROUTER_API_KEY</code> env vars, or <code>~/.harness/runtime.json</code>.</p>
+        <p class="modal-desc">Your provider account stays on the <b>execution host</b>. Open Setup in the desktop app on that machine to connect Codex and check its readiness. Plexus sign-in and provider sign-in are separate.</p>
         <label class="field"><span>Theme</span>
           <select id="setting-theme"><option value="dark">Dark</option><option value="light">Light</option></select>
         </label>
         <label class="field check-field"><span>Desktop notifications</span><input id="setting-notifications" type="checkbox" checked /></label>
-        <div class="field"><span>Your account ID</span><div class="form-row"><input id="settings-account-id" class="code-field" readonly /><button id="btn-copy-account-id" class="mini-btn">Copy</button></div><div class="small">Share this ID with a team owner so invitations can be addressed to your account.</div></div>
+        <div class="field"><label id="settings-account-label" for="settings-account-id">Your account ID</label><div class="form-row"><input id="settings-account-id" class="code-field" readonly /><button id="btn-copy-account-id" class="mini-btn">Copy</button></div><div id="settings-account-help" class="small">Share this ID with a team owner so invitations can be addressed to your account.</div></div>
         <div class="field"><span>Connection</span><div id="settings-conn" class="mono small"></div></div>
         <button id="btn-logout" class="mini-btn">Sign out</button>
       </div>

@@ -11,7 +11,7 @@ export const DIAGNOSTIC_CODES = {
   account_unsupported: 'Complete local provider setup with a supported account and authentication mode.',
   provider_unavailable: 'Open provider setup on the execution host and resolve its readiness check.',
   solo_pending: 'Start a task and wait for a successful turn to complete.',
-  invite_pending: 'Invite a named teammate using their Plexus account ID.',
+  invite_pending: 'Open Team & access to invite a teammate.',
   recovery_pending: 'Prepare customer-held recovery material and complete a clean-device recovery drill.',
   recovery_failed: 'Check the customer recovery key and selected kit. Keep any remaining trusted device.',
   connection_unavailable: 'Reconnect to the team service and retry.',
@@ -43,7 +43,7 @@ export function onboarding(facts = {}) {
   return [row('account', facts.account, 'account_required'),
     row('endpoint', facts.verified, facts.enrollmentError ? 'enrollment_failed' : 'endpoint_pending', facts.enrollmentError),
     row('project', facts.project, facts.host ? 'project_unshared' : 'runtime_missing'),
-    row('provider', facts.provider, facts.providerCode || 'provider_unavailable', !!facts.providerCode),
+    row('provider', facts.host && facts.provider, facts.host ? facts.providerCode || 'provider_unavailable' : 'runtime_missing', !!facts.host && !!facts.providerCode),
     row('solo', facts.solo, 'solo_pending'), row('invite', facts.invited, 'invite_pending'),
     row('recovery', facts.recovery, facts.recoveryError ? 'recovery_failed' : 'recovery_pending', facts.recoveryError)];
 }

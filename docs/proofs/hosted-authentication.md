@@ -66,3 +66,11 @@ Verified against the live service:
 Artifact: `Plexus-0.1.2-mac-arm64.dmg`, SHA-256 `7f91bdacb15c6630d23e8464b4ce833794829cdeb0814a2e37fb019f013776e1`. This is an internal unnotarized build, not a published release. Generated evidence and the probe scripts are under `.artifacts/hosted-installed/` (ignored). The initial restart probe needed a guarded wait for renderer initialization; the corrected probe passed.
 
 Limitations: the test captured the browser destination and opened it in Chrome, so it did not qualify the OS default-browser opener. A locally built DMG does not establish downloaded-app Gatekeeper behavior. No project sharing, execution-host approval, real-provider task, second physical machine or trusted installer qualification is claimed.
+
+## Hosted onboarding corrections — 2026-09-19
+
+Settings uses the verified GitHub email for hosted invitations, with an accessible field label and matching copy feedback. Local mode retains its account-ID field. Setup directs invitations through Team & access. Provider readiness stays pending until an execution host is online, including when a cached provider was previously ready; a connected host can still report a real provider failure. Settings directs provider setup to the desktop app rather than environment-variable edits.
+
+Design: `shell` + `setup`; reused Settings modal fields/buttons and the existing setup checklist. Compared the rendered screens with `design/qa/setup-desktop.png` and the accepted shared typography/surface rules. No layout, token or baseline changes. The existing project-centered production shell remains an intentional extension of the reference.
+
+Validation: `node --test test/pilot-operations.js` passed 12 tests, with one Windows-only skip. `test:hosted-auth:browser` passed the HTTPS fixture journey including verified-email Settings, missing-host pending status, desktop exchange and logout. Screenshots under `.artifacts/hosted-auth/`: `settings-hosted-desktop.png`, `settings-hosted-mobile.png`, `setup-hosted-desktop.png`, `setup-hosted-mobile.png`, at 1487×1058 and 390×844. Changed controls/checklist were visually inspected without clipping. These latest UI changes have not yet been deployed or rebuilt into the installed DMG.

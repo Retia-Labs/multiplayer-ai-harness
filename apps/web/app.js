@@ -255,10 +255,10 @@
     el.teamGateAccountId.value = state.me ? state.me.id : '';
   }
 
-  async function copyAccountId(input) {
+  async function copyAccountId(input, label = 'Account ID') {
     if (!input.value) return;
-    try { await navigator.clipboard.writeText(input.value); toast('Account ID copied.'); }
-    catch { input.select(); toast('Account ID selected. Copy it from the field.'); }
+    try { await navigator.clipboard.writeText(input.value); toast(label + ' copied.'); }
+    catch { input.select(); toast(label + ' selected. Copy it from the field.'); }
   }
 
   // On the desktop the host is this very machine, so offer its code rather than making
@@ -2607,13 +2607,16 @@
     });
     el.settingsBtn.addEventListener('click', () => {
       el.settingTheme.value = state.prefs.theme || 'dark'; el.settingNotifications.checked = state.prefs.notifications !== false;
-      el.settingsAccountId.value = state.me ? state.me.id : '';
+      const hosted = state.authMode === 'github';
+      el.settingsAccountId.value = (hosted ? state.me?.verifiedEmail : state.me?.id) || '';
+      $('#settings-account-label').textContent = hosted ? 'Verified GitHub email' : 'Your account ID';
+      $('#settings-account-help').textContent = hosted ? 'Team owners can invite you using this verified email.' : 'Share this ID with a team owner so invitations can be addressed to your account.';
       const team = state.teams.find((t) => t.id === state.teamId);
       el.settingsConn.textContent = HUB_URL + ' · ' + (team ? team.name + ' (' + (state.membership ? state.membership.role : 'member') + ')' : 'no team') + ' · ' + (state.me ? state.me.name : '');
       el.settingsModal.classList.remove('hidden');
     });
     el.copyGateAccountId.addEventListener('click', () => copyAccountId(el.teamGateAccountId));
-    el.copyAccountId.addEventListener('click', () => copyAccountId(el.settingsAccountId));
+    el.copyAccountId.addEventListener('click', () => copyAccountId(el.settingsAccountId, state.authMode === 'github' ? 'Email' : 'Account ID'));
     el.closeSettings.addEventListener('click', () => el.settingsModal.classList.add('hidden'));
     el.settingsModal.addEventListener('click', (e) => { if (e.target === el.settingsModal) el.settingsModal.classList.add('hidden'); });
     el.settingTheme.addEventListener('change', () => { state.prefs.theme = el.settingTheme.value; savePrefs(); applyTheme(); });

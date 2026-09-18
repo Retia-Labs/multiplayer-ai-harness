@@ -50,6 +50,27 @@ const { DesktopAccount } = require('../apps/desktop/account');
     assert.equal(await page.evaluate(() => window.__plexus.state.me.token), null);
     console.log('PASS hosted browser login preserves private link, creates team and opens encrypted endpoint without exposing session token');
 
+    await page.setViewportSize({ width: 1487, height: 1058 });
+    await page.locator('#btn-settings').click();
+    assert.equal(await page.getByLabel('Verified GitHub email', { exact: true }).inputValue(), 'alice@example.test');
+    assert.doesNotMatch(await page.locator('#settings-modal').innerText(), /account ID/i);
+    await page.screenshot({ path: path.join(out, 'settings-hosted-desktop.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: path.join(out, 'settings-hosted-mobile.png') });
+    await page.locator('#btn-close-settings').click();
+    await page.setViewportSize({ width: 1487, height: 1058 });
+    await page.locator('#nav-fleet').click();
+    await page.locator('#pilot-setup [data-stage="provider"][data-state="pending"]').waitFor();
+    assert.match(await page.locator('#pilot-setup [data-stage="provider"]').innerText(), /execution host/);
+    assert.doesNotMatch(await page.locator('#pilot-setup [data-stage="invite"]').innerText(), /account ID/i);
+    await page.locator('#pilot-setup').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(out, 'setup-hosted-desktop.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator('#pilot-setup [data-stage="provider"]').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(out, 'setup-hosted-mobile.png') });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    console.log('PASS hosted settings expose verified invitation email; absent host leaves provider setup pending');
+
     // Exercise the actual desktop account exchange through its native I/O seams.
     nativeContext = await request.newContext({ ignoreHTTPSErrors: true });
     const nativeRequest = async (url, options = {}) => {
