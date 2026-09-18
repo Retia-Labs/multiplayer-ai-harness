@@ -6,7 +6,7 @@ Status (2026-09-19): DigitalOcean server provisioned, source installed, DNS and 
 
 The approved host is a separate DigitalOcean Droplet named `plexus-alpha` in Singapore: Ubuntu 24.04, 1 vCPU, 1 GB RAM and 25 GB persistent disk. The dashboard quotes US$6/month base, approximately US$6.54 with Singapore GST, before excess usage. Active promotional credits were not verified. The existing landing-page Droplets are not part of this deployment.
 
-Deployment configuration is in `deploy/digitalocean/`. Node v22.23.2 runs the relay under the `plexus` system account. Source releases live under `/opt/plexus/releases/`, with `/opt/plexus/current` pointing to the selected release. The current installed source is `ec4d031de675c944daad72c631461ed5709bd618` from PR #77, not main. Install production dependencies with `npm ci --omit=dev --ignore-scripts`.
+Deployment configuration is in `deploy/digitalocean/`. Node v22.23.2 runs the relay under the `plexus` system account. Source releases live under `/opt/plexus/releases/`, with `/opt/plexus/current` pointing to the selected release. The current installed source is `bbe643c989df32b69463aa8de5848743d203ee7e` from PR #77, not main. Install production dependencies with `npm ci --omit=dev --ignore-scripts`.
 
 SQLite and application-aware snapshots stay under `/var/lib/plexus`, owned by `plexus` with mode 0700. The systemd unit permits writes there and binds the hub only to `127.0.0.1:7777`. Caddy handles public HTTPS and WebSocket proxying. UFW permits SSH and TCP ports 80/443; port 7777 is not public. `/etc/plexus/relay.env` is root-owned mode 0600. Keep secrets out of the repository, shell history and service logs.
 
@@ -54,3 +54,14 @@ The Render GitHub deployment integration and the Plexus GitHub sign-in app are d
 - Check hosted diagnostics/health reveal no content or credentials. Confirm support and retention behavior before inviting customers.
 
 Signed downloads/updates (#20), Windows (#19), independent privacy/control review (#25), live hosting (#70) and complete onboarding (#76) remain separate release gates. No unsigned development artifact should be presented as the early-access download.
+
+
+### Invited Mac candidate — 2026-09-19
+
+Source `bbe643c` is deployed with hosted invitation history and onboarding fixes. Server-side hosted authentication (12 tests) and protocol smoke passed before switching the release symlink. Public HTTPS health/auth configuration succeeded and the served `app.js` SHA-256 matched the checkout.
+
+The unnotarized Apple Silicon candidate is `Plexus-0.2.0-alpha.1-mac-arm64-unnotarized.dmg` (130651850 bytes), SHA-256 `e5317610d3049b8653ae5329eaf43030240d6d1b9a919d32e8b4f0575e5c9a9e`. Its manifest records application source `bbe643c989df32b69463aa8de5848743d203ee7e`. Packaging inputs were committed; unrelated user documentation changes were excluded by the package file list.
+
+The exact DMG was mounted and copied into `.artifacts/invited-alpha-installed/` without replacing the user's application. `DESKTOP_EXECUTABLE` now lets the native hosted-auth test target that installed binary. The isolated HTTPS fixture journey passed Electron authorization, protected token storage, restart, logout and invitation UI checks; the installed bootstrap test passed startup diagnostics, failed-start/retry and runtime-repair paths without Node on PATH. The first native run timed out capturing a hidden window; leaving the test window visible resolved it. These tests do not qualify downloaded Gatekeeper handling, production sign-in for this exact version, upgrades or physical two-person collaboration.
+
+Installation guidance is in `invited-mac-alpha.md`. The signed release command is unchanged. The candidate is intended for draft prerelease storage until the remaining distribution checks pass.

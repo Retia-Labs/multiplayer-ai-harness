@@ -17,9 +17,8 @@ module.exports = async function desktopJourney({ origin, dir, page, out }) {
   delete env.ELECTRON_RUN_AS_NODE;
   let app;
   async function launch() {
-    app = await _electron.launch({ args: ['apps/desktop/main.js', '--user-data-dir=' + userData, '--ignore-certificate-errors-spki-list=' + spki], cwd: path.resolve(__dirname, '..'), env });
-    await app.evaluate(({ shell, app: electronApp, BrowserWindow }) => {
-      BrowserWindow.getAllWindows().forEach(window => window.hide());
+    app = await _electron.launch({ executablePath: process.env.DESKTOP_EXECUTABLE || undefined, args: [...(process.env.DESKTOP_EXECUTABLE ? [] : ['apps/desktop/main.js']), '--user-data-dir=' + userData, '--ignore-certificate-errors-spki-list=' + spki], cwd: path.resolve(__dirname, '..'), env });
+    await app.evaluate(({ shell, app: electronApp }) => {
       shell.openExternal = async url => { electronApp.testBrowserUrl = url; };
     });
     const win = await app.firstWindow(); win.setDefaultTimeout(20000); await win.setViewportSize({ width: 1487, height: 1058 });
