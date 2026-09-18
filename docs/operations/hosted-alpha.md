@@ -105,3 +105,21 @@ The repeatable `test/service-backup-transfer.js` drill creates its own synthetic
 Observed on the dedicated Ubuntu server using Node 22.23.2, with the snapshot transferred over SSH to this Mac and back: SHA-256 `4952a6ed266eed3cb358701b6e5f535be4e6624098b0da57bc77d9a194dcde5e` matched. Exactly one eligible missing task restored; the deleted task and revoked creator-grant task did not. The existing two-event log stayed intact. Current memberships, approvals, grants, endpoint records, signed authority history and tombstones were unchanged. A repeated restore restored zero tasks. The same snapshot restored zero tasks into an empty authority database and imported no authority. The local Mac drill also passed. Existing pilot tests passed 12 tests with the Windows-only test skipped. The live service remained active.
 
 This qualifies the CLI content-restore procedure with transferred synthetic data. It does **not** provide scheduled off-server production backups, a full server-loss recovery path, customer decryption proof or a recovery-time commitment. Daily production snapshots still reside only on the Droplet. #70 remains open.
+
+
+### Installed candidate execution fixture — 2026-09-19
+
+The existing `test/desktop-smoke.js` assumed packaged apps started a local relay, which is no longer true after hosted defaults. Its installed-app lane now starts an isolated fixture relay on an OS-assigned port and passes that address explicitly. All runtime data stays under the temporary test directory. The evidence identifies this external local fixture and explicitly excludes hosted authentication.
+
+The installed `0.2.0-alpha.1` candidate (source `bbe643c`, DMG checksum recorded above) passed solo execution with the demo provider. The same installed executable then passed the optional `PLEXUS_DESKTOP_COLLABORATION_PROOF=demo` browser journey: endpoint confirmation, project/history grant, late catch-up, one-action approval, host continuity while its window is closed, source/diff review, responsibility handoff and explicit task completion. Neither renderer reported uncaught errors. The browser and relay came from the qualification checkout based on `b4975d7`; this is a single-Mac test, not a production or two-human qualification. The demo provider only acknowledges steering; its follow-up file write does not prove a real model incorporated a correction.
+
+Commands (replace the executable path with the installed candidate):
+
+```sh
+DESKTOP_EXECUTABLE='<installed Plexus executable>' node test/desktop-smoke.js
+DESKTOP_EXECUTABLE='<installed Plexus executable>' PLEXUS_DESKTOP_COLLABORATION_PROOF=demo CHROMIUM_PATH='<Chrome executable>' node test/desktop-smoke.js
+```
+
+Evidence: `.artifacts/desktop-bootstrap/latest-results.json` and `.artifacts/desktop-collaboration/demo-results.json`. The desktop final review capture was visually inspected; no production renderer changes or reference-baseline changes were made. The existing harness also captures its narrow browser states; this does not change the desktop-first product scope.
+
+The Mac's ambient Codex is `0.155.0-alpha.9`; the current product gate supports `0.153.4`. An isolated upstream `rust-v0.153.4` binary was downloaded for qualification without replacing the user's installation. Real-provider usage awaits explicit account-owner approval. No provider quota was consumed by these demo tests. The actual public sign-in/setup/provider journey and #69 remain open.

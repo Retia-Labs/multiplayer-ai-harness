@@ -27,6 +27,7 @@ function assert(c, m) { if (!c) throw new Error('ASSERT FAILED: ' + m); console.
 let desktopApp;
 let testWindow;
 let desktopTemp;
+let fixtureHub;
 const pageErrors = [];
 (async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-desktop-'));
@@ -40,10 +41,19 @@ const pageErrors = [];
     fs.writeFileSync(path.join(project, 'correction.txt'), 'Bob reviewed this correction ' + require('node:crypto').randomBytes(12).toString('hex') + '\n');
   }
   execSync('git init -q -b main && git add -A && git -c user.email=t@t -c user.name=t commit -qm init', { cwd: project, shell: localShell().bin });
-  const port = 7800 + Math.floor(Math.random() * 100);
+  let port = 7800 + Math.floor(Math.random() * 100);
+  if (process.env.DESKTOP_EXECUTABLE) {
+    // Packaged apps default to the hosted alpha. This execution fixture supplies
+    // its own relay explicitly; it must never create test teams in production.
+    const { Hub } = require('../packages/hub/server');
+    fixtureHub = new Hub({ dbFile: path.join(tmp, 'hub.sqlite'), staticDir: path.join(__dirname, '..', 'apps', 'web') });
+    port = (await fixtureHub.listen()).port;
+  }
   const launchEnv = { ...process.env, ELECTRON_DISABLE_SANDBOX: '1', HUB_PORT: String(port), HARNESS_USER: 'dana' };
-  const dataRoot = collaboration ? path.join(tmp, 'data') : process.env.HARNESS_DATA;
-  if (collaboration) launchEnv.HARNESS_DATA = dataRoot;
+  const dataRoot = path.join(tmp, 'data');
+  launchEnv.HARNESS_DATA = dataRoot;
+  if (fixtureHub) launchEnv.HUB_HTTP_URL = `http://127.0.0.1:${port}`;
+  else delete launchEnv.HUB_HTTP_URL;
   delete launchEnv.ELECTRON_RUN_AS_NODE;
   if (process.env.DESKTOP_EXECUTABLE) launchEnv.PATH = process.platform === 'win32'
     ? process.env.SystemRoot + '/system32;' + process.env.SystemRoot
@@ -96,7 +106,7 @@ const pageErrors = [];
   const runtimeConfig = JSON.parse(fs.readFileSync(path.join(profile.dataDir, 'runtime.json'), 'utf8'));
   assert(runtimeConfig.projects.includes(project), 'native project authorization persists across runtime restarts');
   const health = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
-  assert(health.runtimes === 1, `hub spawned by the shell reports one runtime (got ${health.runtimes})`);
+  assert(health.runtimes === 1, `isolated team service reports one desktop runtime (got ${health.runtimes})`);
   await win.locator('#encrypted-setup').filter({ hasText: 'This endpoint: verified' }).waitFor({ timeout: 20000 });
   await app.evaluate(({ dialog }) => {
     dialog.showMessageBox = async () => ({ response: 1 });
@@ -185,6 +195,8 @@ const pageErrors = [];
   fs.writeFileSync(path.join(evidenceDir, realCodex ? 'codex-results.json' : 'latest-results.json'), JSON.stringify({
     status: 'pass', ranAt: new Date().toISOString(), packaged: !!process.env.DESKTOP_EXECUTABLE,
     provider: realCodex ? 'codex-cli' : 'demo', providerStatus, rendererErrors: pageErrors,
+    service: fixtureHub ? 'external-local-fixture' : 'desktop-local-service',
+    hostedAuthentication: 'not-tested',
     separateApprovalConsent: true, actualFileVerified: true, providerTurn: 'completed', exitedWithHiddenBroker: true,
     ...(collaborationResult ? { collaboration: collaborationResult } : {})
   }, null, 2) + '\n');
@@ -216,5 +228,6 @@ const pageErrors = [];
   process.exitCode = 1;
 }).finally(async () => {
   await quitApp(desktopApp);
+  if (fixtureHub) await fixtureHub.close();
   if (desktopTemp) fs.rmSync(desktopTemp, { recursive: true, force: true });
 });
