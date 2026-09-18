@@ -16,6 +16,24 @@ test('hosted service refuses name-only browser identity over WebSocket', async t
   assert.equal(message.type, 'error'); assert.equal(message.code, 'unauthenticated');
 });
 
+test('oversized unauthenticated frames close only the offending socket', { timeout: 10000 }, async t => {
+  const f = await fixture(t);
+  const { sessionCookie } = await f.finish(await f.login());
+  const peer = await f.socket(sessionCookie);
+  assert.equal(peer.message.type, 'welcome');
+  const attacker = new WebSocket('ws://127.0.0.1:' + f.hub.server.address().port, { origin: auth.origin });
+  t.after(() => attacker.terminate());
+  await once(attacker, 'open');
+  const closed = once(attacker, 'close');
+  attacker.send(Buffer.alloc(1024 * 1024 + 1));
+  assert.equal((await closed)[0], 1009);
+  assert.equal((await f.request('/api/health')).status, 200);
+  assert.equal(peer.ws.readyState, WebSocket.OPEN);
+  const reply = once(peer.ws, 'pong');
+  peer.ws.ping('still-connected');
+  assert.equal((await reply)[0].toString(), 'still-connected');
+});
+
 async function fixture(t, options = {}, hubOptions = {}) {
   let person = { id: 42, login: 'alice', name: 'Alice' };
   let emails = [{ email: 'alice@example.test', primary: true, verified: true }];

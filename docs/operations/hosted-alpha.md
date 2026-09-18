@@ -26,6 +26,8 @@ sudo systemctl status plexus --no-pager
 
 Check public `/api/health` and `/api/auth/config` over verified HTTPS, then perform real browser and desktop login. `systemctl restart plexus` preserves the database but cancels pending login exchanges. Inspect fixed error codes without collecting credentials or customer content.
 
+Install `plexus-snapshot.service` and `plexus-snapshot.timer` in `/etc/systemd/system/`, reload systemd, and enable the timer with `systemctl enable --now plexus-snapshot.timer`. It creates a daily ciphertext-only snapshot and prunes snapshots older than seven days, even when the relay is stopped. It skips until the database exists. Check failures using `systemctl status plexus-snapshot.service` and check the next run with `systemctl list-timers plexus-snapshot.timer`. These local snapshots do not protect against loss of the Droplet; they never restore identities, sessions or grants, and off-server recovery still needs qualification.
+
 For an update, unpack the reviewed exact commit into a new release directory, install production dependencies, run relevant checks, then stop the relay, switch `/opt/plexus/current`, and start it. Keep the existing database in place. A code rollback is safe only if its schema and protocol are compatible with the current database; never roll the database back to an old disk image. Use the deletion-aware snapshot and restore procedure in `pilot-operations.md`. Off-server recovery and operational qualification remain release gates; a persistent disk alone is not a backup.
 
 ### Observed installation checks

@@ -169,6 +169,9 @@ class Hub {
   onConnection(ws, req) {
     const ctx = { user: null, role: null, runtimeId: null, subs: new Set(), teamId: null, request: req };
     this.clients.set(ws, ctx);
+    // ws closes malformed/oversized connections itself. Consume its error event
+    // so an unauthenticated peer cannot crash the relay; cleanup runs on close.
+    ws.on('error', () => this.log('websocket_connection_error'));
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }

@@ -1,0 +1,16 @@
+[Unit]
+Description=Plexus deletion-aware ciphertext snapshot
+ConditionPathExists=/var/lib/plexus/plexus.sqlite
+
+[Service]
+Type=oneshot
+User=plexus
+Group=plexus
+WorkingDirectory=/opt/plexus/current
+ExecStart=/usr/local/bin/node scripts/service-backup.js create /var/lib/plexus/plexus.sqlite
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/plexus
