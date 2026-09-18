@@ -13,7 +13,7 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/jav
   '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.ico': 'image/x-icon' };
 
-function installRenderer({ root, hubUrl, partition }) {
+function installRenderer({ root, hubUrl, partition, accountToken = () => null }) {
   if (!partition) throw new Error('desktop_profile_required');
   session.fromPartition(partition).protocol.handle('plexus-app', async (request) => {
     const url = new URL(request.url);
@@ -22,6 +22,8 @@ function installRenderer({ root, hubUrl, partition }) {
       try {
         const headers = new Headers(request.headers);
         for (const name of ['host', 'origin', 'cookie', 'referer']) headers.delete(name);
+        const token = accountToken();
+        if (token) headers.set('Authorization', 'Bearer ' + token);
         const response = await fetch(hubUrl() + url.pathname + url.search, {
           method: request.method, headers, redirect: 'error',
           body: ['GET', 'HEAD'].includes(request.method) ? undefined : await request.arrayBuffer(),

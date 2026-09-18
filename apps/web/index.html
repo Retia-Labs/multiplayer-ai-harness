@@ -14,12 +14,20 @@
     <div class="login-card">
       <div class="brand big"><img class="on-dark" src="/brand/plexus-lockup-primary.svg" alt="Plexus" /><img class="on-light" src="/brand/plexus-lockup-dark.svg" alt="Plexus" /></div>
       <p class="login-sub">Multiplayer agent workbench. Sign in, then create a private team or accept an invitation.</p>
-      <form id="login-form">
+      <form id="login-form" class="hidden">
         <input id="login-name" type="text" placeholder="Your name" autocomplete="off" spellcheck="false" />
         <input id="login-org" type="text" placeholder="Org (default: local)" autocomplete="off" spellcheck="false" />
         <button type="submit" class="primary-btn">Join</button>
       </form>
-      <div id="login-hub" class="login-hub"></div>
+      <button id="github-login" type="button" class="primary-btn hidden">Continue with GitHub</button>
+      <button id="retry-login" type="button" class="mini-btn hidden">Try again</button>
+      <form id="desktop-consent" class="hidden">
+        <p class="login-sub">Connect your Plexus desktop</p>
+        <p class="small">Enter the code shown in the desktop you just opened. This signs that installation in. Project sharing and host approval are separate.</p>
+        <input id="desktop-code" aria-label="Desktop sign-in code" placeholder="8-character code" autocomplete="off" maxlength="8" required />
+        <button type="submit" class="primary-btn">Connect desktop</button>
+      </form>
+      <div id="login-hub" class="login-hub" role="status" aria-live="polite">Checking sign-in…</div>
     </div>
   </div>
 
@@ -30,7 +38,7 @@
       <div class="brand big"><img class="on-dark" src="/brand/plexus-lockup-primary.svg" alt="Plexus" /><img class="on-light" src="/brand/plexus-lockup-dark.svg" alt="Plexus" /></div>
       <p class="login-sub">Work happens inside a private team. Create one, or accept an invitation from a teammate.</p>
       <div id="team-gate-who" class="small"></div>
-      <div class="small">Your account ID — share this with a team owner to receive an invitation.</div>
+      <div id="gate-account-help" class="small">Your account ID — share this with a team owner to receive an invitation.</div>
       <div class="gate-block">
         <input id="team-gate-account-id" class="code-field" readonly />
         <button id="btn-copy-gate-account-id" type="button" class="mini-btn">Copy</button>
@@ -45,6 +53,7 @@
         <button id="btn-join-team" class="mini-btn">Accept invitation</button>
       </div>
       <div id="gate-error" class="gate-error hidden"></div>
+      <button id="gate-logout" class="mini-btn" type="button">Sign out</button>
     </div>
   </div>
 
@@ -136,7 +145,7 @@
               <div class="team-admin-row">
                 <input id="invitee-user-id" class="code-field" placeholder="Teammate account ID" autocomplete="off" spellcheck="false" />
                 <button id="btn-invite" class="mini-btn">Invite a teammate</button>
-                <span class="small">Ask for the account ID shown before they join or in Settings. Invitations are single-use.</span>
+                <span id="invite-help" class="small">Ask for the account ID shown before they join or in Settings. Invitations are single-use.</span>
               </div>
               <div id="invite-row" class="team-admin-row hidden">
                 <input id="invite-code" class="code-field" readonly />

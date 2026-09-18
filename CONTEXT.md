@@ -41,3 +41,7 @@ A person who participates in a real collaborative agent task involving at least 
 
 **Paid seat**:
 An individual user's paid access to the collaboration product, separate from the customer's agent-provider usage charges.
+
+## Hosted account identity
+
+GitHub sign-in identifies a person by immutable provider ID. It does not verify an endpoint or grant host/project/approval authority. Browser cookies and installation-bound desktop sessions are separate from provider credentials and encryption keys. See [ADR 0008](docs/adr/0008-hosted-account-authentication.md).

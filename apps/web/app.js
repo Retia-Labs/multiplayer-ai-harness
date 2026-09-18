@@ -59,7 +59,7 @@
     command_outcome_unknown: 'The host restarted after accepting that action, so its outcome is unknown.'
   };
   const state = {
-    ws: null, me: null, teams: [], teamId: null, membership: null, connected: false,
+    authMode: null, signingOut: false, ws: null, me: null, teams: [], teamId: null, membership: null, connected: false,
     threads: new Map(), runtimes: [],
     activeThreadId: null, activeThread: null, subscribedId: null,
     nodes: new Map(),     // itemId -> refs
@@ -443,7 +443,9 @@
     // every reload would create another stranger with the same display name.
     ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'hello', role: 'client', name: token ? undefined : name, token })));
     ws.addEventListener('message', (e) => { let m; try { m = JSON.parse(e.data); } catch { return; } onMessage(m); });
-    ws.addEventListener('close', () => {
+    ws.addEventListener('close', (event) => {
+      if (state.signingOut) return;
+      if (state.authMode === 'github' && event.code === 4001) { location.reload(); return; }
       state.connected = false;
       if (activeEncryptedTask()) renderEncryptedWorkspace();
       if (state.me) {
@@ -469,8 +471,15 @@
   function onMessage(m) {
     switch (m.type) {
       case 'welcome':
-        state.me = m.user; state.teams = m.teams || []; state.teamId = m.teamId; state.connected = true;
-        try { localStorage.setItem('harness.session', JSON.stringify({ token: m.user.token, name: m.user.name })); } catch {}
+        state.me = m.user;
+        if (state.authMode === 'github') {
+          $('#gate-account-help').textContent = 'Ask your team owner to invite ' + m.user.verifiedEmail + ', then paste their invitation below.';
+          el.teamGateAccountId.parentElement.classList.add('hidden');
+        }
+        state.teams = m.teams || []; state.teamId = m.teamId; state.connected = true;
+        if (state.authMode === 'local') {
+          try { localStorage.setItem('harness.session', JSON.stringify({ token: m.user.token, name: m.user.name })); } catch {}
+        }
         el.login.classList.add('hidden');
         // An account with no team is the normal first-run state, not an error.
         if (!state.teamId) { showTeamGate(); break; }
@@ -654,11 +663,14 @@
     const r = thread ? state.runtimes.find((x) => x.id === thread.runtimeId) : selectedRuntime();
     if (!state.activeThreadId) el.send.disabled = !r?.online || !state.connected;
     el.fleetWorktree.closest('label').classList.toggle('hidden', r?.taskProtocol === 'encrypted-v1');
-    const providers = (r && r.providers) || [{ id: 'demo', label: 'Demo agent', configured: true, models: ['demo-agent'] }];
+    const providers = r?.providers || [];
     const want = (thread && thread.settings && thread.settings.provider) || el.providerSelect.value || 'demo';
     el.providerSelect.innerHTML = '';
     for (const p of providers) { const o = document.createElement('option'); o.value = p.id; o.textContent = p.label + (p.configured ? '' : ' (no key)'); o.disabled = !p.configured; el.providerSelect.appendChild(o); }
-    el.providerSelect.value = providers.some((p) => p.id === want && p.configured) ? want : (providers.find((p) => p.configured) || providers[0]).id;
+    if (!providers.length) { const option = document.createElement('option'); option.value = ''; option.textContent = 'Connect an execution host'; el.providerSelect.appendChild(option); }
+    el.providerSelect.disabled = !providers.some(p => p.configured);
+    if (!state.activeThreadId && el.providerSelect.disabled) el.send.disabled = true;
+    el.providerSelect.value = providers.some((p) => p.id === want && p.configured) ? want : (providers.find((p) => p.configured) || providers[0])?.id || '';
     renderModelPicker(providers, thread);
     renderPresetPicker(r, thread);
   }
@@ -694,6 +706,8 @@
     const want = (thread && thread.settings && thread.settings.model) || el.modelSelect.value;
     el.modelSelect.innerHTML = '';
     for (const m of (p && p.models) || []) { const o = document.createElement('option'); o.value = m; o.textContent = m; el.modelSelect.appendChild(o); }
+    el.modelSelect.disabled = !p?.configured || !el.modelSelect.options.length;
+    if (!el.modelSelect.options.length) { const option = document.createElement('option'); option.value = ''; option.textContent = 'No model available'; el.modelSelect.appendChild(option); }
     if (want && [...el.modelSelect.options].some((o) => o.value === want)) el.modelSelect.value = want;
   }
 
@@ -2574,8 +2588,8 @@
     });
     el.inviteBtn.addEventListener('click', () => {
       const inviteeUserId = el.inviteeUserId.value.trim();
-      if (!inviteeUserId) return toast('Enter your teammate’s account ID.');
-      send({ type: 'team/invite', teamId: state.teamId, inviteeUserId });
+      if (!inviteeUserId) return toast(state.authMode === 'github' ? 'Enter your teammate’s verified GitHub email.' : 'Enter your teammate’s account ID.');
+      send({ type: 'team/invite', teamId: state.teamId, ...(state.authMode === 'github' ? { inviteeEmail: inviteeUserId } : { inviteeUserId }) });
     });
     el.teamMembers.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action="remove-member"]');
@@ -2604,7 +2618,18 @@
     el.settingsModal.addEventListener('click', (e) => { if (e.target === el.settingsModal) el.settingsModal.classList.add('hidden'); });
     el.settingTheme.addEventListener('change', () => { state.prefs.theme = el.settingTheme.value; savePrefs(); applyTheme(); });
     el.settingNotifications.addEventListener('change', () => { state.prefs.notifications = el.settingNotifications.checked; savePrefs(); });
-    el.logout.addEventListener('click', () => { try { localStorage.removeItem('harness.session'); } catch {} location.reload(); });
+    const signOut = async () => {
+      state.signingOut = true;
+      try {
+        if (state.authMode === 'github') {
+          const response = window.harnessDesktop ? (await window.harnessDesktop.accountLogout(), { ok: true }) : await fetch('/api/auth/logout', { method: 'POST' });
+          if (!response.ok) throw new Error('Could not sign out. Please try again.');
+        }
+        localStorage.removeItem('harness.session'); location.reload();
+      } catch (error) { state.signingOut = false; toast(esc(error.message)); }
+    };
+    el.logout.addEventListener('click', signOut);
+    $('#gate-logout').addEventListener('click', signOut);
     document.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'n') { e.preventDefault(); showFleet(); }
       if (e.key === 'Escape') { el.settingsModal.classList.add('hidden'); el.assignModal.classList.add('hidden'); if (state.diffOpen) closeDiff(); }
@@ -2623,8 +2648,7 @@
   el.loginHub.textContent = 'hub: ' + HUB_URL;
   const params = new URLSearchParams(location.search);
   // A handle on this page's own state, so automated checks can drive the real app instead of
-  // a fixture of it. It exposes nothing a script on this origin could not already reach - the
-  // session token is in localStorage either way - and confers no authority the page lacks.
+  // a fixture of it. Hosted session cookies remain HttpOnly; this adds no authority.
   window.__plexus = {
     state, openCatchup, openInbox, openRecovery,
     refreshEncrypted: () => refreshEncrypted(), refreshRecovery: () => refreshRecovery()
@@ -2632,13 +2656,87 @@
   el.inboxBtn.addEventListener('click', () => (state.inboxOpen ? closeInbox() : openInbox()));
   el.recoveryBtn.addEventListener('click', () => (state.recoveryOpen ? closeRecovery() : openRecovery()));
 
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem('harness.session') || 'null'); } catch {}
-  // The saved token wins over a ?name= hint, so relaunching the desktop app returns to the
-  // same account instead of creating a new one each time.
-  if (saved && saved.token) connect({ token: saved.token });
-  else if (params.get('name')) connect({ name: params.get('name') });
-  else el.loginName.focus();
+  function accountError(error) {
+    const message = String(error?.message || '');
+    const known = {
+      os_key_protection_unavailable: 'Unlock your system keychain to sign in securely, then try again.',
+      desktop_sign_in_expired: 'Desktop sign-in expired. Start again to get a new code.',
+      hosted_account_unavailable: 'This desktop cannot connect to hosted accounts. Check the service address.',
+      sign_in_busy: 'Sign-in is busy. Please try again shortly.',
+      identity_provider_unavailable: 'GitHub is unavailable. Please try again shortly.'
+    };
+    for (const [code, text] of Object.entries(known)) if (message.includes(code)) return text;
+    return 'Sign-in is unavailable. Check your connection and try again.';
+  }
+  async function bootAccount() {
+    $('#retry-login').classList.add('hidden');
+    el.loginHub.textContent = 'Checking sign-in…';
+    try {
+      const response = await fetch('/api/auth/config');
+      if (!response.ok) throw new Error('Sign-in is unavailable. Check your connection and try again.');
+      const config = await response.json();
+      if (!['local', 'github'].includes(config.mode)) throw new Error('This service does not support secure sign-in.');
+      state.authMode = config.mode;
+      if (config.mode === 'github') {
+        localStorage.removeItem('harness.session');
+        el.loginForm.classList.add('hidden');
+        el.inviteeUserId.placeholder = 'Teammate’s verified GitHub email';
+        el.inviteeUserId.setAttribute('aria-label', 'Teammate’s verified GitHub email');
+        $('#invite-help').textContent = 'Your teammate signs in with GitHub first. Use their verified email, then share the single-use invitation.';
+        FRIENDLY.unknown_user = 'No unique signed-in account matches that verified email. Ask your teammate to sign in first and check their email.';
+        $('#github-login').classList.remove('hidden');
+        const desktopToken = window.harnessDesktop ? await window.harnessDesktop.accountSession() : null;
+        const session = window.harnessDesktop ? { ok: !!desktopToken, status: desktopToken ? 200 : 401 } : await fetch('/api/auth/session');
+        if (session.ok) {
+          const deviceId = /^\/connect\/([A-Za-z0-9_-]{43})$/.exec(location.pathname)?.[1];
+          if (deviceId) {
+            $('#github-login').classList.add('hidden'); $('#desktop-consent').classList.remove('hidden');
+            el.loginHub.textContent = 'Only continue if you started sign-in from your own desktop.';
+          } else { el.loginHub.textContent = 'Opening your workspace…'; connect({ token: desktopToken }); }
+        }
+        else if (session.status === 401) el.loginHub.textContent = 'Invited early access. Your agent runs on your computer; teammates join here.';
+        else throw new Error('Could not check your session. Please try again.');
+      } else {
+        el.loginForm.classList.remove('hidden');
+        el.loginHub.textContent = 'Local development · ' + HUB_URL;
+        let saved = null;
+        try { saved = JSON.parse(localStorage.getItem('harness.session') || 'null'); } catch {}
+        if (saved?.token) connect({ token: saved.token });
+        else if (params.get('name')) connect({ name: params.get('name') });
+        else el.loginName.focus();
+      }
+    } catch (error) { el.loginHub.textContent = accountError(error); $('#retry-login').classList.remove('hidden'); }
+  }
+  $('#retry-login').addEventListener('click', bootAccount);
+  $('#github-login').addEventListener('click', async () => {
+    if (!window.harnessDesktop) return location.assign('/api/auth/login?returnTo=' + encodeURIComponent(location.pathname));
+    $('#github-login').disabled = true;
+    try {
+      const { code } = await window.harnessDesktop.accountStart();
+      el.loginHub.textContent = 'Enter this code in your browser: ' + code + '. Waiting for you to connect this desktop…';
+      const deadline = Date.now() + 600000;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const token = await window.harnessDesktop.accountPoll();
+        if (token) { connect({ token }); return; }
+      }
+      throw new Error('Sign-in expired. Please try again.');
+    } catch (error) { el.loginHub.textContent = accountError(error); }
+    finally { $('#github-login').disabled = false; }
+  });
+  $('#desktop-consent').addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = event.target.querySelector('button'); button.disabled = true;
+    try {
+      const id = /^\/connect\/([A-Za-z0-9_-]{43})$/.exec(location.pathname)?.[1];
+      const response = await fetch('/api/auth/desktop/' + id, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: $('#desktop-code').value.trim().toUpperCase() }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error === 'desktop_code_mismatch' ? 'That code does not match. Check your desktop and try again.' : 'This sign-in expired or is no longer available. Start again from your desktop.');
+      $('#desktop-consent').classList.add('hidden');
+      el.loginHub.textContent = 'Desktop connected. Return to Plexus on your computer to continue setup.';
+    } catch (error) { el.loginHub.textContent = error.message; button.disabled = false; }
+  });
+  bootAccount();
   // initial view
   el.composerHostHome.appendChild(el.composer);
   el.composer.classList.remove('hidden');

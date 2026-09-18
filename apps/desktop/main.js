@@ -12,8 +12,10 @@
 // has no terminal, no developer checkout, and no guarantee that Node exists at all - and
 // the hub needs `node:sqlite`, which arrived in Node 22.5, so "whatever node is on PATH"
 // was never a safe answer either.
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, nativeImage, safeStorage } = require('electron');
 const lifecycle = require('./lifecycle');
+const { DesktopAccount } = require('./account');
+let account = null;
 const { shouldQuitOnWindowClose, quitPlan, shouldLaunchRuntime, trayState } = lifecycle;
 const { spawn } = require('child_process');
 const path = require('path');
@@ -376,7 +378,7 @@ async function boot() {
   const dataDir = profile.dataDir;
   fs.mkdirSync(dataDir, { recursive: true });
   const userName = process.env.HARNESS_USER || os.userInfo().username;
-  const remote = process.env.HUB_HTTP_URL || null;
+  const remote = process.env.HUB_HTTP_URL || (app.isPackaged ? 'https://app.tryplexus.dev' : null);
   const httpUrl = profile.hubUrl;
 
   status('hub', 'working', remote ? 'Connecting to ' + remote : 'Starting the local team service…');
@@ -478,6 +480,13 @@ async function runBoot() {
 ipcMain.on('desktop:hubUrl', (event) => {
   requireRenderer(event, win); event.returnValue = connectedHubUrl;
 });
+for (const method of ['session', 'start', 'poll', 'logout']) {
+  ipcMain.handle('desktop:account:' + method, async event => {
+    requireRenderer(event, win);
+    if (!account) throw new Error('hosted_account_unavailable');
+    return account[method]();
+  });
+}
 ipcMain.handle('desktop:pairingCode', async (event) => { requireRenderer(event, win); return localPairingCode(); });
 ipcMain.handle('desktop:runtimeId', async (event) => { requireRenderer(event, win); return localRuntimeId(); });
 ipcMain.handle('desktop:pickFolder', (event, runtimeId) => { requireRenderer(event, win); return pickAndAuthorizeProject(runtimeId); });
@@ -668,8 +677,9 @@ app.whenReady().then(async () => {
   createTray();
   try {
     profile = desktopProfile({ userData: app.getPath('userData'), dataRoot: process.env.HARNESS_DATA,
-      hubUrl: process.env.HUB_HTTP_URL || 'http://127.0.0.1:' + (process.env.HUB_PORT || '7777') });
-    installRenderer({ root: ROOT, hubUrl: () => connectedHubUrl, partition: profile.partition });
+      hubUrl: process.env.HUB_HTTP_URL || (app.isPackaged ? 'https://app.tryplexus.dev' : 'http://127.0.0.1:' + (process.env.HUB_PORT || '7777')) });
+    if (profile.hubUrl.startsWith('https://')) account = new DesktopAccount({ origin: profile.hubUrl, dataDir: profile.dataDir, safeStorage, openExternal: url => shell.openExternal(url) });
+    installRenderer({ root: ROOT, hubUrl: () => connectedHubUrl, partition: profile.partition, accountToken: () => account?.saved() });
   } catch (error) {
     await createWindow(); status('hub', 'failed', 'Invalid team service address. Use an HTTP or HTTPS address without credentials.');
     status('ui', 'failed', error.message); return;

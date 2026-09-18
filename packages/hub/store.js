@@ -221,6 +221,7 @@ class HubStore {
   }
 
   userByToken(token) {
+    if (this.accountAuthentication) return this.accountAuthentication(token);
     return this._stmts.getUserByToken.get(token) || null;
   }
 
