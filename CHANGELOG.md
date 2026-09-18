@@ -6,7 +6,7 @@ User-visible changes by version. Dates identify publication only when an entry e
 
 Changes after the `0.2.0-alpha.1` candidate build:
 
-- Added authenticated installer delivery and a browser setup download card with version, architecture, unnotarized notice, checksum and retry states. The service validates configured installer bytes before advertising them.
+- Deployed authenticated installer delivery and a browser setup download card with version, architecture, unnotarized notice, checksum and retry states. The service validates configured installer bytes before advertising them.
 
 - Added this changelog and linked it from the README.
 - Verified replacement of the internal 0.1.2 app with the 0.2.0-alpha.1 DMG preserves the hosted account session and encrypted device fingerprint; logout clears the saved credential afterward (isolated HTTPS fixture).
@@ -14,7 +14,7 @@ Changes after the `0.2.0-alpha.1` candidate build:
 
 ## 0.2.0-alpha.1 — draft candidate (2026-09-19)
 
-**Status:** uploaded as a draft prerelease; not published to testers. Apple Silicon Mac only. The DMG is unnotarized and has no Apple-verified developer identity. The founder approved this distribution exception for the first invited Mac alpha.
+**Status:** GitHub prerelease remains a draft. The same candidate is configured for authenticated delivery by the hosted alpha service; real Chrome download qualification is pending after an ERR_BLOCKED_BY_CLIENT result. Apple Silicon Mac only. The DMG is unnotarized and has no Apple-verified developer identity. The founder approved this distribution exception for the first invited Mac alpha.
 
 ### Added
 

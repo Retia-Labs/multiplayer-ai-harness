@@ -6,7 +6,7 @@ Status (2026-09-19): DigitalOcean server provisioned, source installed, DNS and 
 
 The approved host is a separate DigitalOcean Droplet named `plexus-alpha` in Singapore: Ubuntu 24.04, 1 vCPU, 1 GB RAM and 25 GB persistent disk. The dashboard quotes US$6/month base, approximately US$6.54 with Singapore GST, before excess usage. Active promotional credits were not verified. The existing landing-page Droplets are not part of this deployment.
 
-Deployment configuration is in `deploy/digitalocean/`. Node v22.23.2 runs the relay under the `plexus` system account. Source releases live under `/opt/plexus/releases/`, with `/opt/plexus/current` pointing to the selected release. The current installed source is `bbe643c989df32b69463aa8de5848743d203ee7e` from PR #77, not main. Install production dependencies with `npm ci --omit=dev --ignore-scripts`.
+Deployment configuration is in `deploy/digitalocean/`. Node v22.23.2 runs the relay under the `plexus` system account. Source releases live under `/opt/plexus/releases/`, with `/opt/plexus/current` pointing to the selected release. The current installed source is `046b020` from PR #77, not main. Install production dependencies with `npm ci --omit=dev --ignore-scripts`.
 
 SQLite and application-aware snapshots stay under `/var/lib/plexus`, owned by `plexus` with mode 0700. The systemd unit permits writes there and binds the hub only to `127.0.0.1:7777`. Caddy handles public HTTPS and WebSocket proxying. UFW permits SSH and TCP ports 80/443; port 7777 is not public. `/etc/plexus/relay.env` is root-owned mode 0600. Keep secrets out of the repository, shell history and service logs.
 
@@ -82,3 +82,12 @@ Set `PLEXUS_DESKTOP_RELEASE_DIR` to an immutable, operator-owned directory conta
 `GET /api/desktop-release` returns version/architecture/checksum metadata to an authenticated account. `GET /api/desktop-download` streams only that selected artifact; request parameters cannot choose filesystem paths. Both reject unauthenticated requests and hosted legacy/URL/revoked tokens. Browser account entry and workspace setup share a download card with the unnotarized notice, Apple guidance, checksum disclosure and failure/retry handling. Desktop clients do not show this browser download card.
 
 Checks: 16 hosted-auth/download tests passed; the hosted browser journey downloaded and verified fixture bytes, exercised unavailable/failure/retry states and passed existing authentication/invitation checks. Inspected `download-desktop.png` (1487×1058) and the focused `download-mobile.png` capture (390×844 viewport) under `.artifacts/hosted-auth/`. Reuses the setup/account card, buttons and shared tokens; checksum wraps without clipping. This is implementation evidence, not proof that a real configured artifact has been downloaded through production.
+
+
+### Live download deployment — 2026-09-19
+
+Service revision `046b020` is live. `/opt/plexus/downloads/0.2.0-alpha.1/` holds the root-owned candidate DMG and build manifest, with the release directory configured in the existing private service environment. The actual file passed startup checksum verification; all 16 hosted-auth/download tests passed on Linux before deployment. Public health returned success and an anonymous download returned HTTP 401. Signed-in Chrome displayed version `0.2.0-alpha.1`, Apple Silicon, 125 MB and the unnotarized notice.
+
+The GitHub draft asset was downloaded back through `gh` and passed `SHA256SUMS`, proving its bytes match the tested DMG. This CLI download does not prove browser quarantine or Gatekeeper behavior.
+
+Clicking the live download in controlled Chrome returned `ERR_BLOCKED_BY_CLIENT` (“This page has been blocked by Chrome”). No browser protection was bypassed. The user was asked to try the same download manually, and the Plexus app was left open. The cause and real Chrome download/installation qualification remain unresolved. The GitHub prerelease is still a draft; the service download is restricted to authenticated alpha accounts.
