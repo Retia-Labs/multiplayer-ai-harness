@@ -30,7 +30,7 @@ For an update, unpack the reviewed exact commit into a new release directory, in
 
 ### Observed installation checks
 
-On the new Ubuntu server, all 11 `test/hosted-auth.js` tests and `test/protocol-smoke.js` passed. The production-only dependency install reported zero known vulnerabilities. Public DNS resolved to the new server and curl verified its HTTPS certificate. These checks do not prove real OAuth, live collaboration, signed distribution or customer-alpha readiness.
+On the new Ubuntu server, all 11 `test/hosted-auth.js` tests and `test/protocol-smoke.js` passed. `test/pilot-operations.js` passed 11 tests with its Windows-only test skipped: these cover deletion tombstones, restore against current grants, snapshot expiry and diagnostic/measurement content boundaries in isolated fixtures. They do not establish an off-server production recovery drill. The production-only dependency install reported zero known vulnerabilities. Public DNS resolved to the new server and curl verified its HTTPS certificate. These checks do not prove real OAuth, live collaboration, signed distribution or customer-alpha readiness.
 
 ## Identity and domain
 
