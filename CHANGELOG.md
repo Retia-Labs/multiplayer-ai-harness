@@ -7,6 +7,7 @@ User-visible changes by version. Dates identify publication only when an entry e
 Changes after the `0.2.0-alpha.1` candidate build:
 
 - Added this changelog and linked it from the README.
+- Verified replacement of the internal 0.1.2 app with the 0.2.0-alpha.1 DMG preserves the hosted account session and encrypted device fingerprint; logout clears the saved credential afterward (isolated HTTPS fixture).
 - Extended the native authentication test to run against an installed application. Verified the candidate DMG's authentication and startup-recovery paths using isolated fixtures.
 
 ## 0.2.0-alpha.1 — draft candidate (2026-09-19)
@@ -39,7 +40,7 @@ Changes after the `0.2.0-alpha.1` candidate build:
 - Artifact: `Plexus-0.2.0-alpha.1-mac-arm64-unnotarized.dmg`.
 - SHA-256: `e5317610d3049b8653ae5329eaf43030240d6d1b9a919d32e8b4f0575e5c9a9e`.
 - [Installation instructions](docs/operations/invited-mac-alpha.md) and [qualification evidence](docs/operations/hosted-alpha.md).
-- Downloaded-app Gatekeeper handling, upgrade qualification for this artifact, two-physical-machine production collaboration and remaining release gates are incomplete. No Intel Mac or Windows artifact is included.
+- Downloaded-app Gatekeeper handling, provider/task continuity during upgrades, two-physical-machine production collaboration and remaining release gates are incomplete. No Intel Mac or Windows artifact is included.
 
 [Changes from the pre-hosted baseline](https://github.com/Retia-Labs/multiplayer-ai-harness/compare/6ab3d641f7a61d15edb4fff7f8cc42ec78a3c29e...bbe643c989df32b69463aa8de5848743d203ee7e).
 

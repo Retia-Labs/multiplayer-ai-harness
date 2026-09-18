@@ -65,3 +65,12 @@ The unnotarized Apple Silicon candidate is `Plexus-0.2.0-alpha.1-mac-arm64-unnot
 The exact DMG was mounted and copied into `.artifacts/invited-alpha-installed/` without replacing the user's application. `DESKTOP_EXECUTABLE` now lets the native hosted-auth test target that installed binary. The isolated HTTPS fixture journey passed Electron authorization, protected token storage, restart, logout and invitation UI checks; the installed bootstrap test passed startup diagnostics, failed-start/retry and runtime-repair paths without Node on PATH. The first native run timed out capturing a hidden window; leaving the test window visible resolved it. These tests do not qualify downloaded Gatekeeper handling, production sign-in for this exact version, upgrades or physical two-person collaboration.
 
 Installation guidance is in `invited-mac-alpha.md`. The signed release command is unchanged. The candidate is intended for draft prerelease storage until the remaining distribution checks pass.
+
+
+### Hosted account upgrade qualification — 2026-09-19
+
+The native HTTPS journey now accepts paired `PLEXUS_AUTH_UPGRADE_FROM` / `PLEXUS_AUTH_UPGRADE_TO` installer paths. It installs the older DMG into a disposable directory, authorizes the installed app, quits it, replaces its application bundle with the newer DMG, then reopens with the same profile and runtime-data directory. Both paths must be supplied; evidence is written only after the final logout check passes.
+
+Observed upgrade: internal `0.1.2` (SHA-256 `7f91bdacb15c6630d23e8464b4ce833794829cdeb0814a2e37fb019f013776e1`) to `0.2.0-alpha.1` (SHA-256 `e5317610d3049b8653ae5329eaf43030240d6d1b9a919d32e8b4f0575e5c9a9e`). The application version changed, account session and encrypted endpoint fingerprint were preserved, and logout removed the credential. The complete hosted-browser/native journey passed. Generated evidence: `.artifacts/hosted-auth/installed-upgrade.json`.
+
+This proves account/device continuity across this exact replacement, using a local HTTPS service and fixture GitHub identity. It does not prove provider/task continuity, production upgrade behavior, browser download quarantine handling or Apple notarization. The draft release remains unpublished.
